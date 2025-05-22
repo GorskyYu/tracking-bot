@@ -9,6 +9,14 @@ from urllib.parse import quote
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import redis
+
+# connect to your Redis® Cloud instance
+# Heroku sets REDIS_URL (or REDISCLOUD_URL) for this add-on
+redis_url = os.environ.get("REDIS_URL") or os.environ.get("REDISCLOUD_URL")
+r = redis.from_url(redis_url, decode_responses=True)
+CACHE_KEY = "yumi_status_cache"
+
 # ─── Environment Variables ────────────────────────────────────────────────────
 APP_ID        = os.getenv("TE_APP_ID")           # TripleEagle App ID
 APP_SECRET    = os.getenv("TE_SECRET")           # TripleEagle App Secret
@@ -45,14 +53,11 @@ def call_api(action: str, payload: dict = None) -> dict:
 
 # ─── Load / Save Cache ─────────────────────────────────────────────────────────
 def load_cache() -> dict:
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r") as f:
-            return json.load(f)
-    return {}
+    data = r.get(CACHE_KEY)
+    return json.loads(data) if data else {}
 
 def save_cache(cache: dict):
-    with open(CACHE_FILE, "w") as f:
-        json.dump(cache, f)
+    r.set(CACHE_KEY, json.dumps(cache))
 
 # ─── Time Guard ────────────────────────────────────────────────────────────────
 def within_business_hours() -> bool:
@@ -99,11 +104,18 @@ def main():
         if not events:
             continue
         latest = max(events, key=lambda e: int(e["timestamp"]))
-        status = latest.get("context", "UNKNOWN")
-        prev   = cache.get(oid)
+        location = latest.get("location", "").strip()
+        status   = latest.get("context", "UNKNOWN")
+        prev     = cache.get(oid)
+
         if status != prev:
-            # build and send LINE push
-            message = f"📦 {oid} ({num}) status changed → {status}"
+            # Build message with location
+            if location:
+                message = f"{location} 📦 {oid} ({num}) status changed → {status}"
+            else:
+                message = f"📦 {oid} ({num}) status changed → {status}"
+
+            # send LINE push
             push_payload = {
                 "to": LINE_GROUP_ID,
                 "messages": [{"type": "text", "text": message}]
