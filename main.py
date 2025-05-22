@@ -8,12 +8,20 @@ import base64
 from urllib.parse import quote
 from flask import Flask, request
 
+# ─── Customer Mapping ──────────────────────────────────────────────────────────
+# Map each LINE group to the list of lowercase keywords you filter on
+CUSTOMER_FILTERS = {
+    os.getenv("LINE_GROUP_ID_YUMI"):   ["yumi", "shu-yen"],
+    os.getenv("LINE_GROUP_ID_VICKY"):  ["vicky","chia-chi"]
+}
+
+
 # ─── Status Translations ──────────────────────────────────────────────────────
 TRANSLATIONS = {
     "out for delivery today":         "今日派送中",
-    "processing at ups facility":     "UPS 處理中",
-    "arrived at facility":            "已到達中心",
-    "departed from facility":         "已離開中心",
+    "processing at ups facility":     "UPS處理中",
+    "arrived at facility":            "已到達派送中心",
+    "departed from facility":         "已離開派送中心",
     "pickup scan":                    "取件掃描",
     "your package is currently at the ups access point™ and is scheduled to be tendered to ups.": 
                                       "貨件目前在 UPS 取貨點，稍後將交予 UPS",
