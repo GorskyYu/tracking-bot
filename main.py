@@ -120,51 +120,53 @@ app = Flask(__name__)
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    # Log every incoming request
+    # Log incoming methods
     print(f"[Webhook] Received {request.method} to /webhook")
     if request.method == "GET":
         return "OK", 200
 
     data = request.get_json()
-    print("[Webhook] Full payload:", json.dumps(data, ensure_ascii=False))
-    print("[Webhook] Payload:", json.dumps(data))
+    print("[Webhook] Payload:", json.dumps(data, ensure_ascii=False))
 
     for event in data.get("events", []):
-        group_id = event["source"].get("groupId")
-        print(f"[Webhook] Detected groupId: {group_id}")    
+        # Only handle text messages
         if event.get("type") == "message" and event["message"].get("type") == "text":
-            text = event["message"]["text"].strip()
-            print(f"[Webhook] Received text: {text}")
+            group_id = event["source"].get("groupId")
+            text     = event["message"]["text"].strip()
+            print(f"[Webhook] Detected groupId: {group_id}, text: {text}")
 
             if text == "追蹤包裹":
-                group_id = event["source"]["groupId"]
                 keywords = CUSTOMER_FILTERS.get(group_id)
                 if not keywords:
-                    # not a recognized group, ignore
-                    return "OK", 200
+                    print(f"[Webhook] No keywords configured for group {group_id}, skipping.")
+                    continue
 
+                # Now safe to extract reply_token
+                reply_token = event["replyToken"]
+                print("[Webhook] Trigger matched, fetching statuses…")
                 messages = get_statuses_for(keywords)
                 print("[Webhook] Reply messages:", messages)
 
-                # Combine all lines into one message to avoid the 5-message limit
+                # Combine lines into one multi-line text
                 combined = "\n\n".join(messages)
                 payload = {
-                  "replyToken": reply_token,
-                  "messages": [{"type": "text", "text": combined}]
+                    "replyToken": reply_token,
+                    "messages": [{"type": "text", "text": combined}]
                 }
 
                 headers = {
-                  "Content-Type":"application/json",
-                  "Authorization":f"Bearer {LINE_TOKEN}"
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {LINE_TOKEN}"
                 }
                 resp = requests.post(
-                  "https://api.line.me/v2/bot/message/reply",
-                  headers=headers,
-                  json=payload
+                    "https://api.line.me/v2/bot/message/reply",
+                    headers=headers,
+                    json=payload
                 )
                 print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
 
     return "OK", 200
+
 
 
 if __name__ == "__main__":
