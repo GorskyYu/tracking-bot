@@ -8,6 +8,23 @@ import base64
 from urllib.parse import quote
 from flask import Flask, request
 
+# ─── Status Translations ──────────────────────────────────────────────────────
+TRANSLATIONS = {
+    "out for delivery today":         "今日派送中",
+    "processing at ups facility":     "UPS 處理中",
+    "arrived at facility":            "已到達中心",
+    "departed from facility":         "已離開中心",
+    "pickup scan":                    "取件掃描",
+    "your package is currently at the ups access point™ and is scheduled to be tendered to ups.": 
+                                      "貨件目前在 UPS 取貨點，稍後將交予 UPS",
+    "drop-off":                       "已寄件",
+    "order created at triple eagle":  "已在系統建立訂單",
+    "shipper created a label, ups has not received the package yet.": 
+                                      "已建立運單，UPS 尚未收件",
+    "delivered":                      "已送達",
+}
+
+
 # ─── Environment Variables ────────────────────────────────────────────────────
 APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
 APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
@@ -81,26 +98,34 @@ def get_yumi_statuses() -> list:
             lines.append(f"{oid} ({num}) – 尚無追蹤紀錄")
             continue
 
-        # pick the latest event
+                # pick the latest event
         ev = max(events, key=lambda e: int(e["timestamp"]))
 
-        # raw location string, e.g. "RICHMOND,Canada" or ""
+        # extract and format location
         loc_raw = ev.get("location", "")
-
-        # format: add space after comma, wrap in [ ]
         if loc_raw:
             loc = loc_raw.replace(",", ", ")
             loc_str = f"[{loc}] "
         else:
             loc_str = ""
 
-        # context and time
-        ctx = ev.get("context", "")
+        # original English context
+        ctx = ev.get("context", "").strip()
+
+        # normalize and translate (fallback: swap Triple Eagle→system)
+        ctx_lc = ctx.lower()
+        translated = TRANSLATIONS.get(ctx_lc)
+        if not translated:
+            # replace any “Triple Eagle” mentions
+            translated = ctx.replace("Triple Eagle", "system")
+
+        # timestamp
         tme = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT", ""))
 
-        # build the final line
-        # e.g. "U110236870 (1ZHF…) → [RICHMOND, Canada] DELIVERED @  …"
-        lines.append(f"{oid} ({num}) → {loc_str}{ctx}  @ {tme}")
+        # append final line in Traditional Chinese
+        # e.g. "U110236870 (…) → [Richmond, Canada] 已送達 @ …"
+        lines.append(f"{oid} ({num}) → {loc_str}{translated}  @ {tme}")
+
 
     return lines    
 
