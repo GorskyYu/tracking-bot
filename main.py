@@ -67,8 +67,10 @@ def main():
     cache = load_cache()
     order_ids = fetch_active_order_ids()
     if not order_ids:
-        print("No active orders.")
+        print("No active orders. Raw response below:")
+        print(json.dumps(call_api("shipment/list"), indent=2))
         return
+
 
     yumi_orders = []
     sender_map = {}
@@ -82,7 +84,8 @@ def main():
             if isinstance(initiation, dict):
                 loc = next(iter(initiation), None)
                 sender = initiation.get(loc, {}).get("name", "")
-                if "Yumi" in sender or "Shu-Yen" in sender:
+                sender_lc = sender.lower()
+                if any(keyword in sender_lc for keyword in ["yumi", "shu-yen", "liu"]):
                     yumi_orders.append(oid)
                     sender_map[oid] = sender
         except Exception as e:
