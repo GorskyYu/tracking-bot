@@ -86,8 +86,11 @@ def get_yumi_statuses() -> list:
 # ─── Flask Webhook ────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
-@app.route("/webhook", methods=["POST"])
+@app.route("/webhook", methods=["GET", "POST"])
 def webhook():
+    if request.method == 'GET':
+        # Respond 200 OK to LINE’s Verify
+        return "OK"
     data = request.get_json()
     for event in data.get("events", []):
         if event.get("type") == "message" and event["message"].get("type") == "text":
