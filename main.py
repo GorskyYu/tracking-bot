@@ -71,6 +71,38 @@ def get_yumi_statuses() -> list:
         "rsync":   0,
         "timezone": TIMEZONE
     })
+    
+    lines = [f"📦 {time.strftime('%Y-%m-%d %H:%M', time.localtime())}"]
+    for item in td.get("response", []):
+        oid = item.get("id")
+        num = item.get("number", "")
+        events = item.get("list") or []
+        if not events:
+            lines.append(f"{oid} ({num}) – 尚無追蹤紀錄")
+            continue
+
+        # pick the latest event
+        ev = max(events, key=lambda e: int(e["timestamp"]))
+
+        # raw location string, e.g. "RICHMOND,Canada" or ""
+        loc_raw = ev.get("location", "")
+
+        # format: add space after comma, wrap in [ ]
+        if loc_raw:
+            loc = loc_raw.replace(",", ", ")
+            loc_str = f"[{loc}] "
+        else:
+            loc_str = ""
+
+        # context and time
+        ctx = ev.get("context", "")
+        tme = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT", ""))
+
+        # build the final line
+        # e.g. "U110236870 (1ZHF…) → [RICHMOND, Canada] DELIVERED @  …"
+        lines.append(f"{oid} ({num}) → {loc_str}{ctx}  @ {tme}")
+
+    return lines    
 
     # 4) format reply
     lines = [f"📦 {time.strftime('%Y-%m-%d %H:%M', time.localtime())}"]
