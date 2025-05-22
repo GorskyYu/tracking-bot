@@ -6,7 +6,8 @@ import requests
 import json
 import base64
 from urllib.parse import quote
-from flask import Flask, request
+from flask import Flask, request, jsonify
+
 
 # ─── Customer Mapping ──────────────────────────────────────────────────────────
 # Map each LINE group to the list of lowercase keywords you filter on
@@ -170,19 +171,21 @@ def webhook():
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # Monday.com sends a GET to validate your URL, so respond 200
     if request.method == "GET":
         return "OK", 200
 
     data = request.get_json()
     print("[Monday] Payload:", json.dumps(data, ensure_ascii=False))
 
-    # Extract the item (pulse) name and new status label
+    # 1️⃣ Handle the initial challenge handshake
+    if "challenge" in data:
+        return jsonify({"challenge": data["challenge"]}), 200
+
+    # 2️⃣ Actual status‐change event
     item_name = data.get("pulseName") or data.get("itemName") or "未知包裹"
     new_value = data.get("value", {}).get("label")
 
     if new_value == "國際運輸":
-        # Notify the same group you use for Yumi (or swap for Vicky’s if needed)
         to_group = os.getenv("LINE_GROUP_ID_YUMI")
         text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
         push_payload = {
@@ -201,6 +204,7 @@ def monday_webhook():
         print(f"[Monday→LINE] push status: {resp.status_code}, {resp.text}")
 
     return "OK", 200
+
 
 
 
