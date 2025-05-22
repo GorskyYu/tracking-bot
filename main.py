@@ -92,30 +92,42 @@ app = Flask(__name__)
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    if request.method == 'GET':
-        # Respond 200 OK to LINE’s Verify
-        return "OK"
+    # Log every incoming request
+    print(f"[Webhook] Received {request.method} to /webhook")
+    if request.method == "GET":
+        return "OK", 200
+
     data = request.get_json()
+    print("[Webhook] Payload:", json.dumps(data))
+
     for event in data.get("events", []):
         if event.get("type") == "message" and event["message"].get("type") == "text":
             text = event["message"]["text"].strip()
+            print(f"[Webhook] Received text: {text}")
+
             if text == "追蹤包裹":
+                print("[Webhook] Trigger matched, fetching statuses…")
                 reply_token = event["replyToken"]
                 messages = get_yumi_statuses()
+                print("[Webhook] Reply messages:", messages)
+
                 payload = {
-                    "replyToken": reply_token,
-                    "messages": [{"type": "text", "text": m} for m in messages]
+                  "replyToken": reply_token,
+                  "messages": [{"type":"text","text":m} for m in messages]
                 }
                 headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {LINE_TOKEN}"
+                  "Content-Type":"application/json",
+                  "Authorization":f"Bearer {LINE_TOKEN}"
                 }
-                requests.post(
-                    "https://api.line.me/v2/bot/message/reply",
-                    headers=headers,
-                    json=payload
+                resp = requests.post(
+                  "https://api.line.me/v2/bot/message/reply",
+                  headers=headers,
+                  json=payload
                 )
-    return "OK"
+                print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
+
+    return "OK", 200
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
