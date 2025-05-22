@@ -81,10 +81,17 @@ def get_yumi_statuses() -> list:
         if not events:
             lines.append(f"{oid} ({num}) – 尚無追蹤紀錄")
             continue
+
+        # pick the latest event
         ev = max(events, key=lambda e: int(e["timestamp"]))
-        ctx = ev.get("context", "")
-        tme = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT", ""))
-        lines.append(f"{oid} ({num}) → {ctx}  @ {tme}")
+
+        # include location
+        location = ev.get("location", "")  # e.g. "[Concord,Canada]"
+        ctx      = ev.get("context", "")
+        tme      = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT", ""))
+
+        # build the line with location first
+        lines.append(f"{location} {oid} ({num}) → {ctx}  @ {tme}")
     return lines
 
 # ─── Flask Webhook ────────────────────────────────────────────────────────────
