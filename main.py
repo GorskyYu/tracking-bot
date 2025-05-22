@@ -4,136 +4,112 @@ import hmac
 import hashlib
 import requests
 import json
-import base64
 from urllib.parse import quote
+from flask import Flask, request
 
 # ─── Environment Variables ────────────────────────────────────────────────────
-APP_ID     = os.getenv("TE_APP_ID")
-APP_SECRET = os.getenv("TE_SECRET")
-
-TIMEZONE   = "America/Vancouver"
-CACHE_FILE = "status_cache.json"
+APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
+APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
+LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
+TIMEZONE    = "America/Vancouver"
 
 # ─── Signature Generator ──────────────────────────────────────────────────────
 def generate_sign(params: dict, secret: str) -> str:
-    # 1) Sort keys
-    keys = sorted(params.keys(), key=lambda k: k.lower())
-    # 2) Build encodeURIComponent-style querystring
     parts = []
-    for k in keys:
+    for k in sorted(params.keys()):
         v = params[k]
-        # quote with safe='~' so that '~' stays unencoded (like JS), everything else—including '/'—is encoded
-        val = quote(str(v), safe='~')
-        parts.append(f"{k}={val}")
+        parts.append(f"{k}={quote(str(v), safe='~')}")
     qs = "&".join(parts)
-    # 3) HMAC-SHA256 and Base64 encode the raw bytes
-    sig_bytes = hmac.new(secret.encode('utf-8'), qs.encode('utf-8'), hashlib.sha256).digest()
-    return base64.b64encode(sig_bytes).decode('utf-8')
+    sig_bytes = hmac.new(secret.encode(), qs.encode(), hashlib.sha256).digest()
+    return requests.utils.b64encode(sig_bytes).decode()
 
-
-# ─── Generic API ──────────────────────────────────────────────────────────────
+# ─── TripleEagle API Caller ───────────────────────────────────────────────────
 def call_api(action: str, payload: dict = None) -> dict:
-    timestamp = str(int(time.time()))
-    params = {
-        "id": APP_ID,
-        "timestamp": timestamp,
-        "format": "json",
-        "action": action
-    }
+    ts = str(int(time.time()))
+    params = {"id": APP_ID, "timestamp": ts, "format": "json", "action": action}
     params["sign"] = generate_sign(params, APP_SECRET)
     url = "https://eship.tripleeaglelogistics.com/api?" + "&".join(
-        f"{k}={requests.utils.quote(str(params[k]))}" for k in params
+        f"{k}={quote(str(params[k]), safe='~')}" for k in params
     )
     headers = {"Content-Type": "application/json"}
-    resp = requests.post(url, json=payload, headers=headers) if payload else requests.get(url, headers=headers)
-    resp.raise_for_status()
-    return resp.json()
+    if payload:
+        r = requests.post(url, json=payload, headers=headers)
+    else:
+        r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    return r.json()
 
-# ─── Cache Handling ───────────────────────────────────────────────────────────
-def load_cache() -> dict:
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE) as f:
-            return json.load(f)
-    return {}
+# ─── Business Logic ───────────────────────────────────────────────────────────
+def get_yumi_statuses() -> list:
+    # 1) list all active orders
+    resp = call_api("shipment/list")
+    lst = resp.get("response", {}).get("list") or resp.get("response") or []
+    order_ids = [o["id"] for o in lst if "id" in o]
 
-def save_cache(cache: dict):
-    with open(CACHE_FILE, "w") as f:
-        json.dump(cache, f)
+    # 2) filter Yumi’s orders
+    yumi_ids = []
+    for oid in order_ids:
+        det = call_api("shipment/detail", {"id": oid}).get("response", {})
+        if isinstance(det, list):
+            det = det[0]
+        init = det.get("initiation", {})
+        loc = next(iter(init), None)
+        name = init.get(loc, {}).get("name", "").lower()
+        if "yumi" in name or "shu-yen" in name:
+            yumi_ids.append(oid)
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-def fetch_active_order_ids() -> list:
-    data = call_api("shipment/list")
-    lst = data.get("response", {}).get("list") or data.get("response")
-    return [o["id"] for o in lst if "id" in o] if isinstance(lst, list) else []
+    if not yumi_ids:
+        return ["📦 沒有 Yumi 的有效訂單"]
 
-def fetch_detail(order_id: str) -> dict:
-    return call_api("shipment/detail", {"id": order_id})
-
-def fetch_tracking(order_ids: list) -> dict:
-    return call_api("shipment/tracking", {
-        "keyword": ",".join(order_ids),
+    # 3) fetch tracking updates
+    td = call_api("shipment/tracking", {
+        "keyword": ",".join(yumi_ids),
         "rsync":   0,
         "timezone": TIMEZONE
     })
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
-def main():
-    cache = load_cache()
-    order_ids = fetch_active_order_ids()
-    if not order_ids:
-        print("No active orders.")
-        return
-#    if not order_ids:
-#        print("No active orders. Raw response below:")
-#        print(json.dumps(call_api("shipment/list"), indent=2))
-#        return
-
-
-    yumi_orders = []
-    sender_map = {}
-    for oid in order_ids:
-        try:
-            detail = fetch_detail(oid)
-            response = detail.get("response", {})
-            if isinstance(response, list):
-                response = response[0]
-            initiation = response.get("initiation", {})
-            if isinstance(initiation, dict):
-                loc = next(iter(initiation), None)
-                sender = initiation.get(loc, {}).get("name", "")
-                sender_lc = sender.lower()
-                if any(keyword in sender_lc for keyword in ["yumi", "shu-yen", "liu"]):
-                    yumi_orders.append(oid)
-                    sender_map[oid] = sender
-        except Exception as e:
-            print(f"Error loading detail for {oid}: {e}")
-
-    if not yumi_orders:
-        print("No active orders from Yumi.")
-        return
-
-    tracking_data = fetch_tracking(yumi_orders)
-    for item in tracking_data.get("response", []):
+    # 4) format reply
+    lines = [f"📦 {time.strftime('%Y-%m-%d %H:%M', time.localtime())}"]
+    for item in td.get("response", []):
         oid = item.get("id")
-        tracking_number = item.get("number", "N/A")
-        if not item.get("list"):
-            print(f"{oid} ({tracking_number}) - No tracking history")
+        num = item.get("number", "")
+        events = item.get("list") or []
+        if not events:
+            lines.append(f"{oid} ({num}) – 尚無追蹤紀錄")
             continue
-        latest = max(item["list"], key=lambda ev: int(ev["timestamp"]))
-        context = latest.get("context", "No context")
-        time_str = latest["datetime"].get(TIMEZONE, latest["datetime"].get("GMT", "N/A"))
+        ev = max(events, key=lambda e: int(e["timestamp"]))
+        ctx = ev.get("context", "")
+        tme = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT", ""))
+        lines.append(f"{oid} ({num}) → {ctx}  @ {tme}")
+    return lines
 
-        prev_status = cache.get(oid)
-        if context != prev_status:
-            print(f"⚠️ status changed for {oid} ({tracking_number})")
-        print(f"{oid} ({tracking_number}) - Sender: {sender_map.get(oid)}")
-        print(f"  Status: {context}")
-        print(f"  Time:   {time_str}")
-        print()
+# ─── Flask Webhook ────────────────────────────────────────────────────────────
+app = Flask(__name__)
 
-        cache[oid] = context
-
-    save_cache(cache)
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json()
+    for event in data.get("events", []):
+        if event.get("type") == "message" and event["message"].get("type") == "text":
+            text = event["message"]["text"].strip()
+            if text == "追蹤包裹":
+                reply_token = event["replyToken"]
+                messages = get_yumi_statuses()
+                payload = {
+                    "replyToken": reply_token,
+                    "messages": [{"type": "text", "text": m} for m in messages]
+                }
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {LINE_TOKEN}"
+                }
+                requests.post(
+                    "https://api.line.me/v2/bot/message/reply",
+                    headers=headers,
+                    json=payload
+                )
+    return "OK"
 
 if __name__ == "__main__":
-    main()
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
