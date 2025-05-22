@@ -4,6 +4,8 @@ import hmac
 import hashlib
 import requests
 import json
+import base64
+from urllib.parse import quote
 
 # ─── Environment Variables ────────────────────────────────────────────────────
 APP_ID     = os.getenv("TE_APP_ID")
@@ -14,8 +16,20 @@ CACHE_FILE = "status_cache.json"
 
 # ─── Signature Generator ──────────────────────────────────────────────────────
 def generate_sign(params: dict, secret: str) -> str:
-    qs = "&".join(f"{k}={requests.utils.quote(str(params[k]))}" for k in sorted(params))
-    return hmac.new(secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
+    # 1) Sort keys
+    keys = sorted(params.keys(), key=lambda k: k.lower())
+    # 2) Build encodeURIComponent-style querystring
+    parts = []
+    for k in keys:
+        v = params[k]
+        # quote with safe='~' so that '~' stays unencoded (like JS), everything else—including '/'—is encoded
+        val = quote(str(v), safe='~')
+        parts.append(f"{k}={val}")
+    qs = "&".join(parts)
+    # 3) HMAC-SHA256 and Base64 encode the raw bytes
+    sig_bytes = hmac.new(secret.encode('utf-8'), qs.encode('utf-8'), hashlib.sha256).digest()
+    return base64.b64encode(sig_bytes).decode('utf-8')
+
 
 # ─── Generic API ──────────────────────────────────────────────────────────────
 def call_api(action: str, payload: dict = None) -> dict:
