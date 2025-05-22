@@ -111,10 +111,13 @@ def webhook():
                 messages = get_yumi_statuses()
                 print("[Webhook] Reply messages:", messages)
 
+                # Combine all lines into one message to avoid the 5-message limit
+                combined = "\n".join(messages)
                 payload = {
                   "replyToken": reply_token,
-                  "messages": [{"type":"text","text":m} for m in messages]
+                  "messages": [{"type": "text", "text": combined}]
                 }
+
                 headers = {
                   "Content-Type":"application/json",
                   "Authorization":f"Bearer {LINE_TOKEN}"
