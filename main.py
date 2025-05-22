@@ -166,6 +166,41 @@ def webhook():
                 print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
 
     return "OK", 200
+    
+# ─── Monday.com Webhook ────────────────────────────────────────────────────────
+@app.route("/monday-webhook", methods=["GET", "POST"])
+def monday_webhook():
+    # Monday.com sends a GET to validate your URL, so respond 200
+    if request.method == "GET":
+        return "OK", 200
+
+    data = request.get_json()
+    print("[Monday] Payload:", json.dumps(data, ensure_ascii=False))
+
+    # Extract the item (pulse) name and new status label
+    item_name = data.get("pulseName") or data.get("itemName") or "未知包裹"
+    new_value = data.get("value", {}).get("label")
+
+    if new_value == "國際運輸":
+        # Notify the same group you use for Yumi (or swap for Vicky’s if needed)
+        to_group = os.getenv("LINE_GROUP_ID_YUMI")
+        text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
+        push_payload = {
+            "to": to_group,
+            "messages": [{"type": "text", "text": text}]
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {LINE_TOKEN}"
+        }
+        resp = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers=headers,
+            json=push_payload
+        )
+        print(f"[Monday→LINE] push status: {resp.status_code}, {resp.text}")
+
+    return "OK", 200
 
 
 
