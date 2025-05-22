@@ -81,9 +81,12 @@ def main():
     cache = load_cache()
     order_ids = fetch_active_order_ids()
     if not order_ids:
-        print("No active orders. Raw response below:")
-        print(json.dumps(call_api("shipment/list"), indent=2))
+        print("No active orders.")
         return
+#    if not order_ids:
+#        print("No active orders. Raw response below:")
+#        print(json.dumps(call_api("shipment/list"), indent=2))
+#        return
 
 
     yumi_orders = []
