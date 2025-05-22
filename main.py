@@ -170,9 +170,12 @@ def webhook():
         return "OK", 200
 
     data = request.get_json()
+    print("[Webhook] Full payload:", json.dumps(data, ensure_ascii=False))
     print("[Webhook] Payload:", json.dumps(data))
 
     for event in data.get("events", []):
+        group_id = event["source"].get("groupId")
+        print(f"[Webhook] Detected groupId: {group_id}")    
         if event.get("type") == "message" and event["message"].get("type") == "text":
             text = event["message"]["text"].strip()
             print(f"[Webhook] Received text: {text}")
