@@ -69,95 +69,51 @@ def call_api(action: str, payload: dict = None) -> dict:
     return r.json()
 
 # ─── Business Logic ───────────────────────────────────────────────────────────
-def get_yumi_statuses() -> list:
+def get_statuses_for(keywords: list[str]) -> list[str]:
     # 1) list all active orders
     resp = call_api("shipment/list")
-    lst = resp.get("response", {}).get("list") or resp.get("response") or []
+    lst  = resp.get("response", {}).get("list") or resp.get("response") or []
     order_ids = [o["id"] for o in lst if "id" in o]
 
-    # 2) filter Yumi’s orders
-    yumi_ids = []
+    # 2) filter by these keywords
+    cust_ids = []
     for oid in order_ids:
         det = call_api("shipment/detail", {"id": oid}).get("response", {})
-        if isinstance(det, list):
-            det = det[0]
+        if isinstance(det, list): det = det[0]
         init = det.get("initiation", {})
-        loc = next(iter(init), None)
-        name = init.get(loc, {}).get("name", "").lower()
-        if "yumi" in name or "shu-yen" in name:
-            yumi_ids.append(oid)
+        loc  = next(iter(init), None)
+        name = init.get(loc,{}).get("name","").lower() if loc else ""
+        if any(kw in name for kw in keywords):
+            cust_ids.append(oid)
 
-    if not yumi_ids:
-        return ["📦 沒有 Yumi 的有效訂單"]
+    if not cust_ids:
+        return ["📦 沒有此客戶的有效訂單"]
 
     # 3) fetch tracking updates
     td = call_api("shipment/tracking", {
-        "keyword": ",".join(yumi_ids),
+        "keyword": ",".join(cust_ids),
         "rsync":   0,
         "timezone": TIMEZONE
     })
-    
+
+    # 4) format reply exactly as before, with translation & location
     lines = [f"📦 {time.strftime('%Y-%m-%d %H:%M', time.localtime())}"]
     for item in td.get("response", []):
-        oid = item.get("id")
-        num = item.get("number", "")
+        oid = item.get("id"); num = item.get("number","")
         events = item.get("list") or []
         if not events:
-            lines.append(f"{oid} ({num}) – 尚無追蹤紀錄")
-            continue
+            lines.append(f"{oid} ({num}) – 尚無追蹤紀錄"); continue
 
-                # pick the latest event
         ev = max(events, key=lambda e: int(e["timestamp"]))
+        loc_raw = ev.get("location","")
+        loc     = f"[{loc_raw.replace(',',', ')}] " if loc_raw else ""
+        ctx_lc  = ev.get("context","").strip().lower()
+        translated = TRANSLATIONS.get(ctx_lc, ev.get("context","").replace("Triple Eagle","system"))
+        tme     = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT",""))
+        lines.append(f"{oid} ({num}) → {loc}{translated}  @ {tme}")
 
-        # extract and format location
-        loc_raw = ev.get("location", "")
-        if loc_raw:
-            loc = loc_raw.replace(",", ", ")
-            loc_str = f"[{loc}] "
-        else:
-            loc_str = ""
-
-        # original English context
-        ctx = ev.get("context", "").strip()
-
-        # normalize and translate (fallback: swap Triple Eagle→system)
-        ctx_lc = ctx.lower()
-        translated = TRANSLATIONS.get(ctx_lc)
-        if not translated:
-            # replace any “Triple Eagle” mentions
-            translated = ctx.replace("Triple Eagle", "system")
-
-        # timestamp
-        tme = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT", ""))
-
-        # append final line in Traditional Chinese
-        # e.g. "U110236870 (…) → [Richmond, Canada] 已送達 @ …"
-        lines.append(f"{oid} ({num}) → {loc_str}{translated}  @ {tme}")
-
-
-    return lines    
-
-    # 4) format reply
-    lines = [f"📦 {time.strftime('%Y-%m-%d %H:%M', time.localtime())}"]
-    for item in td.get("response", []):
-        oid = item.get("id")
-        num = item.get("number", "")
-        events = item.get("list") or []
-        if not events:
-            lines.append(f"{oid} ({num}) – 尚無追蹤紀錄")
-            continue
-
-        # pick the latest event
-        ev = max(events, key=lambda e: int(e["timestamp"]))
-
-        # include location
-        location = ev.get("location", "")  # e.g. "[Concord,Canada]"
-        ctx      = ev.get("context", "")
-        tme      = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT", ""))
-
-        # build the line with location first
-        lines.append(f"{location} {oid} ({num}) → {ctx}  @ {tme}")
     return lines
+
 
 # ─── Flask Webhook ────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -181,9 +137,13 @@ def webhook():
             print(f"[Webhook] Received text: {text}")
 
             if text == "追蹤包裹":
-                print("[Webhook] Trigger matched, fetching statuses…")
-                reply_token = event["replyToken"]
-                messages = get_yumi_statuses()
+                group_id = event["source"]["groupId"]
+                keywords = CUSTOMER_FILTERS.get(group_id)
+                if not keywords:
+                    # not a recognized group, ignore
+                    return "OK", 200
+
+                messages = get_statuses_for(keywords)
                 print("[Webhook] Reply messages:", messages)
 
                 # Combine all lines into one message to avoid the 5-message limit
