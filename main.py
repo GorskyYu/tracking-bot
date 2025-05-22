@@ -112,7 +112,7 @@ def webhook():
                 print("[Webhook] Reply messages:", messages)
 
                 # Combine all lines into one message to avoid the 5-message limit
-                combined = "\n".join(messages)
+                combined = "\n\n".join(messages)
                 payload = {
                   "replyToken": reply_token,
                   "messages": [{"type": "text", "text": combined}]
