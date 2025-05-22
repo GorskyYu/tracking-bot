@@ -4,6 +4,7 @@ import hmac
 import hashlib
 import requests
 import json
+import base64
 from urllib.parse import quote
 from flask import Flask, request
 
@@ -15,13 +16,16 @@ TIMEZONE    = "America/Vancouver"
 
 # ─── Signature Generator ──────────────────────────────────────────────────────
 def generate_sign(params: dict, secret: str) -> str:
+    # Build encodeURIComponent-style querystring
     parts = []
     for k in sorted(params.keys()):
         v = params[k]
         parts.append(f"{k}={quote(str(v), safe='~')}")
     qs = "&".join(parts)
+
+    # HMAC-SHA256 and Base64-encode
     sig_bytes = hmac.new(secret.encode(), qs.encode(), hashlib.sha256).digest()
-    return requests.utils.b64encode(sig_bytes).decode()
+    return base64.b64encode(sig_bytes).decode('utf-8')
 
 # ─── TripleEagle API Caller ───────────────────────────────────────────────────
 def call_api(action: str, payload: dict = None) -> dict:
