@@ -177,20 +177,27 @@ def monday_webhook():
         return "OK", 200
 
     data = request.get_json()
-    print("[Monday] Payload:", json.dumps(data, ensure_ascii=False))
+    print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
 
-    # 1) Handle Monday’s initial URL verification
+    # Unwrap the event if it's wrapped
+    evt = data.get("event", data)
+
+    # 1️⃣ Handshake
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # 2) Extract item ID and new status
-    pulse_id  = data.get("pulseId") or data.get("itemId")
-    new_value = data.get("value", {}).get("label")
+    # 2️⃣ Extract the relevant fields
+    pulse_id   = evt.get("pulseId") or evt.get("itemId")
+    item_name  = evt.get("pulseName") or evt.get("itemName") or str(pulse_id)
+    new_value  = evt.get("value", {}).get("label")
 
+    print(f"[Monday] pulse_id={pulse_id}, item_name={item_name}, new_value={new_value}")
+
+    # 3️⃣ Only act on 國際運輸
     if new_value != "國際運輸" or not pulse_id:
         return "OK", 200
 
-    # 3) Query Monday’s API for the Client Name column on this item
+    # 4️⃣ Fetch Client Name via Monday API
     query = '''
     query ($itemId: [Int]) {
       items (ids: $itemId) {
@@ -201,48 +208,39 @@ def monday_webhook():
     }'''
     variables = {"itemId": int(pulse_id)}
     headers = {
-      "Content-Type": "application/json",
-      "Authorization": MONDAY_API_TOKEN
+      "Authorization": os.getenv("MONDAY_API_TOKEN"),
+      "Content-Type":  "application/json"
     }
-    resp = requests.post(
-      "https://api.monday.com/v2",
-      json={"query": query, "variables": variables},
-      headers=headers
-    )
-    data2 = resp.json()
+    resp = requests.post("https://api.monday.com/v2",
+                         json={"query": query, "variables": variables},
+                         headers=headers)
     client = None
     try:
-        client = data2["data"]["items"][0]["column_values"][0]["text"]
+        client = resp.json()["data"]["items"][0]["column_values"][0]["text"]
     except Exception as e:
-        print("[Monday API] failed to fetch Client Name:", e)
+        print("[Monday API] error getting Client Name:", e)
+        return "OK", 200
 
-    # 4) Map client → LINE group
+    # 5️⃣ Map client → LINE group
     CLIENT_TO_GROUP = {
       "Yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
       "Vicky": os.getenv("LINE_GROUP_ID_VICKY"),
     }
     group_id = CLIENT_TO_GROUP.get(client)
     if not group_id:
-        print(f"[Monday→LINE] unknown client '{client}', skipping.")
+        print(f"[Monday→LINE] no group for client '{client}'")
         return "OK", 200
 
-    # 5) Push the notification
-    item_name = data.get("pulseName") or data.get("itemName") or pulse_id
+    # 6️⃣ Push notification
     text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
-    push_payload = {
-      "to": group_id,
-      "messages": [{"type":"text","text":text}]
-    }
+    push_payload = {"to": group_id, "messages": [{"type":"text","text":text}]}
     headers2 = {
-      "Content-Type": "application/json",
-      "Authorization": f"Bearer {LINE_TOKEN}"
+      "Authorization": f"Bearer {LINE_TOKEN}",
+      "Content-Type":  "application/json"
     }
-    r2 = requests.post(
-      "https://api.line.me/v2/bot/message/push",
-      headers=headers2,
-      json=push_payload
-    )
-    print(f"[Monday→LINE] push to {client}: {r2.status_code}, {r2.text}")
+    r2 = requests.post("https://api.line.me/v2/bot/message/push",
+                       headers=headers2, json=push_payload)
+    print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
     return "OK", 200
 
