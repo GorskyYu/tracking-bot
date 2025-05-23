@@ -179,7 +179,7 @@ def webhook():
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # 1️⃣ Monday.com URL check
+    # 1️⃣ Monday.com URL‐validation
     if request.method == "GET":
         return "OK", 200
 
@@ -187,11 +187,11 @@ def monday_webhook():
     print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
     evt = data.get("event", data)
 
-    # 2️⃣ Initial handshake
+    # 2️⃣ Handshake challenge
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # 3️⃣ Extract sub-item and parent IDs + new status
+    # 3️⃣ Identify sub‐item and parent
     sub_id    = evt.get("pulseId") or evt.get("itemId")
     parent_id = evt.get("parentItemId")
     lookup_id = parent_id or sub_id
@@ -199,20 +199,19 @@ def monday_webhook():
     new_txt   = evt.get("value", {}).get("label", {}).get("text")
     print(f"[Monday] sub_id={sub_id}, parent_id={parent_id}, lookup_id={lookup_id}, new_txt={new_txt}")
 
-    # Only proceed for 國際運輸
     if new_txt != "國際運輸" or not lookup_id:
         return "OK", 200
 
-    # 4️⃣ GraphQL: fetch the parent item’s Client Name column
+    # 4️⃣ GraphQL: fetch only your Client Name column from the parent item
     gql = '''
-    query ($itemIds: [Int]!) {
-      items (ids: $itemIds) {
+    query ($itemIds: [ID!]!) {
+      items(ids: $itemIds) {
         column_values(ids: ["formula8__1"]) {
           text
         }
       }
     }'''
-    variables = {"itemIds": [int(lookup_id)]}
+    variables = {"itemIds": [str(lookup_id)]}
     resp = requests.post(
         "https://api.monday.com/v2",
         json={"query": gql, "variables": variables},
@@ -224,19 +223,20 @@ def monday_webhook():
     data2 = resp.json()
     print("[Monday API] response:", data2)
 
-    # 5️⃣ Extract Client Name
+    # 5️⃣ Pull out the client name text
     try:
         client = data2["data"]["items"][0]["column_values"][0]["text"]
     except Exception as e:
         print("[Monday API] error fetching Client Name:", e)
         return "OK", 200
 
-    # 6️⃣ Route and push
+    # 6️⃣ Route to LINE group
     group_id = CLIENT_TO_GROUP.get(client)
     if not group_id:
         print(f"[Monday→LINE] no mapping for client “{client}”, skipping.")
         return "OK", 200
 
+    # 7️⃣ Send push
     message = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
