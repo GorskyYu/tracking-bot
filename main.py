@@ -8,6 +8,9 @@ import base64
 from urllib.parse import quote
 from flask import Flask, request, jsonify
 
+from apscheduler.schedulers.background import BackgroundScheduler
+import threading
+
 
 # ─── Customer Mapping ──────────────────────────────────────────────────────────
 # Map each LINE group to the list of lowercase keywords you filter on
@@ -44,6 +47,13 @@ APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
 LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
 MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
 TIMEZONE    = "America/Vancouver"
+
+STATE_FILE = os.getenv("STATE_FILE", "last_seen.json")
+LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
+LINE_HEADERS = {
+    "Content-Type":  "application/json",
+    "Authorization": f"Bearer {LINE_TOKEN}"
+}
 
 # ─── Signature Generator ──────────────────────────────────────────────────────
 def generate_sign(params: dict, secret: str) -> str:
@@ -245,5 +255,54 @@ def monday_webhook():
 
     return "OK", 200
     
+# ─── Poller State Helpers & Job ───────────────────────────────────────────────
+def load_state():
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+def check_te_updates():
+    """Poll TE API every interval; push only newly changed statuses."""
+    state = load_state()
+    for group_id, keywords in CUSTOMER_FILTERS.items():
+        lines = get_statuses_for(keywords)
+        # skip header line[0], parse each “… @ timestamp”
+        for line in lines[1:]:
+            parts = line.rsplit("@", 1)
+            if len(parts) != 2:
+                continue
+            order_key = parts[0]
+            ts = parts[1].strip()
+            if state.get(order_key) != ts:
+                state[order_key] = ts
+                payload = {
+                    "to": group_id,
+                    "messages": [{"type": "text", "text": line}]
+                }
+                requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+    save_state(state)    
+    
 if __name__ == "__main__":
+    # ─── start the TE poller ──────────────────────────────────────────────
+    sched = BackgroundScheduler(timezone="America/Vancouver")
+    # run every 30 minutes, Mon–Sat, between 04:00 (7 am ET) and 19:00 (7 pm PT)
+    sched.add_job(
+        check_te_updates,
+        trigger="cron",
+        day_of_week="mon-sat",
+        hour="4-19",
+        minute="0,30"
+    )
+    sched.start()
+
+    # on some platforms APScheduler needs this to keep the main thread alive
+    threading.Event().wait()
+
+    # ─── start Flask ───────────────────────────────────────────────────────
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
