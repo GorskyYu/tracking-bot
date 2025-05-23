@@ -5,11 +5,18 @@ import hashlib
 import requests
 import json
 import base64
+import redis
+import logging
 from urllib.parse import quote
 from flask import Flask, request, jsonify
-
 from apscheduler.schedulers.background import BackgroundScheduler
-import threading
+
+# ─── Structured Logging Setup ─────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+log = logging.getLogger(__name__)
 
 
 # ─── Customer Mapping ──────────────────────────────────────────────────────────
@@ -45,10 +52,16 @@ CLIENT_TO_GROUP = {
 APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
 APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
 LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
+
+REDIS_URL = os.getenv("REDIS_URL")
+if not REDIS_URL:
+    raise RuntimeError("REDIS_URL environment variable is required for state persistence")
+r = redis.from_url(REDIS_URL, decode_responses=True)
+
 MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
 TIMEZONE    = "America/Vancouver"
 
-STATE_FILE = os.getenv("STATE_FILE", "last_seen.json")
+#STATE_FILE = os.getenv("STATE_FILE", "last_seen.json")
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 LINE_HEADERS = {
     "Content-Type":  "application/json",
@@ -137,12 +150,14 @@ app = Flask(__name__)
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     # Log incoming methods
-    print(f"[Webhook] Received {request.method} to /webhook")
+    #print(f"[Webhook] Received {request.method} to /webhook")
+    log.info(f"Received {request.method} to /webhook")
     if request.method == "GET":
         return "OK", 200
 
     data = request.get_json()
-    print("[Webhook] Payload:", json.dumps(data, ensure_ascii=False))
+    #print("[Webhook] Payload:", json.dumps(data, ensure_ascii=False))
+    log.info(f"Payload: {json.dumps(data, ensure_ascii=False)}")
 
     for event in data.get("events", []):
         # Only handle text messages
@@ -150,22 +165,22 @@ def webhook():
             group_id = event["source"].get("groupId")
             text     = event["message"]["text"].strip()
             
-            print(f"[Debug] incoming groupId: {group_id!r}")
-            print(f"[Debug] CUSTOMER_FILTERS keys: {list(CUSTOMER_FILTERS.keys())!r}")
+            #print(f"[Debug] incoming groupId: {group_id!r}")
+            #print(f"[Debug] CUSTOMER_FILTERS keys: {list(CUSTOMER_FILTERS.keys())!r}")
             
-            print(f"[Webhook] Detected groupId: {group_id}, text: {text}")
+            #print(f"[Webhook] Detected groupId: {group_id}, text: {text}")
 
             if text == "追蹤包裹":
                 keywords = CUSTOMER_FILTERS.get(group_id)
                 if not keywords:
-                    print(f"[Webhook] No keywords configured for group {group_id}, skipping.")
+                    #print(f"[Webhook] No keywords configured for group {group_id}, skipping.")
                     continue
 
                 # Now safe to extract reply_token
                 reply_token = event["replyToken"]
-                print("[Webhook] Trigger matched, fetching statuses…")
+                #print("[Webhook] Trigger matched, fetching statuses…")
                 messages = get_statuses_for(keywords)
-                print("[Webhook] Reply messages:", messages)
+                #print("[Webhook] Reply messages:", messages)
 
                 # Combine lines into one multi-line text
                 combined = "\n\n".join(messages)
@@ -183,7 +198,8 @@ def webhook():
                     headers=headers,
                     json=payload
                 )
-                print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
+                #print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
+                log.info(f"LINE reply status={resp.status_code}, body={resp.text}")
 
     return "OK", 200
     
@@ -237,7 +253,8 @@ def monday_webhook():
 
     group_id = CLIENT_TO_GROUP.get(key)
     if not group_id:
-        print(f"[Monday→LINE] no mapping for “{client}” → {key}, skipping.")
+        #print(f"[Monday→LINE] no mapping for “{client}” → {key}, skipping.")
+        log.warning(f"No mapping for client={client} key={key}, skipping.")
         return "OK", 200
 
     item_name = evt.get("pulseName") or str(lookup_id)
@@ -251,47 +268,54 @@ def monday_webhook():
       },
       json={"to": group_id, "messages":[{"type":"text","text":message}]}
     )
-    print(f"[Monday→LINE] sent to {client}: {push.status_code}", push.text)
+    #print(f"[Monday→LINE] sent to {client}: {push.status_code}", push.text)
+    log.info(f"Monday→LINE push status={push.status_code}, body={push.text}")
 
     return "OK", 200
     
 # ─── Poller State Helpers & Job ───────────────────────────────────────────────
+# ─── Helpers for parsing batch lines ─────────────────────────────────────────
+def extract_order_key(line: str) -> str:
+    return line.rsplit("@",1)[0].strip()
+
+def extract_timestamp(line: str) -> str:
+    return line.rsplit("@",1)[1].strip()
+
 def load_state():
-    try:
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
+    """Fetch the JSON-encoded map of order_key→timestamp from Redis."""
+    data = r.get("last_seen")
+    return json.loads(data) if data else {}
 
 def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+    """Persist the map of order_key→timestamp back to Redis."""
+    r.set("last_seen", json.dumps(state))
 
 def check_te_updates():
     """Poll TE API every interval; push only newly changed statuses."""
     state = load_state()
     for group_id, keywords in CUSTOMER_FILTERS.items():
         lines = get_statuses_for(keywords)
-        # skip header line[0], parse each “… @ timestamp”
+        new_lines = []
         for line in lines[1:]:
-            parts = line.rsplit("@", 1)
-            if len(parts) != 2:
-                continue
-            order_key = parts[0]
-            ts = parts[1].strip()
-            if state.get(order_key) != ts:
-                state[order_key] = ts
-                payload = {
-                    "to": group_id,
-                    "messages": [{"type": "text", "text": line}]
-                }
-                requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-    save_state(state)    
-    
+            ts = extract_timestamp(line)
+            key = extract_order_key(line)
+            if state.get(key) != ts:
+                state[key] = ts
+                new_lines.append(line)
+        if new_lines:
+            payload = {
+                "to": group_id,
+                "messages": [{
+                    "type": "text",
+                    "text": "\n\n".join(new_lines)
+                }]
+            }
+            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+    save_state(state)   
+
+# ─── Poller + Scheduler Bootstrap ────────────────────────────────────────────
 if __name__ == "__main__":
-    # ─── start the TE poller ──────────────────────────────────────────────
     sched = BackgroundScheduler(timezone="America/Vancouver")
-    # run every 30 minutes, Mon–Sat, between 04:00 (7 am ET) and 19:00 (7 pm PT)
     sched.add_job(
         check_te_updates,
         trigger="cron",
@@ -300,9 +324,5 @@ if __name__ == "__main__":
         minute="0,30"
     )
     sched.start()
-
-    # on some platforms APScheduler needs this to keep the main thread alive
-    threading.Event().wait()
-
-    # ─── start Flask ───────────────────────────────────────────────────────
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
+    log.info("Scheduler started")
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
