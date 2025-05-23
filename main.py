@@ -179,7 +179,7 @@ def webhook():
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # 1️⃣ URL‐validation ping from Monday.com
+    # 1️⃣ Allow Monday.com’s URL check
     if request.method == "GET":
         return "OK", 200
 
@@ -191,41 +191,48 @@ def monday_webhook():
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # 3️⃣ Which sub‐item (and parent) changed?
-    sub_id    = evt.get("pulseId") or evt.get("itemId")
-    parent_id = evt.get("parentItemId")
-    lookup_id = parent_id or sub_id
-    item_name = evt.get("pulseName") or evt.get("itemName") or str(sub_id)
-    new_txt   = evt.get("value", {}).get("label", {}).get("text")
-    print(f"[Monday] sub_id={sub_id}, parent_id={parent_id}, lookup_id={lookup_id}, new_txt={new_txt}")
+    # 3️⃣ Extract sub‐item & parent IDs, new status
+    sub_id     = evt.get("pulseId") or evt.get("itemId")
+    parent_id  = evt.get("parentItemId")
+    parent_bid = evt.get("parentItemBoardId")
+    lookup_id  = parent_id or sub_id
+    item_name  = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
+    new_txt    = evt.get("value", {}).get("label", {}).get("text")
+    print(f"[Monday] sub_id={sub_id}, parent_id={parent_id}, parent_bid={parent_bid}, new_txt={new_txt}")
 
-    if new_txt != "國際運輸" or not lookup_id:
+    # Only care about 國際運輸
+    if new_txt != "國際運輸" or not lookup_id or not parent_bid:
         return "OK", 200
 
-    # 4️⃣ GraphQL: fetch only the Client Name column on the parent
+    # 4️⃣ GraphQL: fetch the Client Name column from the parent board
     gql = '''
-    query ($ids: [ID!]!) {
-      items (ids: $ids) {
-        column_values (ids: ["formula8__1"]) {
-          text
+    query ($boardIds: [Int]!, $itemIds: [Int]!) {
+      boards(ids: $boardIds) {
+        items(ids: $itemIds) {
+          column_values(ids: ["formula8__1"]) {
+            text
+          }
         }
       }
     }'''
-    variables = {"ids": [str(lookup_id)]}
+    vars = {
+      "boardIds": [int(parent_bid)],
+      "itemIds":  [int(lookup_id)]
+    }
     resp = requests.post(
         "https://api.monday.com/v2",
-        json={"query": gql, "variables": variables},
+        json={"query": gql, "variables": vars},
         headers={
           "Authorization": MONDAY_API_TOKEN,
           "Content-Type":  "application/json"
         }
     )
     data2 = resp.json()
-    print("[Monday API] response:", data2)
+    print("[Monday API] parent lookup:", data2)
 
-    # 5️⃣ Extract Client Name text
+    # 5️⃣ Pull out the client name
     try:
-        client = data2["data"]["items"][0]["column_values"][0]["text"]
+        client = data2["data"]["boards"][0]["items"][0]["column_values"][0]["text"]
     except Exception as e:
         print("[Monday API] error fetching Client Name:", e)
         return "OK", 200
@@ -248,7 +255,6 @@ def monday_webhook():
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
     return "OK", 200
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
