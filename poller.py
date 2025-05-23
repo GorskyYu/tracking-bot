@@ -51,8 +51,16 @@ def main():
     initial_run = state_data is None
     state = json.loads(state_data) if state_data else {}
     
-    # Normalize any stored timestamps to ints
-    state = { oid: int(ts) for oid, ts in state.items() }
+    # Normalize stored timestamps to ints, ignoring any non‐numeric entries
+    clean_state = {}
+    for oid, ts in state.items():
+        try:
+            clean_state[oid] = int(ts)
+        except (ValueError, TypeError):
+            # skip entries that aren't pure integers
+            continue
+    state = clean_state
+
 
     updates = {}
 
