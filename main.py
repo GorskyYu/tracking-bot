@@ -150,13 +150,13 @@ app = Flask(__name__)
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     # Log incoming methods
-    #print(f"[Webhook] Received {request.method} to /webhook")
+    print(f"[Webhook] Received {request.method} to /webhook")
     log.info(f"Received {request.method} to /webhook")
     if request.method == "GET":
         return "OK", 200
 
     data = request.get_json()
-    #print("[Webhook] Payload:", json.dumps(data, ensure_ascii=False))
+    print("[Webhook] Payload:", json.dumps(data, ensure_ascii=False))
     log.info(f"Payload: {json.dumps(data, ensure_ascii=False)}")
 
     for event in data.get("events", []):
@@ -165,22 +165,22 @@ def webhook():
             group_id = event["source"].get("groupId")
             text     = event["message"]["text"].strip()
             
-            #print(f"[Debug] incoming groupId: {group_id!r}")
-            #print(f"[Debug] CUSTOMER_FILTERS keys: {list(CUSTOMER_FILTERS.keys())!r}")
+            print(f"[Debug] incoming groupId: {group_id!r}")
+            print(f"[Debug] CUSTOMER_FILTERS keys: {list(CUSTOMER_FILTERS.keys())!r}")
             
-            #print(f"[Webhook] Detected groupId: {group_id}, text: {text}")
+            print(f"[Webhook] Detected groupId: {group_id}, text: {text}")
 
             if text == "追蹤包裹":
                 keywords = CUSTOMER_FILTERS.get(group_id)
                 if not keywords:
-                    #print(f"[Webhook] No keywords configured for group {group_id}, skipping.")
+                    print(f"[Webhook] No keywords configured for group {group_id}, skipping.")
                     continue
 
                 # Now safe to extract reply_token
                 reply_token = event["replyToken"]
-                #print("[Webhook] Trigger matched, fetching statuses…")
+                print("[Webhook] Trigger matched, fetching statuses…")
                 messages = get_statuses_for(keywords)
-                #print("[Webhook] Reply messages:", messages)
+                print("[Webhook] Reply messages:", messages)
 
                 # Combine lines into one multi-line text
                 combined = "\n\n".join(messages)
@@ -198,7 +198,7 @@ def webhook():
                     headers=headers,
                     json=payload
                 )
-                #print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
+                print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
                 log.info(f"LINE reply status={resp.status_code}, body={resp.text}")
 
     return "OK", 200
@@ -253,7 +253,7 @@ def monday_webhook():
 
     group_id = CLIENT_TO_GROUP.get(key)
     if not group_id:
-        #print(f"[Monday→LINE] no mapping for “{client}” → {key}, skipping.")
+        print(f"[Monday→LINE] no mapping for “{client}” → {key}, skipping.")
         log.warning(f"No mapping for client={client} key={key}, skipping.")
         return "OK", 200
 
@@ -268,7 +268,7 @@ def monday_webhook():
       },
       json={"to": group_id, "messages":[{"type":"text","text":message}]}
     )
-    #print(f"[Monday→LINE] sent to {client}: {push.status_code}", push.text)
+    print(f"[Monday→LINE] sent to {client}: {push.status_code}", push.text)
     log.info(f"Monday→LINE push status={push.status_code}, body={push.text}")
 
     return "OK", 200
