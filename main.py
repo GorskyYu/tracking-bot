@@ -192,33 +192,27 @@ def monday_webhook():
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # ③ Extract IDs and new status
+    # ③ Extract sub-item or parent item ID + new status
     sub_id    = evt.get("pulseId") or evt.get("itemId")
     parent_id = evt.get("parentItemId")
     lookup_id = parent_id or sub_id
-    board_id  = evt.get("boardId")
     new_txt   = evt.get("value", {}).get("label", {}).get("text")
-    print(f"[Monday] lookup_id={lookup_id}, board_id={board_id}, new_txt={new_txt}")
+    print(f"[Monday] lookup_id={lookup_id}, new_txt={new_txt}")
 
-    # Only trigger on 國際運輸
-    if new_txt != "國際運輸" or not lookup_id or not board_id:
+    # Only trigger when status flips to 國際運輸
+    if new_txt != "國際運輸" or not lookup_id:
         return "OK", 200
 
-    # ④ GraphQL query for just the Client Name column’s display_value
+    # ④ GraphQL: fetch the single “Client Name” column’s display_value
     gql = '''
-    query ($boardIds: [ID!]!, $itemIds: [ID!]!) {
-      boards(ids: $boardIds) {
-        items(ids: $itemIds) {
-          column_values(ids: ["formula8__1"]) {
-            display_value
-          }
+    query ($itemIds: [Int!]!) {
+      items(ids: $itemIds) {
+        column_values(ids: ["formula8__1"]) {
+          display_value
         }
       }
     }'''
-    variables = {
-        "boardIds": [str(board_id)],
-        "itemIds":  [str(lookup_id)]
-    }
+    variables = {"itemIds": [int(lookup_id)]}
 
     resp = requests.post(
         "https://api.monday.com/v2",
@@ -231,9 +225,9 @@ def monday_webhook():
     data2 = resp.json()
     print("[Monday API] response:", data2)
 
-    # ⑤ Extract the display_value
+    # ⑤ Extract the client’s display_value
     try:
-        cvs    = data2["data"]["boards"][0]["items"][0]["column_values"]
+        cvs    = data2["data"]["items"][0]["column_values"]
         client = (cvs[0].get("display_value") or "").strip()
     except Exception as e:
         print("[Monday API] error parsing display_value:", e)
@@ -247,7 +241,8 @@ def monday_webhook():
         return "OK", 200
 
     # ⑦ Push the notification
-    message = f"📦 {evt.get('pulseName') or evt.get('itemName') or lookup_id} 已送往機場，準備進行國際運輸。"
+    item_name = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
+    message   = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
         headers={
@@ -259,6 +254,7 @@ def monday_webhook():
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
     return "OK", 200
+
     
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
