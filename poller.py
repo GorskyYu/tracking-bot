@@ -51,17 +51,33 @@ def main():
     initial_run = state_data is None
     state = json.loads(state_data) if state_data else {}
     
-    # Normalize stored timestamps to ints, ignoring any non‐numeric entries
-    clean_state = {}
-    for oid, ts in state.items():
-        try:
-            clean_state[oid] = int(ts)
-        except (ValueError, TypeError):
-            # skip entries that aren't pure integers
-            continue
-    state = clean_state
+    # 2) If this is the VERY FIRST run, seed state with the current human-status text
+    if initial_run:
+        log("Initial run: seeding status text, no pushes")
+        # For each group, fetch the IDs and their current status
+        for group_id, keywords in CUSTOMER_FILTERS.items():
+            lines = get_statuses_for(keywords)
+            oids  = [ID_RE.match(l).group(1) for l in lines[1:]]
+            if not oids:
+                continue
+            resp = call_api("shipment/tracking", {
+                "keyword": ",".join(oids),
+                "rsync":   0,
+                "timezone": TIMEZONE
+            })
+            for item in resp.get("response", []):
+                # find the latest event
+                ev     = max(item["list"], key=lambda e: int(e["timestamp"]))
+                ctx_lc = ev.get("context","").strip().lower()
+                human  = TRANSLATIONS.get(ctx_lc, ev.get("context","").replace("Triple Eagle","system"))
+                # seed with the human status text
+                state[str(item["id"])] = human
 
+        # write it back and exit, no pushes
+        r.set("last_seen", json.dumps(state))
+        return
 
+    # 3) Normal run: compare human status text and push only on change
     updates = {}
 
     # For each group, fetch its shipments
@@ -101,21 +117,18 @@ def main():
             tme      = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT",""))
             line     = f"{oid} ({num}) → {loc}{human}  @ {tme}"
 
-            # Only include if this event is strictly newer
-            if state.get(oid, 0) < ts_raw:
-                state[oid] = ts_raw
+            # Only include if the status text has changed
+            last_status = state.get(oid, "")
+            if last_status != human:
+                # record the new status
+                state[oid] = human
                 new_lines.append(line)
 
         if new_lines:
             updates[group_id] = new_lines
 
     # Persist updated state back to Redis
-    r.set("last_seen", json.dumps(state))
-    
-    # On our very first run, seed only—no pushes
-    if initial_run:
-        log("Initial run: state seeded, no pushes")
-        return    
+    r.set("last_seen", json.dumps(state)) 
 
     # Push batched updates for each group
     if not updates:
