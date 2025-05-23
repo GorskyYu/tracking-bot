@@ -170,77 +170,93 @@ def webhook():
     return "OK", 200
     
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
+from flask import Flask, request, jsonify
+import os, json, requests
+
+app = Flask(__name__)
+MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
+LINE_TOKEN       = os.getenv("LINE_TOKEN")
+
+# Map the two allowed client texts to their LINE group IDs
+CLIENT_TO_GROUP = {
+    "Yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
+    "Vicky": os.getenv("LINE_GROUP_ID_VICKY"),
+}
+
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # 1️⃣ Respond to Monday’s URL check
+    # 1️⃣ Allow Monday’s GET check
     if request.method == "GET":
         return "OK", 200
 
     data = request.get_json()
     print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
 
-    # Unwrap if it’s under “event”
+    # Unwrap if wrapped under "event"
     evt = data.get("event", data)
 
-    # 2️⃣ Handle challenge handshake
+    # 2️⃣ Handle the initial challenge
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # 3️⃣ Extract the changed item and new status
+    # 3️⃣ Extract item and status
     pulse_id  = evt.get("pulseId") or evt.get("itemId")
     item_name = evt.get("pulseName") or evt.get("itemName") or str(pulse_id)
     new_value = evt.get("value", {}).get("label", {}).get("text")
     print(f"[Monday] pulse_id={pulse_id}, item_name={item_name}, new_value={new_value}")
 
-    # Only react when it actually changed to 國際運輸
+    # Only continue for 國際運輸
     if new_value != "國際運輸" or not pulse_id:
         return "OK", 200
 
-    # 4️⃣ Fetch the “Client Name” column via Monday’s GraphQL API
-    query = '''
-      query ($itemId: [Int]) {
-        items(ids: $itemId) {
-          column_values(ids: ["Client Name"]) {
-            text
-          }
+    # 4️⃣ Fetch just the Client Name column (ID = formula8__1)
+    gql = '''
+    query ($itemId: [Int]) {
+      items (ids: $itemId) {
+        column_values (ids: ["formula8__1"]) {
+          text
         }
-      }'''
-    variables = {"itemId": int(pulse_id)}
+      }
+    }'''
+    vars = {"itemId": int(pulse_id)}
     resp = requests.post(
         "https://api.monday.com/v2",
-        json={"query": query, "variables": variables},
+        json={"query": gql, "variables": vars},
         headers={
           "Authorization": MONDAY_API_TOKEN,
           "Content-Type":  "application/json"
         }
     )
-    client = None
+    data2 = resp.json()
+    print("[Monday API] response:", data2)
+
+    # 5️⃣ Pull the Client Name text
     try:
-        client = resp.json()["data"]["items"][0]["column_values"][0]["text"]
+        client = data2["data"]["items"][0]["column_values"][0]["text"]
     except Exception as e:
         print("[Monday API] error fetching Client Name:", e)
         return "OK", 200
 
-    # 5️⃣ Determine which LINE group to notify
+    # 6️⃣ Look up the LINE group for this client
     group_id = CLIENT_TO_GROUP.get(client)
     if not group_id:
-        print(f"[Monday→LINE] unknown client “{client}” – skipping")
+        print(f"[Monday→LINE] no mapping for client “{client}” – skipping.")
         return "OK", 200
 
-    # 6️⃣ Push the notification
+    # 7️⃣ Send the push notification
     text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
-    push_payload = {"to": group_id, "messages": [{"type": "text", "text": text}]}
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
         headers={
           "Authorization": f"Bearer {LINE_TOKEN}",
           "Content-Type":  "application/json"
         },
-        json=push_payload
+        json={"to": group_id, "messages":[{"type":"text","text":text}]}
     )
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
     return "OK", 200
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
