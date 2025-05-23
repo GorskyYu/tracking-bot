@@ -179,84 +179,71 @@ def webhook():
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # 1️⃣ URL validation ping
     if request.method == "GET":
         return "OK", 200
 
-    data = request.get_json()
-    print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
-    evt = data.get("event", data)
+    data     = request.get_json()
+    evt      = data.get("event", data)
+    sub_id   = evt.get("pulseId") or evt.get("itemId")
+    parent_id= evt.get("parentItemId")
+    lookup_id= parent_id or sub_id
+    board_id = evt.get("boardId")
+    item_name= evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
+    new_txt  = evt.get("value", {}).get("label", {}).get("text")
 
-    # 2️⃣ Challenge handshake
-    if "challenge" in data:
-        return jsonify({"challenge": data["challenge"]}), 200
-
-    # 3️⃣ Extract IDs and new status
-    sub_id    = evt.get("pulseId") or evt.get("itemId")
-    parent_id = evt.get("parentItemId")
-    lookup_id = parent_id or sub_id
-    item_name = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
-    new_txt   = evt.get("value", {}).get("label", {}).get("text")
-    print(f"[Monday] lookup_id={lookup_id}, new_txt={new_txt}")
-
-    # only proceed for 國際運輸
-    if new_txt != "國際運輸" or not lookup_id:
+    print(f"[Monday] board={board_id}, lookup_id={lookup_id}, new_txt={new_txt}")
+    if new_txt != "國際運輸" or not lookup_id or not board_id:
         return "OK", 200
 
-    # 4️⃣ GraphQL: ask the items root for both possible client columns
     gql = '''
-    query ($itemIds: [ID!]!) {
-      items(ids: $itemIds) {
-        column_values(ids: ["status_18__1","status_11__1"]) {
-          id
-          text
+    query ($boardIds: [ID!]!, $itemIds: [ID!]!) {
+      boards(ids: $boardIds) {
+        items(ids: $itemIds) {
+          column_values(ids: ["formula8__1"]) {
+            text
+          }
         }
       }
     }'''
-    variables = {"itemIds": [str(lookup_id)]}
+    variables = {"boardIds":[str(board_id)], "itemIds":[str(lookup_id)]}
     resp = requests.post(
-        "https://api.monday.com/v2",
-        json={"query": gql, "variables": variables},
-        headers={
-          "Authorization": MONDAY_API_TOKEN,
-          "Content-Type":  "application/json"
-        }
+      "https://api.monday.com/v2",
+      json={"query": gql, "variables": variables},
+      headers={
+        "Authorization": MONDAY_API_TOKEN,
+        "Content-Type":  "application/json"
+      }
     )
     data2 = resp.json()
-    print("[Monday API] response:", data2)
+    print("[Monday API] board→item lookup:", data2)
 
-    # 5️⃣ Pull both columns out and pick the one with non-empty text
-    client = None
     try:
-        cvs = data2["data"]["items"][0]["column_values"]
-        for cv in cvs:
-            txt = (cv.get("text") or "").strip()
-            if txt:
-                client = txt
-                break
+        cols   = data2["data"]["boards"][0]["items"][0]["column_values"]
+        client = (cols[0]["text"] or "").strip()
     except Exception as e:
-        print("[Monday API] parsing error:", e)
+        print("[Monday API] error fetching Client Name:", e)
         return "OK", 200
 
-    if not client or client not in CLIENT_TO_GROUP:
-        print(f"[Monday→LINE] no valid client name found in {[cv['id'] for cv in cvs]}, skipping.")
+    # normalize & map
+    client_key = client.lower()
+    group_map  = {k.lower():v for k,v in CLIENT_TO_GROUP.items()}
+    group_id   = group_map.get(client_key)
+    if not group_id:
+        print(f"[Monday→LINE] no mapping for “{client}” (as “{client_key}”), skipping.")
         return "OK", 200
 
-    # 6️⃣ Push to the correct LINE group
-    group_id = CLIENT_TO_GROUP[client]
-    message  = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
+    message = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
     r2 = requests.post(
-        "https://api.line.me/v2/bot/message/push",
-        headers={
-          "Authorization": f"Bearer {LINE_TOKEN}",
-          "Content-Type":  "application/json"
-        },
-        json={"to": group_id, "messages":[{"type":"text","text":message}]}
+      "https://api.line.me/v2/bot/message/push",
+      headers={
+        "Authorization": f"Bearer {LINE_TOKEN}",
+        "Content-Type":  "application/json"
+      },
+      json={"to": group_id, "messages":[{"type":"text","text":message}]}
     )
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
     return "OK", 200
-
 
 
 if __name__ == "__main__":
