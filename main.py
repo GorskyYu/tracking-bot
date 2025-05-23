@@ -236,16 +236,16 @@ def monday_webhook():
         print("[Monday API] error parsing column_values:", e)
         return "OK", 200
 
-    # 6️⃣ Identify Client Name by matching text against your CLIENT_TO_GROUP keys
-    client = None
-    for cv in cols:
-        txt = cv.get("text") or ""
-        if txt in CLIENT_TO_GROUP:
-            client = txt
-            break
+    # 6️⃣ Identify Client Name from the parent-item column formula8__1
+    client_text = next(
+        (cv.get("text") for cv in cols if cv.get("id") == "formula8__1"),
+        None
+    )
+    print(f"[Monday→LINE] client_text from formula8__1: {client_text!r}")
+    client = CLIENT_TO_GROUP.get(client_text)
 
     if not client:
-        print("[Monday→LINE] no Client Name found in column_values, skipping.")
+        print(f"[Monday→LINE] no mapping for client_text={client_text!r}, skipping.")
         return "OK", 200
 
     # 7️⃣ Push to the correct LINE group
