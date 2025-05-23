@@ -8,6 +8,9 @@ import base64
 from urllib.parse import quote
 from flask import Flask, request, jsonify
 
+# LINE group IDs for your two customers
+YUMI_GROUP_ID  = os.getenv("LINE_GROUP_ID_YUMI")
+VICKY_GROUP_ID = os.getenv("LINE_GROUP_ID_VICKY")
 
 # ─── Customer Mapping ──────────────────────────────────────────────────────────
 # Map each LINE group to the list of lowercase keywords you filter on
@@ -15,10 +18,6 @@ CUSTOMER_FILTERS = {
     YUMI_GROUP_ID:  ["yumi",    "shu-yen"],
     VICKY_GROUP_ID: ["vicky",   "chia-chi"],
 }
-
-# LINE group IDs for your two customers
-YUMI_GROUP_ID  = os.getenv("LINE_GROUP_ID_YUMI")
-VICKY_GROUP_ID = os.getenv("LINE_GROUP_ID_VICKY")
 
 # ─── Status Translations ──────────────────────────────────────────────────────
 TRANSLATIONS = {
