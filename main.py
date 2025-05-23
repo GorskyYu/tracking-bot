@@ -201,67 +201,72 @@ def monday_webhook():
     if request.method == "GET":
         return "OK", 200
 
-    payload = request.get_json()
-    print("[Monday] Raw payload:", json.dumps(payload, ensure_ascii=False))
+    data = request.get_json()
+    print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
+    evt = data.get("event", data)
 
-    # 2️⃣ Challenge handshake
-    if "challenge" in payload:
-        return jsonify({"challenge": payload["challenge"]}), 200
+    # 2️⃣ Handle Monday’s initial challenge
+    if "challenge" in data:
+        return jsonify({"challenge": data["challenge"]}), 200
 
-    evt       = payload.get("event", payload)
+    # 3️⃣ Extract IDs and new status
     sub_id    = evt.get("pulseId") or evt.get("itemId")
     parent_id = evt.get("parentItemId")
     lookup_id = parent_id or sub_id
-    new_txt   = evt.get("value", {}).get("label", {}).get("text")
     item_name = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
-    print(f"[Monday] lookup_id={lookup_id}, new_txt={new_txt!r}")
+    new_txt   = evt.get("value", {}).get("label", {}).get("text")
+    print(f"[Monday] lookup_id={lookup_id}, new_txt={new_txt}")
 
-    # Only fire on status = 國際運輸
+    # Only proceed when status flips to 國際運輸
     if new_txt != "國際運輸" or not lookup_id:
         return "OK", 200
 
-    # 3️⃣ Fetch all column_values (including 'value') via GraphQL
+    # 4️⃣ GraphQL: fetch every column_value id+text for that item
     gql = '''
-    query ($ids: [ID!]!) {
-      items(ids: $ids) {
+    query ($itemIds: [ID!]!) {
+      items(ids: $itemIds) {
         column_values {
           id
           text
-          value
         }
       }
     }'''
+    variables = {"itemIds": [str(lookup_id)]}
     resp = requests.post(
         "https://api.monday.com/v2",
+        json={"query": gql, "variables": variables},
         headers={
             "Authorization": MONDAY_API_TOKEN,
             "Content-Type":  "application/json"
-        },
-        json={"query": gql, "variables": {"ids": [str(lookup_id)]}}
+        }
     )
     data2 = resp.json()
     print("[Monday API] response:", data2)
 
-    cols = data2["data"]["items"][0]["column_values"]
-    # 4️⃣ Debug: show each column’s text & raw JSON value
-    for cv in cols:
-        print(f"  • id={cv['id']!r}, text={cv.get('text')!r}, value={cv.get('value')!r}")
-
-    # 5️⃣ Extract your Client Name from the formula column (formula8__1)
-    raw = next((cv.get("value") for cv in cols if cv.get("id") == "formula8__1"), None)
+    # 5️⃣ DEBUG: print full id/text dump
     try:
-        client_name = json.loads(raw) if raw else None
-    except json.JSONDecodeError:
-        client_name = raw
-    print(f"[Monday→LINE] formula8__1 → client_name={client_name!r}")
-
-    # 6️⃣ Map to your LINE group
-    group_id = CLIENT_TO_GROUP.get(client_name)
-    if not group_id:
-        print(f"[Monday→LINE] no mapping for {client_name!r}, skipping.")
+        cols = data2["data"]["items"][0]["column_values"]
+        print("[Monday API] full column_values dump:")
+        for cv in cols:
+            print(f"  - id: {cv.get('id')!r}, text: {cv.get('text')!r}")
+    except Exception as e:
+        print("[Monday API] error parsing column_values:", e)
         return "OK", 200
 
-    # 7️⃣ Push to LINE
+    # 6️⃣ Identify Client Name by matching text against your CLIENT_TO_GROUP keys
+    client = None
+    for cv in cols:
+        txt = cv.get("text") or ""
+        if txt in CLIENT_TO_GROUP:
+            client = txt
+            break
+
+    if not client:
+        print("[Monday→LINE] no Client Name found in column_values, skipping.")
+        return "OK", 200
+
+    # 7️⃣ Push to the correct LINE group
+    group_id = CLIENT_TO_GROUP[client]
     message = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
@@ -271,8 +276,10 @@ def monday_webhook():
         },
         json={"to": group_id, "messages":[{"type":"text","text":message}]}
     )
-    print(f"[Monday→LINE] pushed to {client_name}: {r2.status_code}, {r2.text}")
+    print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
+
     return "OK", 200
+
     
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
