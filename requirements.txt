@@ -5,6 +5,7 @@ charset-normalizer==3.4.2
 click==8.2.1
 colorama==0.4.6
 Flask==3.1.1
+gunicorn==23.0.0
 idna==3.10
 iniconfig==2.1.0
 itsdangerous==2.2.0
@@ -14,6 +15,7 @@ packaging==25.0
 pluggy==1.6.0
 pytest==8.3.5
 pytz==2025.2
+redis==6.1.0
 requests==2.32.3
 tzdata==2025.2
 tzlocal==5.3.1
