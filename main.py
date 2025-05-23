@@ -180,81 +180,82 @@ def webhook():
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # ① URL validation ping
     if request.method == "GET":
         return "OK", 200
 
     data = request.get_json()
-    print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
-    evt = data.get("event", data)
-
-    # ② Challenge handshake
+    evt  = data.get("event", data)
+    # respond to Monday’s handshake
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # ③ Extract sub-item or parent item ID + new status
     sub_id    = evt.get("pulseId") or evt.get("itemId")
     parent_id = evt.get("parentItemId")
     lookup_id = parent_id or sub_id
     new_txt   = evt.get("value", {}).get("label", {}).get("text")
-    print(f"[Monday] lookup_id={lookup_id}, new_txt={new_txt}")
 
-    # Only trigger when status flips to 國際運輸
+    # only act when Location flips to 國際運輸
     if new_txt != "國際運輸" or not lookup_id:
         return "OK", 200
 
-    # ④ GraphQL: fetch the single “Client Name” column’s display_value
+    # ── here's the updated GraphQL ──
     gql = '''
-    query ($itemIds: [Int!]!) {
+    query ($itemIds: [ID!]!) {
       items(ids: $itemIds) {
         column_values(ids: ["formula8__1"]) {
-          display_value
+          id
+          # for non‐formula columns, .text is the value
+          text
+          # for formula columns, you must use the FormulaValue fragment:
+          ... on FormulaValue {
+            display_value
+          }
         }
       }
     }'''
-    variables = {"itemIds": [int(lookup_id)]}
+    variables = {"itemIds": [str(lookup_id)]}
 
     resp = requests.post(
-        "https://api.monday.com/v2",
-        json={"query": gql, "variables": variables},
-        headers={
-            "Authorization": MONDAY_API_TOKEN,
-            "Content-Type":  "application/json"
-        }
+      "https://api.monday.com/v2",
+      json={"query": gql, "variables": variables},
+      headers={
+        "Authorization": MONDAY_API_TOKEN,
+        "Content-Type":  "application/json"
+      }
     )
     data2 = resp.json()
     print("[Monday API] response:", data2)
 
-    # ⑤ Extract the client’s display_value
+    # pull out that column_values entry:
     try:
-        cvs    = data2["data"]["items"][0]["column_values"]
-        client = (cvs[0].get("display_value") or "").strip()
-    except Exception as e:
-        print("[Monday API] error parsing display_value:", e)
+        cv = data2["data"]["items"][0]["column_values"][0]
+    except Exception:
+        print("[Monday API] failed to find column_values")
         return "OK", 200
 
-    # ⑥ Map to the correct LINE group
-    key      = client.lower()
+    # whichever one is set — text or display_value — is our client name:
+    client = (cv.get("text") or cv.get("display_value") or "").strip()
+    key    = client.lower()
+
     group_id = CLIENT_TO_GROUP.get(key)
     if not group_id:
-        print(f"[Monday→LINE] no mapping for client “{client}”, skipping.")
+        print(f"[Monday→LINE] no mapping for “{client}” → {key}")
         return "OK", 200
 
-    # ⑦ Push the notification
     item_name = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
     message   = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
-    r2 = requests.post(
-        "https://api.line.me/v2/bot/message/push",
-        headers={
-            "Authorization": f"Bearer {LINE_TOKEN}",
-            "Content-Type":  "application/json"
-        },
-        json={"to": group_id, "messages":[{"type":"text","text":message}]}
+
+    push = requests.post(
+      "https://api.line.me/v2/bot/message/push",
+      headers={
+        "Authorization": f"Bearer {LINE_TOKEN}",
+        "Content-Type":  "application/json"
+      },
+      json={"to": group_id, "messages":[{"type":"text","text":message}]}
     )
-    print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
+    print(f"[Monday→LINE] sent to {client}: {push.status_code}", push.text)
 
     return "OK", 200
-
     
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
