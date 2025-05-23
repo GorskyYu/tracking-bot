@@ -18,9 +18,7 @@ def in_window(now):
     # 7 am ET → 4 am PT; 7 pm PT → 19 pm PT
     if now.hour < 4 or now.hour > 19:
         return False
-    # only run on each quarter hour
-    if now.minute % 15 != 0:
-        return False
+    # no minute-granularity guard — every Scheduler tick is valid
     return True
 
 def log(msg):
