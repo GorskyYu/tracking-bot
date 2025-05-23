@@ -33,6 +33,13 @@ TRANSLATIONS = {
     "delivered":                      "已送達",
 }
 
+# ─── Client → LINE Group Mapping ───────────────────────────────────────────────
+CLIENT_TO_GROUP = {
+    "Yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
+    "Vicky": os.getenv("LINE_GROUP_ID_VICKY"),
+    # if your column actually shows “YL” instead of “Yumi”, include that too:
+    "YL":    os.getenv("LINE_GROUP_ID_YUMI"),
+}
 
 # ─── Environment Variables ────────────────────────────────────────────────────
 APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
@@ -172,7 +179,7 @@ def webhook():
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # 1️⃣ URL validation
+    # 1️⃣ URL‐validation ping from Monday.com
     if request.method == "GET":
         return "OK", 200
 
@@ -184,23 +191,22 @@ def monday_webhook():
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # 3️⃣ Extract IDs and the new status
-    sub_id     = evt.get("pulseId") or evt.get("itemId")
-    parent_id  = evt.get("parentItemId")   # will be None for normal items
-    lookup_id  = parent_id or sub_id       # query this one for client name
-    item_name  = evt.get("pulseName") or evt.get("itemName") or str(sub_id)
-    new_value  = evt.get("value", {}).get("label", {}).get("text")
-    print(f"[Monday] sub_id={sub_id}, parent_id={parent_id}, lookup_id={lookup_id}, new_value={new_value}")
+    # 3️⃣ Which sub‐item (and parent) changed?
+    sub_id    = evt.get("pulseId") or evt.get("itemId")
+    parent_id = evt.get("parentItemId")
+    lookup_id = parent_id or sub_id
+    item_name = evt.get("pulseName") or evt.get("itemName") or str(sub_id)
+    new_txt   = evt.get("value", {}).get("label", {}).get("text")
+    print(f"[Monday] sub_id={sub_id}, parent_id={parent_id}, lookup_id={lookup_id}, new_txt={new_txt}")
 
-    # only care about 國際運輸
-    if new_value != "國際運輸" or not lookup_id:
+    if new_txt != "國際運輸" or not lookup_id:
         return "OK", 200
 
-    # 4️⃣ GraphQL: fetch all columns of the parent (or item)
+    # 4️⃣ GraphQL: fetch only the Client Name column on the parent
     gql = '''
     query ($ids: [ID!]!) {
-      items(ids: $ids) {
-        column_values {
+      items (ids: $ids) {
+        column_values (ids: ["formula8__1"]) {
           text
         }
       }
@@ -215,42 +221,34 @@ def monday_webhook():
         }
     )
     data2 = resp.json()
-    print("[Monday API] lookup item columns:", data2)
+    print("[Monday API] response:", data2)
 
-    # 5️⃣ Find the client name text among those columns
-    client = None
+    # 5️⃣ Extract Client Name text
     try:
-        cols = data2["data"]["items"][0]["column_values"]
-        for cv in cols:
-            txt = cv.get("text","")
-            if txt in CLIENT_TO_GROUP:
-                client = txt
-                break
+        client = data2["data"]["items"][0]["column_values"][0]["text"]
     except Exception as e:
-        print("[Monday API] parsing error:", e)
+        print("[Monday API] error fetching Client Name:", e)
         return "OK", 200
 
-    if not client:
-        print("[Monday→LINE] Client Name not found on parent/item, skipping.")
+    if not client or client not in CLIENT_TO_GROUP:
+        print(f"[Monday→LINE] no mapping for client “{client}”, skipping.")
         return "OK", 200
 
     # 6️⃣ Push to the correct LINE group
     group_id = CLIENT_TO_GROUP[client]
-    text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
+    push_text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
         headers={
           "Authorization": f"Bearer {LINE_TOKEN}",
           "Content-Type":  "application/json"
         },
-        json={"to": group_id, "messages":[{"type":"text","text":text}]}
+        json={"to": group_id, "messages":[{"type":"text","text":push_text}]}
     )
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
     return "OK", 200
 
 
-
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
