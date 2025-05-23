@@ -170,68 +170,54 @@ def webhook():
     return "OK", 200
     
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
-from flask import Flask, request, jsonify
-import os, json, requests
-
-app = Flask(__name__)
-MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
-LINE_TOKEN       = os.getenv("LINE_TOKEN")
-
-# Map client names to LINE group IDs
-CLIENT_TO_GROUP = {
-    "Yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
-    "Vicky": os.getenv("LINE_GROUP_ID_VICKY"),
-}
-
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # 1️⃣ URL‐validation ping
+    # 1️⃣ URL validation
     if request.method == "GET":
         return "OK", 200
 
     data = request.get_json()
     print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
-
-    # Unwrap event
     evt = data.get("event", data)
 
-    # 2️⃣ Handshake
+    # 2️⃣ Challenge handshake
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # 3️⃣ Extract sub‐item ID, name and new status label
-    sub_id    = evt.get("pulseId") or evt.get("itemId")
-    item_name = evt.get("pulseName") or evt.get("itemName") or str(sub_id)
-    new_value = evt.get("value", {}).get("label", {}).get("text")
-    print(f"[Monday] sub_id={sub_id}, item_name={item_name}, new_value={new_value}")
+    # 3️⃣ Extract IDs and the new status
+    sub_id     = evt.get("pulseId") or evt.get("itemId")
+    parent_id  = evt.get("parentItemId")   # will be None for normal items
+    lookup_id  = parent_id or sub_id       # query this one for client name
+    item_name  = evt.get("pulseName") or evt.get("itemName") or str(sub_id)
+    new_value  = evt.get("value", {}).get("label", {}).get("text")
+    print(f"[Monday] sub_id={sub_id}, parent_id={parent_id}, lookup_id={lookup_id}, new_value={new_value}")
 
     # only care about 國際運輸
-    if new_value != "國際運輸" or not sub_id:
+    if new_value != "國際運輸" or not lookup_id:
         return "OK", 200
 
-    # 4️⃣ Grab every column_value (id & text) for this sub‐item
+    # 4️⃣ GraphQL: fetch all columns of the parent (or item)
     gql = '''
     query ($ids: [ID!]!) {
       items(ids: $ids) {
         column_values {
-          id
           text
         }
       }
     }'''
-    variables = {"ids": [str(sub_id)]}
+    variables = {"ids": [str(lookup_id)]}
     resp = requests.post(
-      "https://api.monday.com/v2",
-      json={"query": gql, "variables": variables},
-      headers={
-        "Authorization": MONDAY_API_TOKEN,
-        "Content-Type":  "application/json"
-      }
+        "https://api.monday.com/v2",
+        json={"query": gql, "variables": variables},
+        headers={
+          "Authorization": MONDAY_API_TOKEN,
+          "Content-Type":  "application/json"
+        }
     )
     data2 = resp.json()
-    print("[Monday API] all column_values:", data2)
+    print("[Monday API] lookup item columns:", data2)
 
-    # 5️⃣ Find which column_value text is our “Client Name”
+    # 5️⃣ Find the client name text among those columns
     client = None
     try:
         cols = data2["data"]["items"][0]["column_values"]
@@ -245,19 +231,19 @@ def monday_webhook():
         return "OK", 200
 
     if not client:
-        print("[Monday→LINE] no Client Name match, skipping.")
+        print("[Monday→LINE] Client Name not found on parent/item, skipping.")
         return "OK", 200
 
     # 6️⃣ Push to the correct LINE group
     group_id = CLIENT_TO_GROUP[client]
     text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
     r2 = requests.post(
-      "https://api.line.me/v2/bot/message/push",
-      headers={
-        "Authorization": f"Bearer {LINE_TOKEN}",
-        "Content-Type":  "application/json"
-      },
-      json={"to": group_id, "messages":[{"type":"text","text":text}]}
+        "https://api.line.me/v2/bot/message/push",
+        headers={
+          "Authorization": f"Bearer {LINE_TOKEN}",
+          "Content-Type":  "application/json"
+        },
+        json={"to": group_id, "messages":[{"type":"text","text":text}]}
     )
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
