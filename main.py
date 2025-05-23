@@ -179,7 +179,7 @@ def webhook():
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # 1️⃣ Allow Monday.com’s URL check
+    # 1️⃣ Monday.com URL check
     if request.method == "GET":
         return "OK", 200
 
@@ -187,70 +187,64 @@ def monday_webhook():
     print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
     evt = data.get("event", data)
 
-    # 2️⃣ Challenge handshake
+    # 2️⃣ Initial handshake
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # 3️⃣ Extract sub‐item & parent IDs, new status
-    sub_id     = evt.get("pulseId") or evt.get("itemId")
-    parent_id  = evt.get("parentItemId")
-    parent_bid = evt.get("parentItemBoardId")
-    lookup_id  = parent_id or sub_id
-    item_name  = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
-    new_txt    = evt.get("value", {}).get("label", {}).get("text")
-    print(f"[Monday] sub_id={sub_id}, parent_id={parent_id}, parent_bid={parent_bid}, new_txt={new_txt}")
+    # 3️⃣ Extract sub-item and parent IDs + new status
+    sub_id    = evt.get("pulseId") or evt.get("itemId")
+    parent_id = evt.get("parentItemId")
+    lookup_id = parent_id or sub_id
+    item_name = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
+    new_txt   = evt.get("value", {}).get("label", {}).get("text")
+    print(f"[Monday] sub_id={sub_id}, parent_id={parent_id}, lookup_id={lookup_id}, new_txt={new_txt}")
 
-    # Only care about 國際運輸
-    if new_txt != "國際運輸" or not lookup_id or not parent_bid:
+    # Only proceed for 國際運輸
+    if new_txt != "國際運輸" or not lookup_id:
         return "OK", 200
 
-    # 4️⃣ GraphQL: fetch the Client Name column from the parent board
+    # 4️⃣ GraphQL: fetch the parent item’s Client Name column
     gql = '''
-    query ($boardIds: [Int]!, $itemIds: [Int]!) {
-      boards(ids: $boardIds) {
-        items(ids: $itemIds) {
-          column_values(ids: ["formula8__1"]) {
-            text
-          }
+    query ($itemIds: [Int]!) {
+      items (ids: $itemIds) {
+        column_values(ids: ["formula8__1"]) {
+          text
         }
       }
     }'''
-    vars = {
-      "boardIds": [int(parent_bid)],
-      "itemIds":  [int(lookup_id)]
-    }
+    variables = {"itemIds": [int(lookup_id)]}
     resp = requests.post(
         "https://api.monday.com/v2",
-        json={"query": gql, "variables": vars},
+        json={"query": gql, "variables": variables},
         headers={
           "Authorization": MONDAY_API_TOKEN,
           "Content-Type":  "application/json"
         }
     )
     data2 = resp.json()
-    print("[Monday API] parent lookup:", data2)
+    print("[Monday API] response:", data2)
 
-    # 5️⃣ Pull out the client name
+    # 5️⃣ Extract Client Name
     try:
-        client = data2["data"]["boards"][0]["items"][0]["column_values"][0]["text"]
+        client = data2["data"]["items"][0]["column_values"][0]["text"]
     except Exception as e:
         print("[Monday API] error fetching Client Name:", e)
         return "OK", 200
 
-    if not client or client not in CLIENT_TO_GROUP:
+    # 6️⃣ Route and push
+    group_id = CLIENT_TO_GROUP.get(client)
+    if not group_id:
         print(f"[Monday→LINE] no mapping for client “{client}”, skipping.")
         return "OK", 200
 
-    # 6️⃣ Push to the correct LINE group
-    group_id = CLIENT_TO_GROUP[client]
-    push_text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
+    message = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
         headers={
           "Authorization": f"Bearer {LINE_TOKEN}",
           "Content-Type":  "application/json"
         },
-        json={"to": group_id, "messages":[{"type":"text","text":push_text}]}
+        json={"to": group_id, "messages":[{"type":"text","text":message}]}
     )
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
