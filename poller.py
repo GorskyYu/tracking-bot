@@ -35,9 +35,10 @@ def main():
         log("Outside time window, exiting")
         return
 
-    # Load existing state: shipment_id → last_timestamp
-    state_data = r.get("last_seen") or "{}"
-    state = json.loads(state_data)
+    # Load existing state; detect if this is our very first run
+    state_data = r.get("last_seen")
+    initial_run = state_data is None
+    state = json.loads(state_data) if state_data else {}
 
     updates = {}
 
@@ -66,6 +67,11 @@ def main():
 
     # Persist updated state back to Redis
     r.set("last_seen", json.dumps(state))
+    
+    # On our very first run, we just seed state—no pushes
+    if initial_run:
+        log("Initial run: state seeded, no pushes")
+        return    
 
     # Push batched updates for each group
     if not updates:
