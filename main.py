@@ -177,7 +177,7 @@ app = Flask(__name__)
 MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
 LINE_TOKEN       = os.getenv("LINE_TOKEN")
 
-# Map the two allowed client texts to their LINE group IDs
+# Map client names to LINE group IDs
 CLIENT_TO_GROUP = {
     "Yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
     "Vicky": os.getenv("LINE_GROUP_ID_VICKY"),
@@ -185,6 +185,7 @@ CLIENT_TO_GROUP = {
 
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
+    # 1️⃣ URL verification
     if request.method == "GET":
         return "OK", 200
 
@@ -193,62 +194,81 @@ def monday_webhook():
 
     evt = data.get("event", data)
 
-    # Handshake
+    # 2️⃣ Challenge handshake
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    pulse_id  = evt.get("pulseId") or evt.get("itemId")
-    item_name = evt.get("pulseName") or evt.get("itemName") or str(pulse_id)
-    new_value = evt.get("value", {}).get("label", {}).get("text")
-    print(f"[Monday] pulse_id={pulse_id}, item_name={item_name}, new_value={new_value}")
+    # 3️⃣ Extract the changed sub-item ID, name, and new status
+    sub_id     = evt.get("pulseId") or evt.get("itemId")
+    item_name  = evt.get("pulseName") or evt.get("itemName") or str(sub_id)
+    new_label  = evt.get("value", {}).get("label", {}).get("text")
+    print(f"[Monday] sub_id={sub_id}, item_name={item_name}, new_label={new_label}")
 
-    if new_value != "國際運輸" or not pulse_id:
+    if new_label != "國際運輸" or not sub_id:
         return "OK", 200
 
-    # GraphQL must use ID!, not Int
+    # 4️⃣ Fetch all columns for this sub-item
     gql = '''
-    query ($itemIds: [ID!]!) {
-      items (ids: $itemIds) {
-        column_values (ids: ["formula8__1"]) {
+    query ($ids: [ID!]!) {
+      items (ids: $ids) {
+        column_values {
+          title
           text
         }
       }
     }'''
-    variables = {"itemIds": [str(pulse_id)]}
+    vars = {"ids": [str(sub_id)]}
     resp = requests.post(
         "https://api.monday.com/v2",
-        json={"query": gql, "variables": variables},
+        json={"query": gql, "variables": vars},
         headers={
             "Authorization": MONDAY_API_TOKEN,
             "Content-Type":  "application/json"
         }
     )
     data2 = resp.json()
-    print("[Monday API] response:", data2)
+    print("[Monday API] all columns:", data2)
 
+    # 5️⃣ Pull out Client Name by title
+    client = None
     try:
-        client = data2["data"]["items"][0]["column_values"][0]["text"]
+        cols = data2["data"]["items"][0]["column_values"]
+        for cv in cols:
+            if cv.get("title") == "Client Name":
+                client = cv.get("text")
+                break
     except Exception as e:
-        print("[Monday API] error fetching Client Name:", e)
+        print("[Monday API] error parsing columns:", e)
         return "OK", 200
 
+    if not client:
+        print("[Monday→LINE] Client Name not found, skipping.")
+        return "OK", 200
+
+    # 6️⃣ Route to the correct LINE group
     group_id = CLIENT_TO_GROUP.get(client)
     if not group_id:
-        print(f"[Monday→LINE] no mapping for client “{client}” – skipping.")
+        print(f"[Monday→LINE] no group for client '{client}', skipping.")
         return "OK", 200
 
+    # 7️⃣ Push the notification
     text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
+    push = {
+      "to": group_id,
+      "messages": [{"type": "text", "text": text}]
+    }
+    headers2 = {
+      "Authorization": f"Bearer {LINE_TOKEN}",
+      "Content-Type":  "application/json"
+    }
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
-        headers={
-            "Authorization": f"Bearer {LINE_TOKEN}",
-            "Content-Type":  "application/json"
-        },
-        json={"to": group_id, "messages":[{"type":"text","text":text}]}
+        headers=headers2, json=push
     )
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
     return "OK", 200
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
