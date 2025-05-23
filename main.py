@@ -12,10 +12,13 @@ from flask import Flask, request, jsonify
 # ─── Customer Mapping ──────────────────────────────────────────────────────────
 # Map each LINE group to the list of lowercase keywords you filter on
 CUSTOMER_FILTERS = {
-    os.getenv("LINE_GROUP_ID_YUMI"):   ["yumi", "shu-yen"],
-    os.getenv("LINE_GROUP_ID_VICKY"):  ["vicky","chia-chi"]
+    YUMI_GROUP_ID:  ["yumi",    "shu-yen"],
+    VICKY_GROUP_ID: ["vicky",   "chia-chi"],
 }
 
+# LINE group IDs for your two customers
+YUMI_GROUP_ID  = os.getenv("LINE_GROUP_ID_YUMI")
+VICKY_GROUP_ID = os.getenv("LINE_GROUP_ID_VICKY")
 
 # ─── Status Translations ──────────────────────────────────────────────────────
 TRANSLATIONS = {
@@ -36,10 +39,9 @@ TRANSLATIONS = {
 # ─── Client → LINE Group Mapping ───────────────────────────────────────────────
 CLIENT_TO_GROUP = {
     "Yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
-    "Vicky": os.getenv("LINE_GROUP_ID_VICKY"),
-    # if your column actually shows “YL” instead of “Yumi”, include that too:
-    "YL":    os.getenv("LINE_GROUP_ID_YUMI"),
+    "Vicky": os.getenv("LINE_GROUP_ID_VICKY")
 }
+
 
 # ─── Environment Variables ────────────────────────────────────────────────────
 APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
