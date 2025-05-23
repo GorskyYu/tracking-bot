@@ -53,25 +53,35 @@ def main():
     
     # 2) If this is the VERY FIRST run, seed state with the current human-status text
     if initial_run:
-        log("Initial run: seeding status text, no pushes")
-        # For each group, fetch the IDs and their current status
-        for group_id, keywords in CUSTOMER_FILTERS.items():
-            lines = get_statuses_for(keywords)
-            oids  = [ID_RE.match(l).group(1) for l in lines[1:]]
-            if not oids:
-                continue
-            resp = call_api("shipment/tracking", {
-                "keyword": ",".join(oids),
-                "rsync":   0,
-                "timezone": TIMEZONE
-            })
-            for item in resp.get("response", []):
-                # find the latest event
-                ev     = max(item["list"], key=lambda e: int(e["timestamp"]))
-                ctx_lc = ev.get("context","").strip().lower()
-                human  = TRANSLATIONS.get(ctx_lc, ev.get("context","").replace("Triple Eagle","system"))
-                # seed with the human status text
-                state[str(item["id"])] = human
+        log("Initial run: seeding all active order IDs, no pushes")
+        # 2a) list & filter orders exactly as get_statuses_for does internally
+        resp_list = call_api("shipment/list")
+        all_orders = resp_list.get("response", {}).get("list", []) or resp_list.get("response", [])
+        order_ids = [o["id"] for o in all_orders if "id" in o]
+        for oid in order_ids:
+            # get detail, check if this order belongs to any of our customers
+            det = call_api("shipment/detail", {"id": oid}).get("response", {})
+            if isinstance(det, list): det = det[0]
+            init = det.get("initiation", {})
+            loc  = next(iter(init), None)
+            name = init.get(loc,{}).get("name","").lower() if loc else ""
+            # find which group this belongs to
+            for group_id, keywords in CUSTOMER_FILTERS.items():
+                if any(kw in name for kw in keywords):
+                    # fetch raw tracking so we know the current human text if any
+                    tr = call_api("shipment/tracking", {
+                        "keyword": str(oid),
+                        "rsync":   0,
+                        "timezone": TIMEZONE
+                    }).get("response", [])
+                    human = ""
+                    if tr and tr[0].get("list"):
+                        ev = max(tr[0]["list"], key=lambda e: int(e["timestamp"]))
+                        ctx_lc = ev.get("context","").strip().lower()
+                        human  = TRANSLATIONS.get(ctx_lc, ev.get("context","").replace("Triple Eagle","system"))
+                    # seed this order’s last-status (possibly empty)
+                    state[str(oid)] = human
+                    break
 
         # write it back and exit, no pushes
         r.set("last_seen", json.dumps(state))
