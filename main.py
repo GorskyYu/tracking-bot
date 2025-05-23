@@ -179,7 +179,7 @@ def webhook():
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # 1️⃣ URL validation
+    # 1️⃣ URL validation ping
     if request.method == "GET":
         return "OK", 200
 
@@ -187,38 +187,33 @@ def monday_webhook():
     print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
     evt = data.get("event", data)
 
-    # 2️⃣ Monday’s handshake challenge
+    # 2️⃣ Challenge handshake
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # 3️⃣ Get IDs & new status
-    sub_id     = evt.get("pulseId") or evt.get("itemId")
-    parent_id  = evt.get("parentItemId")
-    parent_bid = evt.get("parentItemBoardId")
-    item_name  = evt.get("pulseName") or evt.get("itemName") or str(parent_id or sub_id)
-    new_txt    = evt.get("value", {}).get("label", {}).get("text")
-    print(f"[Monday] parent_id={parent_id}, parent_bid={parent_bid}, new_txt={new_txt}")
+    # 3️⃣ Extract IDs and new status
+    sub_id    = evt.get("pulseId") or evt.get("itemId")
+    parent_id = evt.get("parentItemId")
+    lookup_id = parent_id or sub_id
+    item_name = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
+    new_txt   = evt.get("value", {}).get("label", {}).get("text")
+    print(f"[Monday] lookup_id={lookup_id}, new_txt={new_txt}")
 
-    # only care when it flips to 國際運輸
-    if new_txt != "國際運輸" or not parent_id or not parent_bid:
+    # only proceed for 國際運輸
+    if new_txt != "國際運輸" or not lookup_id:
         return "OK", 200
 
-    # 4️⃣ GraphQL: scope to the parent board and item
+    # 4️⃣ GraphQL: ask the items root for both possible client columns
     gql = '''
-    query ($boardIds: [Int]!, $itemIds: [Int]!) {
-      boards(ids: $boardIds) {
-        items(ids: $itemIds) {
-          column_values(ids: ["status_18__1","status_11__1"]) {
-            id
-            text
-          }
+    query ($itemIds: [ID!]!) {
+      items(ids: $itemIds) {
+        column_values(ids: ["status_18__1","status_11__1"]) {
+          id
+          text
         }
       }
     }'''
-    variables = {
-      "boardIds": [int(parent_bid)],
-      "itemIds":  [int(parent_id)]
-    }
+    variables = {"itemIds": [str(lookup_id)]}
     resp = requests.post(
         "https://api.monday.com/v2",
         json={"query": gql, "variables": variables},
@@ -228,35 +223,35 @@ def monday_webhook():
         }
     )
     data2 = resp.json()
-    print("[Monday API] board→item lookup:", data2)
+    print("[Monday API] response:", data2)
 
-    # 5️⃣ Find whichever column (status_18__1 or status_11__1) has the client name
+    # 5️⃣ Pull both columns out and pick the one with non-empty text
     client = None
     try:
-        cvs = data2["data"]["boards"][0]["items"][0]["column_values"]
+        cvs = data2["data"]["items"][0]["column_values"]
         for cv in cvs:
             txt = (cv.get("text") or "").strip()
-            if txt in CLIENT_TO_GROUP:
+            if txt:
                 client = txt
                 break
     except Exception as e:
         print("[Monday API] parsing error:", e)
         return "OK", 200
 
-    if not client:
-        print(f"[Monday→LINE] client name not found among {[cv['id'] for cv in cvs]}, skipping.")
+    if not client or client not in CLIENT_TO_GROUP:
+        print(f"[Monday→LINE] no valid client name found in {[cv['id'] for cv in cvs]}, skipping.")
         return "OK", 200
 
-    # 6️⃣ Push the LINE notification
+    # 6️⃣ Push to the correct LINE group
     group_id = CLIENT_TO_GROUP[client]
-    push_text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
+    message  = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
         headers={
           "Authorization": f"Bearer {LINE_TOKEN}",
           "Content-Type":  "application/json"
         },
-        json={"to": group_id, "messages":[{"type":"text","text":push_text}]}
+        json={"to": group_id, "messages":[{"type":"text","text":message}]}
     )
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
