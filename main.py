@@ -9,7 +9,6 @@ import redis
 import logging
 from urllib.parse import quote
 from flask import Flask, request, jsonify
-from apscheduler.schedulers.background import BackgroundScheduler
 
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
 logging.basicConfig(
