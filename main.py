@@ -121,63 +121,7 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
     return lines
 
 
-# ─── Flask Webhook ────────────────────────────────────────────────────────────
-app = Flask(__name__)
-
-@app.route("/webhook", methods=["GET", "POST"])
-def webhook():
-    # Log incoming methods
-    print(f"[Webhook] Received {request.method} to /webhook")
-    if request.method == "GET":
-        return "OK", 200
-
-    data = request.get_json()
-    print("[Webhook] Payload:", json.dumps(data, ensure_ascii=False))
-
-    for event in data.get("events", []):
-        # Only handle text messages
-        if event.get("type") == "message" and event["message"].get("type") == "text":
-            group_id = event["source"].get("groupId")
-            text     = event["message"]["text"].strip()
-            
-            print(f"[Debug] incoming groupId: {group_id!r}")
-            print(f"[Debug] CUSTOMER_FILTERS keys: {list(CUSTOMER_FILTERS.keys())!r}")
-            
-            print(f"[Webhook] Detected groupId: {group_id}, text: {text}")
-
-            if text == "追蹤包裹":
-                keywords = CUSTOMER_FILTERS.get(group_id)
-                if not keywords:
-                    print(f"[Webhook] No keywords configured for group {group_id}, skipping.")
-                    continue
-
-                # Now safe to extract reply_token
-                reply_token = event["replyToken"]
-                print("[Webhook] Trigger matched, fetching statuses…")
-                messages = get_statuses_for(keywords)
-                print("[Webhook] Reply messages:", messages)
-
-                # Combine lines into one multi-line text
-                combined = "\n\n".join(messages)
-                payload = {
-                    "replyToken": reply_token,
-                    "messages": [{"type": "text", "text": combined}]
-                }
-
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {LINE_TOKEN}"
-                }
-                resp = requests.post(
-                    "https://api.line.me/v2/bot/message/reply",
-                    headers=headers,
-                    json=payload
-                )
-                print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
-
-    return "OK", 200
-    
-# ─── Monday.com Webhook ────────────────────────────────────────────────────────
+# ─── Flask App & Monday.com Webhook ───────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
     # 1️⃣ URL validation ping
@@ -186,70 +130,65 @@ def monday_webhook():
 
     data = request.get_json()
     print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
-    evt = data.get("event", data)
 
-    # 2️⃣ Handle Monday’s initial challenge
+    # 2️⃣ Challenge handshake
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # 3️⃣ Extract IDs and new status
+    evt = data.get("event", data)
     sub_id    = evt.get("pulseId") or evt.get("itemId")
     parent_id = evt.get("parentItemId")
     lookup_id = parent_id or sub_id
-    item_name = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
     new_txt   = evt.get("value", {}).get("label", {}).get("text")
-    print(f"[Monday] lookup_id={lookup_id}, new_txt={new_txt}")
+    item_name = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
+    print(f"[Monday] lookup_id={lookup_id}, new_txt={new_txt!r}")
 
-    # Only proceed when status flips to 國際運輸
+    # Only fire on status = 國際運輸
     if new_txt != "國際運輸" or not lookup_id:
         return "OK", 200
 
-    # 4️⃣ GraphQL: fetch every column_value id+text for that item
+    # 3️⃣ Fetch all column_values (including formula “value”) via GraphQL
     gql = '''
-    query ($itemIds: [ID!]!) {
-      items(ids: $itemIds) {
+    query ($ids: [ID!]!) {
+      items(ids: $ids) {
         column_values {
           id
           text
+          value
         }
       }
     }'''
-    variables = {"itemIds": [str(lookup_id)]}
     resp = requests.post(
         "https://api.monday.com/v2",
-        json={"query": gql, "variables": variables},
         headers={
             "Authorization": MONDAY_API_TOKEN,
             "Content-Type":  "application/json"
-        }
+        },
+        json={"query": gql, "variables": {"ids": [str(lookup_id)]}}
     )
     data2 = resp.json()
     print("[Monday API] response:", data2)
 
-    # 5️⃣ DEBUG: print full id/text dump
-    try:
-        cols = data2["data"]["items"][0]["column_values"]
-        print("[Monday API] full column_values dump:")
-        for cv in cols:
-            print(f"  - id: {cv.get('id')!r}, text: {cv.get('text')!r}")
-    except Exception as e:
-        print("[Monday API] error parsing column_values:", e)
-        return "OK", 200
-
-    # 6️⃣ Identify Client Name by matching text against your CLIENT_TO_GROUP keys
-    client = None
+    cols = data2["data"]["items"][0]["column_values"]
+    # 4️⃣ Debug log every column’s text & raw JSON value
     for cv in cols:
-        txt = cv.get("text") or ""
-        if txt in CLIENT_TO_GROUP:
-            client = txt
-            break
+        print(f"  • {cv['id']}: text={cv.get('text')!r}, value={cv.get('value')!r}")
 
-    if not client:
-        print("[Monday→LINE] no Client Name found in column_values, skipping.")
+    # 5️⃣ Extract your Client Name from the formula column
+    raw = next((cv.get("value") for cv in cols if cv.get("id") == "formula8__1"), None)
+    try:
+        client_name = json.loads(raw) if raw else None
+    except Exception:
+        client_name = raw
+    print(f"[Monday→LINE] formula8__1 → client_name={client_name!r}")
+
+    # 6️⃣ Map to your LINE group
+    group_id = CLIENT_TO_GROUP.get(client_name)
+    if not group_id:
+        print(f"[Monday→LINE] no mapping for {client_name!r}, skipping.")
         return "OK", 200
 
-    # 7️⃣ Push to the correct LINE group
-    group_id = CLIENT_TO_GROUP[client]
+    # 7️⃣ Push the notification
     message = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
@@ -259,9 +198,8 @@ def monday_webhook():
         },
         json={"to": group_id, "messages":[{"type":"text","text":message}]}
     )
-    print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
-
+    print(f"[Monday→LINE] pushed to {client_name}: {r2.status_code}, {r2.text}")
     return "OK", 200
-    
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
