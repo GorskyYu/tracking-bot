@@ -3,7 +3,7 @@
 import os
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 import pytz
 import redis
 import requests
@@ -34,7 +34,9 @@ def in_window(now):
     return True
 
 def log(msg):
-    print(f"[Poller {datetime.utcnow().isoformat()}] {msg}", flush=True)
+    # Use a timezone-aware now() in UTC
+    now_utc = datetime.now(timezone.utc)
+    print(f"[Poller {now_utc.isoformat()}] {msg}", flush=True)
 
 def main():
     tz = pytz.timezone("America/Vancouver")
@@ -48,6 +50,9 @@ def main():
     state_data = r.get("last_seen")
     initial_run = state_data is None
     state = json.loads(state_data) if state_data else {}
+    
+    # Normalize any stored timestamps to ints
+    state = { oid: int(ts) for oid, ts in state.items() }
 
     updates = {}
 
