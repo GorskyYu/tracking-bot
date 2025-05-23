@@ -74,13 +74,12 @@ def main():
                         "rsync":   0,
                         "timezone": TIMEZONE
                     }).get("response", [])
-                    human = ""
-                    if tr and tr[0].get("list"):
-                        ev = max(tr[0]["list"], key=lambda e: int(e["timestamp"]))
-                        ctx_lc = ev.get("context","").strip().lower()
-                        human  = TRANSLATIONS.get(ctx_lc, ev.get("context","").replace("Triple Eagle","system"))
-                    # seed this order’s last-status (possibly empty)
-                    state[str(oid)] = human
+                    if tr and tr[0].get("number"):
+                        num   = tr[0]["number"]
+                        ev    = max(tr[0]["list"], key=lambda e: int(e["timestamp"]))
+                        ctx_lc= ev["context"].strip().lower()
+                        human = TRANSLATIONS.get(ctx_lc, ev["context"].replace("Triple Eagle","system"))
+                        state[num] = human
                     break
 
         # write it back and exit, no pushes
@@ -109,15 +108,16 @@ def main():
 
         new_lines = []
         for item in resp.get("response", []):
-            oid = str(item["id"])
+            pkg_id = item["id"]
             num = item.get("number","")
+            if not num:
+                continue   # skip if no tracking#
             events = item.get("list") or []
             if not events:
                 continue
 
             # pick the newest event record
             ev = max(events, key=lambda e: int(e["timestamp"]))
-            ts_raw = int(ev["timestamp"])
 
             # format
             loc_raw = ev.get("location","")
@@ -125,13 +125,12 @@ def main():
             ctx_lc   = ev.get("context","").strip().lower()
             human    = TRANSLATIONS.get(ctx_lc, ev.get("context","").replace("Triple Eagle","system"))
             tme      = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT",""))
-            line     = f"{oid} ({num}) → {loc}{human}  @ {tme}"
+            line     = f"{pkg_id} ({num}) → {loc}{human}  @ {tme}"
 
             # Only include if the status text has changed
-            last_status = state.get(oid, "")
+            last_status = state.get(num, "")
             if last_status != human:
-                # record the new status
-                state[oid] = human
+                state[num] = human
                 new_lines.append(line)
 
         # Deduplicate exact lines in this batch, preserving order
