@@ -5,18 +5,21 @@ import json
 from datetime import datetime
 import pytz
 import redis
-from main import check_te_updates, CLIENT_TO_GROUP, LINE_PUSH_URL, LINE_HEADERS, load_state, save_state, get_statuses_for
+from main import check_te_updates, CUSTOMER_FILTERS, LINE_PUSH_URL, LINE_HEADERS, get_statuses_for
 
 # Initialize Redis
 redis_url = os.getenv("REDIS_URL") or os.getenv("REDISCLOUD_URL")
 r = redis.from_url(redis_url, decode_responses=True)
 
 def in_window(now):
+    # Mon=0 … Sun=6
     if now.weekday() == 6:
-        return False
+        return False    # skip Sunday
+    # 7 am ET → 4 am PT; 7 pm PT → 19 pm PT
     if now.hour < 4 or now.hour > 19:
         return False
-    if now.minute not in (0, 30):
+    # only run on each quarter hour
+    if now.minute % 15 != 0:
         return False
     return True
 
@@ -37,7 +40,7 @@ def main():
 
     # Gather updates
     updates = {}
-    for group_id, keywords in CLIENT_TO_GROUP.items():
+    for group_id, keywords in CUSTOMER_FILTERS.items():
         lines = get_statuses_for(keywords)
         new_lines = []
         for line in lines[1:]:
