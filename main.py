@@ -34,8 +34,8 @@ TRANSLATIONS = {
 
 # ─── Client → LINE Group Mapping ───────────────────────────────────────────────
 CLIENT_TO_GROUP = {
-    "Yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
-    "Vicky": os.getenv("LINE_GROUP_ID_VICKY"),
+    "yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
+    "vicky": os.getenv("LINE_GROUP_ID_VICKY"),
 }
 
 # ─── Environment Variables ────────────────────────────────────────────────────
@@ -198,23 +198,18 @@ def monday_webhook():
     if new_txt != "國際運輸" or not lookup_id:
         return "OK", 200
 
-    # ── here's the updated GraphQL ──
+    # fetch just the formula column:
     gql = '''
     query ($itemIds: [ID!]!) {
       items(ids: $itemIds) {
         column_values(ids: ["formula8__1"]) {
           id
-          # for non‐formula columns, .text is the value
           text
-          # for formula columns, you must use the FormulaValue fragment:
-          ... on FormulaValue {
-            display_value
-          }
+          ... on FormulaValue { display_value }
         }
       }
     }'''
     variables = {"itemIds": [str(lookup_id)]}
-
     resp = requests.post(
       "https://api.monday.com/v2",
       json={"query": gql, "variables": variables},
@@ -224,25 +219,18 @@ def monday_webhook():
       }
     )
     data2 = resp.json()
-    print("[Monday API] response:", data2)
 
-    # pull out that column_values entry:
-    try:
-        cv = data2["data"]["items"][0]["column_values"][0]
-    except Exception:
-        print("[Monday API] failed to find column_values")
-        return "OK", 200
-
-    # whichever one is set — text or display_value — is our client name:
+    # grab that single column_value
+    cv = data2["data"]["items"][0]["column_values"][0]
     client = (cv.get("text") or cv.get("display_value") or "").strip()
-    key    = client.lower()
+    key    = client.lower()     # e.g. "yumi" or "vicky"
 
     group_id = CLIENT_TO_GROUP.get(key)
     if not group_id:
-        print(f"[Monday→LINE] no mapping for “{client}” → {key}")
+        print(f"[Monday→LINE] no mapping for “{client}” → {key}, skipping.")
         return "OK", 200
 
-    item_name = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
+    item_name = evt.get("pulseName") or str(lookup_id)
     message   = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
 
     push = requests.post(
