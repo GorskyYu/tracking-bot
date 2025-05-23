@@ -185,78 +185,70 @@ CLIENT_TO_GROUP = {
 
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # 1️⃣ Allow Monday’s GET check
     if request.method == "GET":
         return "OK", 200
 
     data = request.get_json()
     print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
 
-    # Unwrap if wrapped under "event"
     evt = data.get("event", data)
 
-    # 2️⃣ Handle the initial challenge
+    # Handshake
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # 3️⃣ Extract item and status
     pulse_id  = evt.get("pulseId") or evt.get("itemId")
     item_name = evt.get("pulseName") or evt.get("itemName") or str(pulse_id)
     new_value = evt.get("value", {}).get("label", {}).get("text")
     print(f"[Monday] pulse_id={pulse_id}, item_name={item_name}, new_value={new_value}")
 
-    # Only continue for 國際運輸
     if new_value != "國際運輸" or not pulse_id:
         return "OK", 200
 
-    # 4️⃣ Fetch just the Client Name column (ID = formula8__1)
+    # GraphQL must use ID!, not Int
     gql = '''
-    query ($itemId: [Int]) {
-      items (ids: $itemId) {
+    query ($itemIds: [ID!]!) {
+      items (ids: $itemIds) {
         column_values (ids: ["formula8__1"]) {
           text
         }
       }
     }'''
-    vars = {"itemId": int(pulse_id)}
+    variables = {"itemIds": [str(pulse_id)]}
     resp = requests.post(
         "https://api.monday.com/v2",
-        json={"query": gql, "variables": vars},
+        json={"query": gql, "variables": variables},
         headers={
-          "Authorization": MONDAY_API_TOKEN,
-          "Content-Type":  "application/json"
+            "Authorization": MONDAY_API_TOKEN,
+            "Content-Type":  "application/json"
         }
     )
     data2 = resp.json()
     print("[Monday API] response:", data2)
 
-    # 5️⃣ Pull the Client Name text
     try:
         client = data2["data"]["items"][0]["column_values"][0]["text"]
     except Exception as e:
         print("[Monday API] error fetching Client Name:", e)
         return "OK", 200
 
-    # 6️⃣ Look up the LINE group for this client
     group_id = CLIENT_TO_GROUP.get(client)
     if not group_id:
         print(f"[Monday→LINE] no mapping for client “{client}” – skipping.")
         return "OK", 200
 
-    # 7️⃣ Send the push notification
     text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
         headers={
-          "Authorization": f"Bearer {LINE_TOKEN}",
-          "Content-Type":  "application/json"
+            "Authorization": f"Bearer {LINE_TOKEN}",
+            "Content-Type":  "application/json"
         },
         json={"to": group_id, "messages":[{"type":"text","text":text}]}
     )
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
     return "OK", 200
-
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
