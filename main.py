@@ -196,6 +196,7 @@ def monday_webhook():
     sub_id    = evt.get("pulseId") or evt.get("itemId")
     parent_id = evt.get("parentItemId")
     lookup_id = parent_id or sub_id
+    board_id  = evt.get("boardId")
     item_name = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
     new_txt   = evt.get("value", {}).get("label", {}).get("text")
     print(f"[Monday] lookup_id={lookup_id}, new_txt={new_txt}")
@@ -206,15 +207,21 @@ def monday_webhook():
 
     # 4️⃣ GraphQL: fetch every column_value id+text for that item
     gql = '''
-    query ($itemIds: [ID!]!) {
-      items(ids: $itemIds) {
-        column_values {
-          id
-          text
+    query ($boardIds: [ID!]!, $itemIds: [ID!]!) {
+      boards(ids: $boardIds) {
+        items(ids: $itemIds) {
+          column_values(ids: ["formula8__1"]) {
+            text
+            display_value
+          }
         }
       }
     }'''
-    variables = {"itemIds": [str(lookup_id)]}
+
+     variables = {
+       "boardIds": [str(board_id)],     # ← include the board you want to query
+       "itemIds":  [str(lookup_id)]
+     }
     resp = requests.post(
         "https://api.monday.com/v2",
         json={"query": gql, "variables": variables},
@@ -226,26 +233,28 @@ def monday_webhook():
     data2 = resp.json()
     print("[Monday API] response:", data2)
 
-    # 5️⃣ DEBUG: print full id/text dump
+    # 5️⃣ DEBUG: print full id/display_value dump
     try:
-        cols = data2["data"]["items"][0]["column_values"]
+        cvs = data2["data"]["boards"][0]    ["items"][0]["column_values"]
         print("[Monday API] full column_values dump:")
         for cv in cols:
             print(f"  - id: {cv.get('id')!r}, text: {cv.get('text')!r}")
+            
+        # now pull the display_value
+        client = (cvs[0].get("display_value") or "").strip()
     except Exception as e:
         print("[Monday API] error parsing column_values:", e)
         return "OK", 200
 
-    # 6️⃣ Identify Client Name by matching text against your CLIENT_TO_GROUP keys
-    client = None
-    for cv in cols:
-        txt = cv.get("text") or ""
-        if txt in CLIENT_TO_GROUP:
-            client = txt
-            break
+    # 6️⃣ Pull the single display_value out of the first (and only) column_value
+    cvs    = data2["data"]["boards"][0]["items"][0]["column_values"]
+    client = (cvs[0].get("display_value") or "").strip()
 
-    if not client:
-        print("[Monday→LINE] no Client Name found in column_values, skipping.")
+    # normalize and look up the correct LINE group
+    key      = client.lower()
+    group_id = CLIENT_TO_GROUP.get(key)
+    if not group_id:
+        print(f"[Monday→LINE] no mapping for client “{client}” (normalized “{key}”), skipping.")
         return "OK", 200
 
     # 7️⃣ Push to the correct LINE group
