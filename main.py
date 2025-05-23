@@ -178,23 +178,6 @@ def webhook():
     return "OK", 200
     
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
-import os
-import json
-import requests
-from flask import Flask, request, jsonify
-
-app = Flask(__name__)
-
-# ─── Environment & Mapping ─────────────────────────────────────────────────────
-MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
-LINE_TOKEN       = os.getenv("LINE_TOKEN")
-
-CLIENT_TO_GROUP = {
-    "Yumi":   os.getenv("LINE_GROUP_ID_YUMI"),
-    "Vicky":  os.getenv("LINE_GROUP_ID_VICKY"),
-}
-
-# ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
     # 1️⃣ URL validation ping
