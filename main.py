@@ -185,85 +185,72 @@ CLIENT_TO_GROUP = {
 
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # 1️⃣ URL verification
+    # 1️⃣ URL validation for Monday.com
     if request.method == "GET":
         return "OK", 200
 
     data = request.get_json()
     print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
 
+    # Unwrap if under "event"
     evt = data.get("event", data)
 
     # 2️⃣ Challenge handshake
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
-    # 3️⃣ Extract the changed sub-item ID, name, and new status
-    sub_id     = evt.get("pulseId") or evt.get("itemId")
-    item_name  = evt.get("pulseName") or evt.get("itemName") or str(sub_id)
-    new_label  = evt.get("value", {}).get("label", {}).get("text")
-    print(f"[Monday] sub_id={sub_id}, item_name={item_name}, new_label={new_label}")
+    # 3️⃣ Extract sub-item info and new status
+    sub_id    = evt.get("pulseId") or evt.get("itemId")
+    item_name = evt.get("pulseName") or evt.get("itemName") or str(sub_id)
+    new_value = evt.get("value", {}).get("label", {}).get("text")
+    print(f"[Monday] sub_id={sub_id}, item_name={item_name}, new_value={new_value}")
 
-    if new_label != "國際運輸" or not sub_id:
+    if new_value != "國際運輸" or not sub_id:
         return "OK", 200
 
-    # 4️⃣ Fetch all columns for this sub-item
+    # 4️⃣ Fetch just the Client Name column (ID = formula8__1)
     gql = '''
     query ($ids: [ID!]!) {
       items (ids: $ids) {
-        column_values {
-          title
+        column_values (ids: ["formula8__1"]) {
           text
         }
       }
     }'''
-    vars = {"ids": [str(sub_id)]}
+    variables = {"ids": [str(sub_id)]}
     resp = requests.post(
         "https://api.monday.com/v2",
-        json={"query": gql, "variables": vars},
+        json={"query": gql, "variables": variables},
         headers={
             "Authorization": MONDAY_API_TOKEN,
             "Content-Type":  "application/json"
         }
     )
     data2 = resp.json()
-    print("[Monday API] all columns:", data2)
+    print("[Monday API] response:", data2)
 
-    # 5️⃣ Pull out Client Name by title
-    client = None
+    # 5️⃣ Extract the client name text
     try:
-        cols = data2["data"]["items"][0]["column_values"]
-        for cv in cols:
-            if cv.get("title") == "Client Name":
-                client = cv.get("text")
-                break
+        client = data2["data"]["items"][0]["column_values"][0]["text"]
     except Exception as e:
-        print("[Monday API] error parsing columns:", e)
+        print("[Monday API] error fetching Client Name:", e)
         return "OK", 200
 
-    if not client:
-        print("[Monday→LINE] Client Name not found, skipping.")
-        return "OK", 200
-
-    # 6️⃣ Route to the correct LINE group
+    # 6️⃣ Map to LINE group
     group_id = CLIENT_TO_GROUP.get(client)
     if not group_id:
-        print(f"[Monday→LINE] no group for client '{client}', skipping.")
+        print(f"[Monday→LINE] no mapping for client “{client}” – skipping.")
         return "OK", 200
 
-    # 7️⃣ Push the notification
+    # 7️⃣ Push notification
     text = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
-    push = {
-      "to": group_id,
-      "messages": [{"type": "text", "text": text}]
-    }
-    headers2 = {
-      "Authorization": f"Bearer {LINE_TOKEN}",
-      "Content-Type":  "application/json"
-    }
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
-        headers=headers2, json=push
+        headers={
+            "Authorization": f"Bearer {LINE_TOKEN}",
+            "Content-Type":  "application/json"
+        },
+        json={"to": group_id, "messages":[{"type":"text","text":text}]}
     )
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
