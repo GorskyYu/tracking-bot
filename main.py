@@ -8,15 +8,12 @@ import base64
 from urllib.parse import quote
 from flask import Flask, request, jsonify
 
-# LINE group IDs for your two customers
-YUMI_GROUP_ID  = os.getenv("LINE_GROUP_ID_YUMI")
-VICKY_GROUP_ID = os.getenv("LINE_GROUP_ID_VICKY")
 
 # ─── Customer Mapping ──────────────────────────────────────────────────────────
 # Map each LINE group to the list of lowercase keywords you filter on
 CUSTOMER_FILTERS = {
-    YUMI_GROUP_ID:  ["yumi",    "shu-yen"],
-    VICKY_GROUP_ID: ["vicky",   "chia-chi"],
+    os.getenv("LINE_GROUP_ID_YUMI"):   ["yumi", "shu-yen"],
+    os.getenv("LINE_GROUP_ID_VICKY"):  ["vicky","chia-chi"]
 }
 
 # ─── Status Translations ──────────────────────────────────────────────────────
@@ -38,9 +35,8 @@ TRANSLATIONS = {
 # ─── Client → LINE Group Mapping ───────────────────────────────────────────────
 CLIENT_TO_GROUP = {
     "Yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
-    "Vicky": os.getenv("LINE_GROUP_ID_VICKY")
+    "Vicky": os.getenv("LINE_GROUP_ID_VICKY"),
 }
-
 
 # ─── Environment Variables ────────────────────────────────────────────────────
 APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
@@ -143,6 +139,10 @@ def webhook():
         if event.get("type") == "message" and event["message"].get("type") == "text":
             group_id = event["source"].get("groupId")
             text     = event["message"]["text"].strip()
+            
+            print(f"[Debug] incoming groupId: {group_id!r}")
+            print(f"[Debug] CUSTOMER_FILTERS keys: {list(CUSTOMER_FILTERS.keys())!r}")
+            
             print(f"[Webhook] Detected groupId: {group_id}, text: {text}")
 
             if text == "追蹤包裹":
