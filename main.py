@@ -180,9 +180,31 @@ def webhook():
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    # … your earlier code …
+    # ① URL validation ping
+    if request.method == "GET":
+        return "OK", 200
 
-    # 4️⃣ GraphQL: fetch the single Client-Name column’s display_value
+    data = request.get_json()
+    print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
+    evt = data.get("event", data)
+
+    # ② Challenge handshake
+    if "challenge" in data:
+        return jsonify({"challenge": data["challenge"]}), 200
+
+    # ③ Extract IDs and new status
+    sub_id    = evt.get("pulseId") or evt.get("itemId")
+    parent_id = evt.get("parentItemId")
+    lookup_id = parent_id or sub_id
+    board_id  = evt.get("boardId")
+    new_txt   = evt.get("value", {}).get("label", {}).get("text")
+    print(f"[Monday] lookup_id={lookup_id}, board_id={board_id}, new_txt={new_txt}")
+
+    # Only trigger on 國際運輸
+    if new_txt != "國際運輸" or not lookup_id or not board_id:
+        return "OK", 200
+
+    # ④ GraphQL query for just the Client Name column’s display_value
     gql = '''
     query ($boardIds: [ID!]!, $itemIds: [ID!]!) {
       boards(ids: $boardIds) {
@@ -197,6 +219,7 @@ def monday_webhook():
         "boardIds": [str(board_id)],
         "itemIds":  [str(lookup_id)]
     }
+
     resp = requests.post(
         "https://api.monday.com/v2",
         json={"query": gql, "variables": variables},
@@ -208,7 +231,7 @@ def monday_webhook():
     data2 = resp.json()
     print("[Monday API] response:", data2)
 
-    # 5️⃣ Pull out that display_value
+    # ⑤ Extract the display_value
     try:
         cvs    = data2["data"]["boards"][0]["items"][0]["column_values"]
         client = (cvs[0].get("display_value") or "").strip()
@@ -216,23 +239,15 @@ def monday_webhook():
         print("[Monday API] error parsing display_value:", e)
         return "OK", 200
 
-    # 6️⃣ Map to the right LINE group
+    # ⑥ Map to the correct LINE group
     key      = client.lower()
     group_id = CLIENT_TO_GROUP.get(key)
     if not group_id:
         print(f"[Monday→LINE] no mapping for client “{client}”, skipping.")
         return "OK", 200
 
-    # normalize and look up the correct LINE group
-    key      = client.lower()
-    group_id = CLIENT_TO_GROUP.get(key)
-    if not group_id:
-        print(f"[Monday→LINE] no mapping for client “{client}” (normalized “{key}”), skipping.")
-        return "OK", 200
-
-    # 7️⃣ Push to the correct LINE group
-    group_id = CLIENT_TO_GROUP[client]
-    message = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
+    # ⑦ Push the notification
+    message = f"📦 {evt.get('pulseName') or evt.get('itemName') or lookup_id} 已送往機場，準備進行國際運輸。"
     r2 = requests.post(
         "https://api.line.me/v2/bot/message/push",
         headers={
@@ -244,7 +259,6 @@ def monday_webhook():
     print(f"[Monday→LINE] pushed to {client}: {r2.status_code}, {r2.text}")
 
     return "OK", 200
-
     
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
