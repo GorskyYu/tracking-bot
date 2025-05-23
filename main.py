@@ -178,21 +178,37 @@ def webhook():
     return "OK", 200
     
 # ─── Monday.com Webhook ────────────────────────────────────────────────────────
+import os
+import json
+import requests
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+
+# ─── Environment & Mapping ─────────────────────────────────────────────────────
+MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
+LINE_TOKEN       = os.getenv("LINE_TOKEN")
+
+CLIENT_TO_GROUP = {
+    "Yumi":   os.getenv("LINE_GROUP_ID_YUMI"),
+    "Vicky":  os.getenv("LINE_GROUP_ID_VICKY"),
+}
+
+# ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
     # 1️⃣ URL validation ping
     if request.method == "GET":
         return "OK", 200
 
-    data = request.get_json()
-    print("[Monday] Raw payload:", json.dumps(data, ensure_ascii=False))
+    payload = request.get_json()
+    print("[Monday] Raw payload:", json.dumps(payload, ensure_ascii=False))
 
-    # 2️⃣ Initial challenge
-    if "challenge" in data:
-        return jsonify({"challenge": data["challenge"]}), 200
+    # 2️⃣ Challenge handshake
+    if "challenge" in payload:
+        return jsonify({"challenge": payload["challenge"]}), 200
 
-    # 3️⃣ Extract IDs & new status
-    evt       = data.get("event", data)
+    evt       = payload.get("event", payload)
     sub_id    = evt.get("pulseId") or evt.get("itemId")
     parent_id = evt.get("parentItemId")
     lookup_id = parent_id or sub_id
@@ -200,10 +216,11 @@ def monday_webhook():
     item_name = evt.get("pulseName") or evt.get("itemName") or str(lookup_id)
     print(f"[Monday] lookup_id={lookup_id}, new_txt={new_txt!r}")
 
+    # Only fire on status = 國際運輸
     if new_txt != "國際運輸" or not lookup_id:
         return "OK", 200
 
-    # 4️⃣ Fetch columns (including formula value)
+    # 3️⃣ Fetch all column_values (including 'value') via GraphQL
     gql = '''
     query ($ids: [ID!]!) {
       items(ids: $ids) {
@@ -216,15 +233,21 @@ def monday_webhook():
     }'''
     resp = requests.post(
         "https://api.monday.com/v2",
-        json={"query": gql, "variables": {"ids": [str(lookup_id)]}},
         headers={
             "Authorization": MONDAY_API_TOKEN,
             "Content-Type":  "application/json"
-        }
-    ).json()
-    cols = resp["data"]["items"][0]["column_values"]
+        },
+        json={"query": gql, "variables": {"ids": [str(lookup_id)]}}
+    )
+    data2 = resp.json()
+    print("[Monday API] response:", data2)
 
-    # 5️⃣ Extract the JSON-quoted formula result
+    cols = data2["data"]["items"][0]["column_values"]
+    # 4️⃣ Debug: show each column’s text & raw JSON value
+    for cv in cols:
+        print(f"  • id={cv['id']!r}, text={cv.get('text')!r}, value={cv.get('value')!r}")
+
+    # 5️⃣ Extract your Client Name from the formula column (formula8__1)
     raw = next((cv.get("value") for cv in cols if cv.get("id") == "formula8__1"), None)
     try:
         client_name = json.loads(raw) if raw else None
@@ -232,7 +255,7 @@ def monday_webhook():
         client_name = raw
     print(f"[Monday→LINE] formula8__1 → client_name={client_name!r}")
 
-    # 6️⃣ Map to LINE group
+    # 6️⃣ Map to your LINE group
     group_id = CLIENT_TO_GROUP.get(client_name)
     if not group_id:
         print(f"[Monday→LINE] no mapping for {client_name!r}, skipping.")
