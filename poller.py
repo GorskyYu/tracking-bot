@@ -134,6 +134,15 @@ def main():
                 state[oid] = human
                 new_lines.append(line)
 
+        # Deduplicate exact lines in this batch, preserving order
+        seen = set()
+        unique = []
+        for l in new_lines:
+            if l not in seen:
+                seen.add(l)
+                unique.append(l)
+        new_lines = unique
+
         if new_lines:
             updates[group_id] = new_lines
 
