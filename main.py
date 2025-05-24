@@ -10,6 +10,8 @@ import logging
 import re
 from urllib.parse import quote
 from flask import Flask, request, jsonify
+from apscheduler.schedulers.background import BackgroundScheduler
+
 
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -158,6 +160,63 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
 
     return lines
 
+def handle_ace_schedule(event):
+    """
+    Extracts the Ace message, filters lines for Yumi/Vicky,
+    and pushes a cleaned summary into their groups.
+    """
+    text     = event["message"]["text"]
+    group_id = event["source"]["groupId"]
+
+    # Split into lines
+    lines = text.splitlines()
+
+    # Static header/footer are any lines that do NOT start with ACE or 250N
+    header = []
+    code_lines = []
+    for line in lines:
+        if CODE_TRIGGER_RE.search(line):
+            code_lines.append(line)
+        else:
+            header.append(line)
+
+    # Prepare per-customer lists
+    vicky_batch = []
+    yumi_batch  = []
+
+    for raw in code_lines:
+        # Remove the code prefix
+        stripped = CODE_TRIGGER_RE.sub("", raw).strip()
+
+        # Check name membership
+        for name in VICKY_NAMES:
+            if name in stripped:
+                vicky_batch.append(stripped)
+                break
+        for name in YUMI_NAMES:
+            if name in stripped:
+                yumi_batch.append(stripped)
+                break
+
+    # Helper to send if we have lines
+    def push_to(group, batch):
+        if not batch:
+            return
+        payload = {
+            "to": group,
+            "messages": [
+                {
+                    "type": "text",
+                    "text": "\n".join(header + [""] + batch)
+                }
+            ]
+        }
+        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        log.info(f"Pushed Ace summary to {group}: {resp.status_code}")
+
+    # Push to each
+    push_to(VICKY_GROUP_ID, vicky_batch)
+    push_to(YUMI_GROUP_ID,  yumi_batch)
 
 # ─── Flask Webhook ────────────────────────────────────────────────────────────
 app = Flask(__name__)
