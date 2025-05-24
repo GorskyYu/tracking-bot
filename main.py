@@ -7,6 +7,7 @@ import json
 import base64
 import redis
 import logging
+import re
 from urllib.parse import quote
 from flask import Flask, request, jsonify
 
@@ -52,6 +53,21 @@ APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
 APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
 LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
 
+# ─── Ace schedule config ──────────────────────────────────────────────────────
+ACE_GROUP_ID = os.getenv("LINE_GROUP_ID_ACE")
+VICKY_GROUP_ID = os.getenv("LINE_GROUP_ID_VICKY")
+YUMI_GROUP_ID  = os.getenv("LINE_GROUP_ID_YUMI")
+
+# Trigger when you see “週四出貨”/“週日出貨” + “麻煩請” + an ACE or 250N code,
+# or when you see the exact phrase “這幾位還沒有按申報相符”
+CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|250N)\d+[A-Z0-9]*\b")
+MISSING_CONFIRM = "這幾位還沒有按申報相符"
+
+# Names to look for in each group’s list
+VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲"}
+YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑"}
+
+# ─── Redis for state persistence ───────────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL")
 if not REDIS_URL:
     raise RuntimeError("REDIS_URL environment variable is required for state persistence")
@@ -160,45 +176,60 @@ def webhook():
 
     for event in data.get("events", []):
         # Only handle text messages
-        if event.get("type") == "message" and event["message"].get("type") == "text":
-            group_id = event["source"].get("groupId")
-            text     = event["message"]["text"].strip()
+        if event.get("type") != "message" or event["message"].get("type") != "text":
+            continue
             
-            print(f"[Debug] incoming groupId: {group_id!r}")
-            print(f"[Debug] CUSTOMER_FILTERS keys: {list(CUSTOMER_FILTERS.keys())!r}")
-            
-            print(f"[Webhook] Detected groupId: {group_id}, text: {text}")
+        group_id = event["source"].get("groupId")
+        text     = event["message"]["text"].strip()
+        
+        print(f"[Debug] incoming groupId: {group_id!r}")
+        print(f"[Debug] CUSTOMER_FILTERS keys: {list(CUSTOMER_FILTERS.keys())!r}")
+        
+        print(f"[Webhook] Detected groupId: {group_id}, text: {text}")
+        
+        # ——— 1) Ace schedule / missing-confirmation trigger ——————————
+        is_schedule = (
+            ("週四出貨" in text or "週日出貨" in text)
+            and "麻煩請" in text
+            and CODE_TRIGGER_RE.search(text)
+        )
+        is_missing = MISSING_CONFIRM in text
 
-            if text == "追蹤包裹":
-                keywords = CUSTOMER_FILTERS.get(group_id)
-                if not keywords:
-                    print(f"[Webhook] No keywords configured for group {group_id}, skipping.")
-                    continue
+        if group_id == ACE_GROUP_ID and (is_schedule or is_missing):
+            handle_ace_schedule(event)
+            continue            
 
-                # Now safe to extract reply_token
-                reply_token = event["replyToken"]
-                print("[Webhook] Trigger matched, fetching statuses…")
-                messages = get_statuses_for(keywords)
-                print("[Webhook] Reply messages:", messages)
+        # 2) Your existing “追蹤包裹” logic
+        if text == "追蹤包裹":
+            keywords = CUSTOMER_FILTERS.get(group_id)
+            if not keywords:
+                print(f"[Webhook] No keywords configured for group {group_id}, skipping.")
+                continue
 
-                # Combine lines into one multi-line text
-                combined = "\n\n".join(messages)
-                payload = {
-                    "replyToken": reply_token,
-                    "messages": [{"type": "text", "text": combined}]
-                }
+            # Now safe to extract reply_token
+            reply_token = event["replyToken"]
+            print("[Webhook] Trigger matched, fetching statuses…")
+            messages = get_statuses_for(keywords)
+            print("[Webhook] Reply messages:", messages)
 
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {LINE_TOKEN}"
-                }
-                resp = requests.post(
-                    "https://api.line.me/v2/bot/message/reply",
-                    headers=headers,
-                    json=payload
-                )
-                print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
-                log.info(f"LINE reply status={resp.status_code}, body={resp.text}")
+            # Combine lines into one multi-line text
+            combined = "\n\n".join(messages)
+            payload = {
+                "replyToken": reply_token,
+                "messages": [{"type": "text", "text": combined}]
+            }
+
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {LINE_TOKEN}"
+            }
+            resp = requests.post(
+                "https://api.line.me/v2/bot/message/reply",
+                headers=headers,
+                json=payload
+            )
+            print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
+            log.info(f"LINE reply status={resp.status_code}, body={resp.text}")
 
     return "OK", 200
     
