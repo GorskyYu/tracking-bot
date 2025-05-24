@@ -196,18 +196,21 @@ def webhook():
         is_missing = MISSING_CONFIRM in text
 
         if group_id == ACE_GROUP_ID and (is_schedule or is_missing):
-            handle_ace_schedule(event)
-            
-            # ─── Acknowledge back to Ace’s group ─────────────────────
-            requests.post(
-                LINE_PUSH_URL,
-                headers=LINE_HEADERS,
-                json={
-                    "to": ACE_GROUP_ID,
-                    "messages": [{"type":"text","text":"收到"}]
-                }
-            )
-            continue            
+            try:
+                handle_ace_schedule(event)
+
+                # Acknowledge back to Ace’s group
+                requests.post(
+                    LINE_PUSH_URL,
+                    headers=LINE_HEADERS,
+                    json={"to": ACE_GROUP_ID, "messages":[{"type":"text","text":"收到"}]}
+                )
+            except Exception as e:
+                # Log the full stack so we can see what failed
+                log.exception("Error in handle_ace_schedule")
+            finally:
+                # Always consume the event so we don’t fall into other handlers
+                continue            
 
         # 2) Your existing “追蹤包裹” logic
         if text == "追蹤包裹":
