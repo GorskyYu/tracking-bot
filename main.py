@@ -163,58 +163,59 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
 def handle_ace_schedule(event):
     """
     Extracts the Ace message, filters lines for Yumi/Vicky,
-    and pushes a cleaned summary into their groups.
+    and pushes a cleaned summary into their groups with the names
+    inserted between 麻煩請 and 收到EZ way通知後…
     """
     text     = event["message"]["text"]
-    group_id = event["source"]["groupId"]
-
-    # Split into lines
+    # split into lines
     lines = text.splitlines()
 
-    # Static header/footer are any lines that do NOT start with ACE or 250N
-    header = []
-    code_lines = []
-    for line in lines:
-        if CODE_TRIGGER_RE.search(line):
-            code_lines.append(line)
-        else:
-            header.append(line)
+    # find the index of the “麻煩請” line
+    try:
+        idx_m = next(i for i,l in enumerate(lines) if "麻煩請" in l)
+    except StopIteration:
+        idx_m = 1  # fallback just after the first line
 
-    # Prepare per-customer lists
-    vicky_batch = []
-    yumi_batch  = []
+    # find the index of the “收到EZ way通知後” line
+    try:
+        idx_r = next(i for i,l in enumerate(lines) if l.startswith("收到EZ way通知後"))
+    except StopIteration:
+        idx_r = len(lines)
 
-    for raw in code_lines:
-        # Remove the code prefix
-        stripped = CODE_TRIGGER_RE.sub("", raw).strip()
+    # header before names: up through 麻煩請
+    header = lines[: idx_m+1 ]
 
-        # Check name membership
-        for name in VICKY_NAMES:
-            if name in stripped:
-                vicky_batch.append(stripped)
-                break
-        for name in YUMI_NAMES:
-            if name in stripped:
-                yumi_batch.append(stripped)
-                break
+    # footer after names: from 收到EZ way通知後 onward
+    footer = lines[ idx_r: ]
 
-    # Helper to send if we have lines
+    # collect only the code lines (ACE/250N+name)
+    code_lines = [l for l in lines if CODE_TRIGGER_RE.search(l)]
+
+    # strip off the code prefix from each
+    cleaned = [ CODE_TRIGGER_RE.sub("", l).strip() for l in code_lines ]
+
+    # now split into per-group lists
+    vicky_batch = [c for c in cleaned if any(name in c for name in VICKY_NAMES)]
+    yumi_batch  = [c for c in cleaned if any(name in c for name in YUMI_NAMES )]
+
     def push_to(group, batch):
         if not batch:
             return
+        # build the new message: header, blank line, names, blank line, footer
+        message = []
+        message += header
+        message += [""]       # blank line
+        message += batch
+        message += [""]       # blank line
+        message += footer
+
         payload = {
             "to": group,
-            "messages": [
-                {
-                    "type": "text",
-                    "text": "\n".join(header + [""] + batch)
-                }
-            ]
+            "messages": [{"type":"text","text":"\n".join(message)}]
         }
         resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
         log.info(f"Pushed Ace summary to {group}: {resp.status_code}")
 
-    # Push to each
     push_to(VICKY_GROUP_ID, vicky_batch)
     push_to(YUMI_GROUP_ID,  yumi_batch)
 
