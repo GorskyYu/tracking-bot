@@ -197,6 +197,16 @@ def webhook():
 
         if group_id == ACE_GROUP_ID and (is_schedule or is_missing):
             handle_ace_schedule(event)
+            
+            # ─── Acknowledge back to Ace’s group ─────────────────────
+            requests.post(
+                LINE_PUSH_URL,
+                headers=LINE_HEADERS,
+                json={
+                    "to": ACE_GROUP_ID,
+                    "messages": [{"type":"text","text":"收到"}]
+                }
+            )
             continue            
 
         # 2) Your existing “追蹤包裹” logic
