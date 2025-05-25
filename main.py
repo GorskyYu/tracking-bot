@@ -194,6 +194,12 @@ def handle_ace_schedule(event):
 
     # strip off the code prefix from each
     cleaned = [ CODE_TRIGGER_RE.sub("", l).strip() for l in code_lines ]
+    
+    # strip the code prefix and any stray quotes
+    cleaned = [
+        CODE_TRIGGER_RE.sub("", l).strip().strip('"')
+        for l in code_lines
+    ]    
 
     # now split into per-group lists
     vicky_batch = [c for c in cleaned if any(name in c for name in VICKY_NAMES)]
@@ -203,16 +209,17 @@ def handle_ace_schedule(event):
         if not batch:
             return
         # build the new message: header, blank line, names, blank line, footer
-        message = []
-        message += header
-        message += [""]       # blank line
-        message += batch
-        message += [""]       # blank line
-        message += footer
+        lines = []
+        for part in header + [""] + batch + [""] + footer:
+            # strip whitespace and any leading/trailing quotes
+            lines.append(part.strip().strip('"'))
 
         payload = {
             "to": group,
-            "messages": [{"type":"text","text":"\n".join(message)}]
+            "messages": [{
+                "type": "text",
+                "text": "\n".join(lines)
+            }]
         }
         resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
         log.info(f"Pushed Ace summary to {group}: {resp.status_code}")
