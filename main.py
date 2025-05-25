@@ -208,18 +208,20 @@ def handle_ace_schedule(event):
     def push_to(group, batch):
         if not batch:
             return
-        # build the new message: header, blank line, names, blank line, footer
-        lines = []
-        for part in header + [""] + batch + [""] + footer:
-            # strip whitespace and any leading/trailing quotes
-            lines.append(part.strip().strip('"'))
 
+        parts = header + [""] + batch + [""] + footer
+        lines = []
+        for part in parts:
+            # remove leading/trailing whitespace and quotes
+            stripped = part.strip().strip('"').strip()
+            # if the original part was just quotes, stripped==""; treat that as a blank line
+            lines.append(stripped)
+
+        # now join—there will be no stray '"' lines, only true content or blank lines
+        text = "\n".join(lines)
         payload = {
             "to": group,
-            "messages": [{
-                "type": "text",
-                "text": "\n".join(lines)
-            }]
+            "messages": [{"type": "text", "text": text}]
         }
         resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
         log.info(f"Pushed Ace summary to {group}: {resp.status_code}")
