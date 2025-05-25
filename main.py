@@ -11,11 +11,6 @@ import re
 from urllib.parse import quote
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
-from main import (
-    VICKY_NAMES, YUMI_NAMES,
-    VICKY_GROUP_ID, YUMI_GROUP_ID,
-    LINE_PUSH_URL, LINE_HEADERS,
-)
 
 
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
