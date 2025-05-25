@@ -11,6 +11,11 @@ import re
 from urllib.parse import quote
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
+from main import (
+    VICKY_NAMES, YUMI_NAMES,
+    VICKY_GROUP_ID, YUMI_GROUP_ID,
+    LINE_PUSH_URL, LINE_HEADERS,
+)
 
 
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
@@ -160,6 +165,7 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
 
     return lines
 
+# ─── Ace schedule handler ─────────────────────────────────────────────────────
 def handle_ace_schedule(event):
     """
     Extracts the Ace message, filters lines for Yumi/Vicky,
@@ -219,6 +225,46 @@ def handle_ace_schedule(event):
     push_to(VICKY_GROUP_ID, vicky_batch)
     push_to(YUMI_GROUP_ID,  yumi_batch)
 
+# ─── Ace shipment-block handler ────────────────────────────────────────────────
+def handle_ace_shipments(event):
+    """
+    Splits the text into blocks starting with '出貨單號:', then
+    forwards each complete block to Yumi or Vicky based on the
+    recipient name.
+    """
+    text = event["message"]["text"]
+    # split into shipment‐blocks
+    parts = re.split(r'(?=出貨單號:)', text)
+    vicky, yumi = [], []
+
+    for blk in parts:
+        if "出貨單號:" not in blk or "宅配單號:" not in blk:
+            continue
+        lines = [l.strip() for l in blk.strip().splitlines() if l.strip()]
+        if len(lines) < 4:
+            continue
+        # recipient name is on line 3
+        recipient = lines[2].split()[0]
+        full_msg  = "\n".join(lines)
+        if recipient in VICKY_NAMES:
+            vicky.append(full_msg)
+        elif recipient in YUMI_NAMES:
+            yumi.append(full_msg)
+
+    def push(group, messages):
+        if not messages:
+            return
+        payload = {
+            "to": group,
+            "messages":[{"type":"text","text":"\n\n".join(messages)}]
+        }
+        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        log.info(f"Sent {len(messages)} shipment blocks to {group}: {resp.status_code}")
+
+    push(VICKY_GROUP_ID, vicky)
+    push(YUMI_GROUP_ID,  yumi)
+
+
 # ─── Flask Webhook ────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
@@ -254,22 +300,22 @@ def webhook():
             and CODE_TRIGGER_RE.search(text)
         )
         is_missing = MISSING_CONFIRM in text
+        
+        # NEW: detect pure-shipment blocks
+        is_shipment = (
+            "出貨單號" in text
+            and "宅配單號" in text
+            and CODE_TRIGGER_RE.search(text)
+        )    
 
-        if group_id == ACE_GROUP_ID and (is_schedule or is_missing):
-            try:
+        if group_id == ACE_GROUP_ID:
+            # 2a) schedule-style notice
+            if is_schedule or is_missing:
                 handle_ace_schedule(event)
-
-                # Acknowledge back to Ace’s group
-                requests.post(
-                    LINE_PUSH_URL,
-                    headers=LINE_HEADERS,
-                    json={"to": ACE_GROUP_ID, "messages":[{"type":"text","text":"收到"}]}
-                )
-            except Exception as e:
-                # Log the full stack so we can see what failed
-                log.exception("Error in handle_ace_schedule")
-            finally:
-                # Always consume the event so we don’t fall into other handlers
+                continue
+            # 2b) shipment-block notice
+            if is_shipment:
+                handle_ace_shipments(event)
                 continue            
 
         # 2) Your existing “追蹤包裹” logic
