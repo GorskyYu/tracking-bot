@@ -209,24 +209,19 @@ def handle_ace_schedule(event):
         if not batch:
             return
         
-        # Clean batch—remove any lines that are just quotes or empty,
-        # and strip any leading/trailing quotation marks from the rest.
+        # first, strip out any pure-quote lines and remove quotes from the rest
         clean_batch = []
         for line in batch:
-            l = line.strip()
-            # skip lines that are only quotes or empty
-            if not l or set(l) <= {'"', '”', '“'}:
-                continue
-            # remove any wrapping quotes
-            # (both ASCII " and Unicode quotes)
-            l = l.strip('"“”')
-            clean_batch.append(l)
+            # remove leading/trailing whitespace and quotation marks
+            stripped = line.strip().strip('"')
+            if stripped:                   # skip empty / quote-only lines
+                clean_batch.append(stripped)
         
         # build the new message: header, blank line, names, blank line, footer
         message = []
         message += header
         message += [""]       # blank line
-        message += clean_batch
+        message += batch
         message += [""]       # blank line
         message += footer
 
