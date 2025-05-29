@@ -31,7 +31,7 @@ CUSTOMER_FILTERS = {
 # ─── Status Translations ──────────────────────────────────────────────────────
 TRANSLATIONS = {
     "out for delivery today":         "今日派送中",
-    "out for delivery":               "派送中"
+    "out for delivery":               "派送中",
     "processing at ups facility":     "UPS處理中",
     "arrived at facility":            "已到達派送中心",
     "departed from facility":         "已離開派送中心",
