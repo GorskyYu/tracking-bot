@@ -295,6 +295,9 @@ def remind_vicky(day_name: str):
     
     resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
     log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
+    log.debug("Payload: %s", json.dumps(payload, ensure_ascii=False, indent=2))
+    log.debug("Response body: %s", resp.text)
+
 
 
 # ─── Ace schedule handler ─────────────────────────────────────────────────────
