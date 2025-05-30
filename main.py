@@ -267,8 +267,11 @@ def remind_vicky(day_name: str):
     }
 
     # 2) header, body, footer
-    header = 
-        f"@Yves Lai 您好，溫哥華倉庫{day_name}預計出貨，系統未偵測到內容物清單有異動，請麻煩填寫以下包裹的內容物清單。謝謝！"
+    header = (
+        f"@Vicky Ku 您好，溫哥華倉庫{day_name}預計出貨。"
+        f" 系統未偵測到内容物清單有異動，"
+        f" 請麻煩填寫以下包裹的内容物清單。謝謝！"
+    )
     
     # find the offset & length of the “@Vicky Ku” in the header
     start = header.index("@Yves Lai")
