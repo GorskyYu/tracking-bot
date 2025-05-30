@@ -269,24 +269,28 @@ def remind_vicky(day_name: str):
     # 4) Footer is your Google Sheet URL from env
     footer = os.getenv("VICKY_SHEET_URL")
     
-    full_text = "\n".join([header_line, body, footer])
+    # 5) Assemble full text in one message
+    full_text = "\n\n".join([header_line, body, footer])
 
-    # 5) Compute mention entity (always at the very start)
-    entities = [{
-        "type":   "mention",
-        "offset": 0,
-        "length": len(mention_text),
-        "userId": VICKY_USER_ID
-    }]
-
-    # 6) Assemble and push in one message
+    # 6) Push with the correct "mention" block (not "entities")
     payload = {
-      "to": VICKY_GROUP_ID,
-      "messages": [{
-        "type":     "text",
-        "text":     full_text,
-        "entities": entities
-      }]
+        "to": VICKY_GROUP_ID,
+        "messages": [
+            {
+                "type": "text",
+                "text": full_text,
+                "mention": {
+                    "mentionees": [
+                        {
+                            "type":   "user",
+                            "userId": VICKY_USER_ID,
+                            "offset": 0,
+                            "length": len(mention_text)
+                        }
+                    ]
+                }
+            }
+        ]
     }
     resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
     log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
