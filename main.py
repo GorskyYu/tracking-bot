@@ -256,9 +256,9 @@ def remind_vicky(day_name: str):
         return
 
     # 2) Build the mention placeholder and header 
-    #    Use a single placeholder key – e.g. "{vicky}" – at the very front.
-    placeholder = "{vicky}"
-    header_line = (
+    #    Use a single placeholder key – e.g. "{user}" – at the very front.
+    placeholder = "{user}"
+    header = (
         f"{placeholder} 您好，溫哥華倉庫{day_name}預計出貨。"
         "系統未偵測到内容物清單有異動，"
         "請麻煩填寫以下包裹的内容物清單。謝謝！"
@@ -271,11 +271,11 @@ def remind_vicky(day_name: str):
     footer = os.getenv("VICKY_SHEET_URL")
     
     # 5) Assemble full text in one message
-    full_text = "\n\n".join([header_line, body, footer])
+    full_text = "\n\n".join([header, body, footer])
     
     # 6) Build the substitution map for the mention
     substitution = {
-        "vicky": {
+        "user": {
             "type": "mention",
             "mentionee": {
                 "type":   "user",
@@ -293,6 +293,7 @@ def remind_vicky(day_name: str):
         "substitution": substitution
       }]
     }
+    
     resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
     log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
 
