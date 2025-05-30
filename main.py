@@ -293,13 +293,21 @@ def remind_vicky(day_name: str):
       }]
     }
     
-    resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-    log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
+    print("VICKY_GROUP_ID:", VICKY_GROUP_ID)
+    print("VICKY_USER_ID:", VICKY_USER_ID)
+    print("LINE_PUSH_URL:", LINE_PUSH_URL)
+    print("LINE_HEADERS:", LINE_HEADERS)
+    print("Payload:\n", json.dumps(payload, ensure_ascii=False, indent=2))
+    
     log.debug("Payload: %s", json.dumps(payload, ensure_ascii=False, indent=2))
     log.debug("Response body: %s", resp.text)
     log.debug("Response status: %s", resp.status_code)
     log.debug("Response text:\n%s", resp.text)
     log.debug("Response headers:\n%s", resp.headers)
+    
+    resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+    log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
+
 
 
 
