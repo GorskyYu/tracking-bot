@@ -15,7 +15,10 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import timedelta
 from datetime import datetime, timezone
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 
+SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
 
 # load your Google service account credentials from the env var
 GA_SVC_INFO = json.loads(os.environ["GOOGLE_SVCKEY_JSON"])
@@ -191,13 +194,25 @@ def vicky_has_active_orders() -> list[str]:
 
 
 def vicky_sheet_recently_edited():
-    # open the spreadsheet (this returns a Spreadsheet object)
-    sh = GC.open_by_url(os.environ["VICKY_SHEET_URL"])
+    # 1) build a credentials object from your SERVICE_ACCOUNT JSON
+    creds = Credentials.from_service_account_info(
+        json.loads(os.environ["GOOGLE_SVCKEY_JSON"]),
+        scopes=SCOPES
+    )
 
-    # the Spreadsheet has a datetime `.updated`
-    last_edit: datetime = sh.updated
+    # 2) fetch the spreadsheet’s Drive metadata
+    drive = build("drive", "v3", credentials=creds)
+    sheet_url = os.environ["VICKY_SHEET_URL"]
+    file_id = sheet_url.split("/")[5]            # extract the ID from the URL
+    meta = drive.files().get(
+        fileId=file_id,
+        fields="modifiedTime"
+    ).execute()
 
-    # compare to now in UTC:
+    # 3) parse the ISO timestamp into a datetime
+    last_edit = datetime.fromisoformat(meta["modifiedTime"].replace("Z","+00:00"))
+
+    # 4) compare against now (UTC)
     age = datetime.now(timezone.utc) - last_edit
     return age.days < 3
     
