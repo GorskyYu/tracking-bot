@@ -73,7 +73,7 @@ LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
 # ─── Ace schedule config ──────────────────────────────────────────────────────
 ACE_GROUP_ID = os.getenv("LINE_GROUP_ID_ACE")
 VICKY_GROUP_ID = os.getenv("LINE_GROUP_ID_VICKY")
-VICKY_USER_ID    = os.getenv("LINE_USER_ID_VICKY") 
+VICKY_USER_ID    = os.getenv("VICKY_USER_ID") 
 YUMI_GROUP_ID  = os.getenv("LINE_GROUP_ID_YUMI")
 
 # Trigger when you see “週四出貨”/“週日出貨” + “麻煩請” + an ACE or 250N code,
