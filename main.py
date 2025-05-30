@@ -250,6 +250,9 @@ def vicky_sheet_recently_edited():
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
     """Send Vicky a reminder at 5 PM PST on Wednesday/Friday if needed."""
+    
+    resp = None  # Initialize!
+    
     # 1) Gather her active orders and check sheet edits
     oids = vicky_has_active_orders()
     if not oids or vicky_sheet_recently_edited():
@@ -293,20 +296,24 @@ def remind_vicky(day_name: str):
       }]
     }
     
-    print("VICKY_GROUP_ID:", VICKY_GROUP_ID)
-    print("VICKY_USER_ID:", VICKY_USER_ID)
-    print("LINE_PUSH_URL:", LINE_PUSH_URL)
-    print("LINE_HEADERS:", LINE_HEADERS)
-    print("Payload:\n", json.dumps(payload, ensure_ascii=False, indent=2))
+#    print("VICKY_GROUP_ID:", VICKY_GROUP_ID)
+#    print("VICKY_USER_ID:", VICKY_USER_ID)
+#    print("LINE_PUSH_URL:", LINE_PUSH_URL)
+#    print("LINE_HEADERS:", LINE_HEADERS)
+#    print("Payload:\n", json.dumps(payload, ensure_ascii=False, indent=2))
     
-    log.debug("Payload: %s", json.dumps(payload, ensure_ascii=False, indent=2))
-    log.debug("Response body: %s", resp.text)
-    log.debug("Response status: %s", resp.status_code)
-    log.debug("Response text:\n%s", resp.text)
-    log.debug("Response headers:\n%s", resp.headers)
-    
-    resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-    log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
+    try:
+        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
+    except Exception as e:
+        log.error(f"Error sending LINE push: {e}")
+
+    # Robust logging
+    if resp:
+        log.debug("Payload: %s", json.dumps(payload, ensure_ascii=False, indent=2))
+        log.debug("Response body: %s", resp.text)
+        log.debug("Response status: %s", resp.status_code)
+        log.debug("Response headers:\n%s", resp.headers)
 
 
 
