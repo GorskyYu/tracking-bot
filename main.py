@@ -15,6 +15,12 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import timedelta
 
+# load your Google service account credentials from the env var
+GA_SVC_INFO = json.loads(os.environ["GOOGLE_SVCKEY_JSON"])
+# build a fully-authorized client
+GC = gspread.service_account_from_dict(GA_SVC_INFO)
+
+
 
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -182,17 +188,13 @@ def vicky_has_active_orders() -> list[str]:
     return [ l.split()[0] for l in lines[1:] ]
 
 
-def vicky_sheet_recently_edited(days: int = 3) -> bool:
-    """Return True if Vicky’s Google Sheet has been edited within the last `days` days."""
-    sh = gs.open_by_url(VICKY_SHEET_URL)
-    # fetch drive metadata to get modifiedTime
-    drive = gs.auth.authorize_http()
-    meta = drive.request(
-        "GET",
-        f"https://www.googleapis.com/drive/v3/files/{sh.id}?fields=modifiedTime"
-    ).json()
-    mod_time = datetime.fromisoformat(meta["modifiedTime"].rstrip("Z"))
-    return (datetime.utcnow() - mod_time) < timedelta(days=days)
+def vicky_sheet_recently_edited():
+    # grab the sheet by URL
+    sh = GC.open_by_url(os.environ["VICKY_SHEET_URL"])
+    ws = sh.sheet1
+    # now you can check ws.updated or pull values, etc.
+    last_edit = ws.updated       # datetime of last update
+    return (datetime.utcnow() - last_edit).days < 3
     
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
