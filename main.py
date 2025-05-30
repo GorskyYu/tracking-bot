@@ -256,8 +256,9 @@ def remind_vicky(day_name: str):
         return
 
     # 2) Build the header 
+    placeholder = "{user1}"
     header = (
-        f"{user1} 您好，溫哥華倉庫{day_name}預計出貨。"
+        f"{placeholder} 您好，溫哥華倉庫{day_name}預計出貨。"
         "系統未偵測到内容物清單有異動，"
         "請麻煩填寫以下包裹的内容物清單。謝謝！"
     )
@@ -275,7 +276,7 @@ def remind_vicky(day_name: str):
     substitution = {
         "user1": {
             "type": "mention",
-            "mentionee": {
+            "mentionees": {
                 "type":   "user",
                 "userId": VICKY_USER_ID
             }
