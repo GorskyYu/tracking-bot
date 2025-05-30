@@ -14,6 +14,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import timedelta
+from datetime import datetime, timezone
+
 
 # load your Google service account credentials from the env var
 GA_SVC_INFO = json.loads(os.environ["GOOGLE_SVCKEY_JSON"])
@@ -189,12 +191,15 @@ def vicky_has_active_orders() -> list[str]:
 
 
 def vicky_sheet_recently_edited():
-    # grab the sheet by URL
+    # open the spreadsheet (this returns a Spreadsheet object)
     sh = GC.open_by_url(os.environ["VICKY_SHEET_URL"])
-    ws = sh.sheet1
-    # now you can check ws.updated or pull values, etc.
-    last_edit = ws.updated       # datetime of last update
-    return (datetime.utcnow() - last_edit).days < 3
+
+    # the Spreadsheet has a datetime `.updated`
+    last_edit: datetime = sh.updated
+
+    # compare to now in UTC:
+    age = datetime.now(timezone.utc) - last_edit
+    return age.days < 3
     
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
