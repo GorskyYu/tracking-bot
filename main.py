@@ -249,53 +249,37 @@ def vicky_sheet_recently_edited():
     
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
+    """Send Vicky a reminder at 5 PM PST on Wednesday/Friday if needed."""
+    # 1) Gather her active orders and check sheet edits
     oids = vicky_has_active_orders()
-    # if no active orders or sheet edited, bail
     if not oids or vicky_sheet_recently_edited():
         return
 
-    # 1) mention Vicky so she’s notified
-    #    LINE mentions require a little JSON object in the message:
-    mention = {
-      "type": "text",
-      "text": "@Vicky Ku",
-      "mentions": [{
-        "type": "user",
-        "userId": VICKY_USER_ID,
-        "text": "@Vicky Ku"
-      }]
-    }
-
-    # 2) header, body, footer
-    header = (
-        f"@Vicky Ku 您好，溫哥華倉庫{day_name}預計出貨。"
-        f" 系統未偵測到内容物清單有異動，"
-        f" 請麻煩填寫以下包裹的内容物清單。謝謝！"
+    # 2) Build the mention + header in one shot
+    mention     = "@Yves Lai"  # replace with her real LINE user-mention syntax if needed
+    header_line = (
+        f"{mention} 您好，溫哥華倉庫{day_name}預計出貨。"
+        "系統未偵測到内容物清單有異動，"
+        "請麻煩填寫以下包裹的内容物清單。謝謝！"
     )
-    
-    # find the offset & length of the “@Vicky Ku” in the header
-    start = header.index("@Yves Lai")
-    length = len("@Yves Lai")
 
+    # 3) Body is the list of tracking IDs (one per line)
+    body = "\n".join(oids)
+
+    # 4) Footer is your Google Sheet URL from env
+    footer = os.getenv("VICKY_SHEET_URL")
+
+    # 5) Assemble and push in one message
     payload = {
-      "to": VICKY_GROUP_ID,
-      "messages":[
-        {
-          "type":"text",
-          "text": header + "\n\n" + body + "\n\n" + footer,
-          "mention": {
-            "mentionees": [{
-                "index": 0,
-                "length": len("@Vicky Ku"),
-                "userId": VICKY_USER_ID
-              }]
-            }
-          }]
-        }
-    requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-
+        "to": VICKY_GROUP_ID,
+        "messages": [{
+            "type": "text",
+            "text": "\n\n".join([header_line, body, "", footer])
+        }]
+    }
     resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
     log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
+
 
 # ─── Ace schedule handler ─────────────────────────────────────────────────────
 def handle_ace_schedule(event):
