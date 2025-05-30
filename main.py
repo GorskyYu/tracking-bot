@@ -187,10 +187,41 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
 
 # ─── Vicky-reminder helpers ───────────────────────────────────────────────────    
 def vicky_has_active_orders() -> list[str]:
-    """Return a list of Vicky’s active order-IDs (the “<OID>” at the start of each line)."""
-    lines = get_statuses_for(CUSTOMER_FILTERS[VICKY_GROUP_ID])
-    # skip the header line, grab the ID token from each
-    return [ l.split()[0] for l in lines[1:] ]
+    """
+    Return a list of Vicky’s active UPS tracking numbers (the 1Z… codes).
+    """
+    # 1) Get all active TE order IDs
+    resp_list = call_api("shipment/list")
+    lst = resp_list.get("response", {}).get("list") or resp_list.get("response", [])
+    te_ids: list[str] = [str(o["id"]) for o in lst if "id" in o]
+    # 2) Filter those down to only Vicky’s orders
+    vicky_ids: list[str] = []
+    for oid in te_ids:
+        det = call_api("shipment/detail", {"id": oid}).get("response", {})
+        if isinstance(det, list):
+            det = det[0]
+        init = det.get("initiation", {})
+        loc  = next(iter(init), None)
+        name = init.get(loc, {}, {}).get("name", "").lower() if loc else ""
+        if any(kw in name for kw in CUSTOMER_FILTERS[VICKY_GROUP_ID]):
+            vicky_ids.append(oid)
+    if not vicky_ids:
+        return []
+
+    # 3) Fetch raw tracking info for exactly those TE IDs
+    resp_tr = call_api("shipment/tracking", {
+        "keyword": ",".join(vicky_ids),
+        "rsync":   0,
+        "timezone": TIMEZONE
+    }).get("response", [])
+
+    # 4) Extract the UPS “number” field
+    tracking_numbers = [
+        item.get("number", "").strip()
+        for item in resp_tr
+        if item.get("number")
+    ]
+    return tracking_numbers
 
 
 def vicky_sheet_recently_edited():
@@ -236,23 +267,29 @@ def remind_vicky(day_name: str):
     }
 
     # 2) header, body, footer
-    header = (
-        f"您好，溫哥華倉庫{day_name}預計出貨，"
-        "系統未偵測到內容物清單有異動，"
-        "請麻煩填寫以下包裹的內容物清單。謝謝！"
-    )
-    body   = "\n".join(oids)
-    footer = VICKY_SHEET_URL
+    header = 
+        f"@Yves Lai 您好，溫哥華倉庫{day_name}預計出貨，系統未偵測到內容物清單有異動，請麻煩填寫以下包裹的內容物清單。謝謝！"
+    
+    # find the offset & length of the “@Vicky Ku” in the header
+    start = header.index("@Yves Lai")
+    length = len("@Yves Lai")
 
     payload = {
       "to": VICKY_GROUP_ID,
-      "messages": [
-        mention,
-        {"type":"text","text": header},
-        {"type":"text","text": body},
-        {"type":"text","text": footer},
-      ]
-    }
+      "messages":[
+        {
+          "type":"text",
+          "text": header + "\n\n" + body + "\n\n" + footer,
+          "mention": {
+            "mentionees": [{
+                "index": 0,
+                "length": len("@Vicky Ku"),
+                "userId": VICKY_USER_ID
+              }]
+            }
+          }]
+        }
+    requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
 
     resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
     log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
