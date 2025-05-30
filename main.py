@@ -202,7 +202,7 @@ def vicky_has_active_orders() -> list[str]:
             det = det[0]
         init = det.get("initiation", {})
         loc  = next(iter(init), None)
-        name = init.get(loc, {}, {}).get("name", "").lower() if loc else ""
+        name = init.get(loc, {}).get("name","").lower() if loc else ""
         if any(kw in name for kw in CUSTOMER_FILTERS[VICKY_GROUP_ID]):
             vicky_ids.append(oid)
     if not vicky_ids:
