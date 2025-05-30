@@ -11,6 +11,10 @@ import re
 from urllib.parse import quote
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import timedelta
+from helpers import remind_vicky
 
 
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
@@ -59,6 +63,7 @@ LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
 # ─── Ace schedule config ──────────────────────────────────────────────────────
 ACE_GROUP_ID = os.getenv("LINE_GROUP_ID_ACE")
 VICKY_GROUP_ID = os.getenv("LINE_GROUP_ID_VICKY")
+VICKY_USER_ID    = os.getenv("LINE_USER_ID_VICKY") 
 YUMI_GROUP_ID  = os.getenv("LINE_GROUP_ID_YUMI")
 
 # Trigger when you see “週四出貨”/“週日出貨” + “麻煩請” + an ACE or 250N code,
@@ -75,6 +80,15 @@ REDIS_URL = os.getenv("REDIS_URL")
 if not REDIS_URL:
     raise RuntimeError("REDIS_URL environment variable is required for state persistence")
 r = redis.from_url(REDIS_URL, decode_responses=True)
+
+# — set up Google sheets client once:
+SCOPES = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
+creds_dict = json.loads(os.environ["GOOGLE_SVCKEY_JSON"])
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPES)
+gs = gspread.authorize(creds)
+
+# pull your sheet URL / ID from env
+VICKY_SHEET_URL = os.getenv("VICKY_SHEET_URL")
 
 MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
 TIMEZONE    = "America/Vancouver"
@@ -160,6 +174,67 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
         lines.append(f"{oid} ({num}) → {loc}{translated}  @ {tme}")
 
     return lines
+
+# ─── Vicky-reminder helpers ───────────────────────────────────────────────────    
+def vicky_has_active_orders() -> list[str]:
+    """Return a list of Vicky’s active order-IDs (the “<OID>” at the start of each line)."""
+    lines = get_statuses_for(CUSTOMER_FILTERS[VICKY_GROUP_ID])
+    # skip the header line, grab the ID token from each
+    return [ l.split()[0] for l in lines[1:] ]
+
+
+def vicky_sheet_recently_edited(days: int = 3) -> bool:
+    """Return True if Vicky’s Google Sheet has been edited within the last `days` days."""
+    sh = gs.open_by_url(VICKY_SHEET_URL)
+    # fetch drive metadata to get modifiedTime
+    drive = gs.auth.authorize_http()
+    meta = drive.request(
+        "GET",
+        f"https://www.googleapis.com/drive/v3/files/{sh.id}?fields=modifiedTime"
+    ).json()
+    mod_time = datetime.fromisoformat(meta["modifiedTime"].rstrip("Z"))
+    return (datetime.utcnow() - mod_time) < timedelta(days=days)
+    
+# ─── Wednesday/Friday reminder callback ───────────────────────────────────────
+def remind_vicky(day_name: str):
+    oids = vicky_has_active_orders()
+    # if no active orders or sheet edited, bail
+    if not oids or vicky_sheet_recently_edited():
+        return
+
+    # 1) mention Vicky so she’s notified
+    #    LINE mentions require a little JSON object in the message:
+    mention = {
+      "type": "text",
+      "text": "@Vicky Ku",
+      "mentions": [{
+        "type": "user",
+        "userId": VICKY_USER_ID,
+        "text": "@Vicky Ku"
+      }]
+    }
+
+    # 2) header, body, footer
+    header = (
+        f"您好，溫哥華倉庫{day_name}預計出貨，"
+        "系統未偵測到內容物清單有異動，"
+        "請麻煩填寫以下包裹的內容物清單。謝謝！"
+    )
+    body   = "\n".join(oids)
+    footer = VICKY_SHEET_URL
+
+    payload = {
+      "to": VICKY_GROUP_ID,
+      "messages": [
+        mention,
+        {"type":"text","text": header},
+        {"type":"text","text": body},
+        {"type":"text","text": footer},
+      ]
+    }
+
+    resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+    log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
 
 # ─── Ace schedule handler ─────────────────────────────────────────────────────
 def handle_ace_schedule(event):
@@ -483,6 +558,13 @@ if __name__ == "__main__":
         hour="4-19",
         minute="0,30"
     )
+    
+    # ——— Vicky reminders ——————————————————————
+    sched.add_job(lambda: remind_vicky("星期四"),
+                  trigger="cron", day_of_week="wed", hour=17, minute=0)
+    sched.add_job(lambda: remind_vicky("週末"),
+                  trigger="cron", day_of_week="fri", hour=17, minute=0)    
+    
     sched.start()
     log.info("Scheduler started")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
