@@ -256,9 +256,9 @@ def remind_vicky(day_name: str):
         return
 
     # 2) Build the mention + header in one shot
-    mention     = "@Yves Lai"  # replace with her real LINE user-mention syntax if needed
+    mention_text     = "@Vicky  "
     header_line = (
-        f"{mention} 您好，溫哥華倉庫{day_name}預計出貨。"
+        f"{mention_text}您好，溫哥華倉庫{day_name}預計出貨。"
         "系統未偵測到内容物清單有異動，"
         "請麻煩填寫以下包裹的内容物清單。謝謝！"
     )
@@ -268,15 +268,25 @@ def remind_vicky(day_name: str):
 
     # 4) Footer is your Google Sheet URL from env
     footer = os.getenv("VICKY_SHEET_URL")
+    
+    full_text = "\n".join([header_line, body, footer])
 
-    # 5) Assemble and push in one message
+    # 5) Compute mention entity (always at the very start)
+    entities = [{
+        "type":   "mention",
+        "offset": 0,
+        "length": len(mention_text),
+        "userId": VICKY_USER_ID
+    }]
+
+    # 6) Assemble and push in one message
     payload = {
-        "to": VICKY_GROUP_ID,
-        "messages": [{
-            "type": "text",
-            "text": "\n".join([header_line, "", body, footer]),
-            "mention": {"userIds": [VICKY_USER_ID]}
-        }]
+      "to": VICKY_GROUP_ID,
+      "messages": [{
+        "type":     "text",
+        "text":     full_text,
+        "entities": entities
+      }]
     }
     resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
     log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
