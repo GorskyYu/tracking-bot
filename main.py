@@ -14,7 +14,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import timedelta
-from helpers import remind_vicky
 
 
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
