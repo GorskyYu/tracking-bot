@@ -255,11 +255,9 @@ def remind_vicky(day_name: str):
     if not oids or vicky_sheet_recently_edited():
         return
 
-    # 2) Build the mention placeholder and header 
-    #    Use a single placeholder key – e.g. "{user}" – at the very front.
-    placeholder = "{user1}"
+    # 2) Build the header 
     header = (
-        f"{placeholder} 您好，溫哥華倉庫{day_name}預計出貨。"
+        f"{user1} 您好，溫哥華倉庫{day_name}預計出貨。"
         "系統未偵測到内容物清單有異動，"
         "請麻煩填寫以下包裹的内容物清單。謝謝！"
     )
