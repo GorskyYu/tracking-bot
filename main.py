@@ -276,10 +276,10 @@ def remind_vicky(day_name: str):
     substitution = {
         "user1": {
             "type": "mention",
-            "mentionees": {
+            "mentionees": [{
                 "type":   "user",
                 "userId": VICKY_USER_ID
-            }
+            }]
         }
     }    
 
