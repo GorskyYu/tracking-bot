@@ -274,7 +274,8 @@ def remind_vicky(day_name: str):
         "to": VICKY_GROUP_ID,
         "messages": [{
             "type": "text",
-            "text": "\n\n".join([header_line, body, "", footer])
+            "text": "\n".join([header_line, "", body, footer]),
+            "mention": {"userIds": [VICKY_USER_ID]}
         }]
     }
     resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
