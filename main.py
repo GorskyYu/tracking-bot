@@ -255,10 +255,11 @@ def remind_vicky(day_name: str):
     if not oids or vicky_sheet_recently_edited():
         return
 
-    # 2) Build the mention + header in one shot
-    mention_text     = "@Vicky  "
+    # 2) Build the mention placeholder and header 
+    #    Use a single placeholder key – e.g. "{vicky}" – at the very front.
+    placeholder = "{vicky}"
     header_line = (
-        f"{mention_text}您好，溫哥華倉庫{day_name}預計出貨。"
+        f"{placeholder} 您好，溫哥華倉庫{day_name}預計出貨。"
         "系統未偵測到内容物清單有異動，"
         "請麻煩填寫以下包裹的内容物清單。謝謝！"
     )
@@ -271,26 +272,26 @@ def remind_vicky(day_name: str):
     
     # 5) Assemble full text in one message
     full_text = "\n\n".join([header_line, body, footer])
-
-    # 6) Push with the correct "mention" block (not "entities")
-    payload = {
-        "to": VICKY_GROUP_ID,
-        "messages": [
-            {
-                "type": "text",
-                "text": full_text,
-                "mention": {
-                    "mentionees": [
-                        {
-                            "type":   "user",
-                            "userId": VICKY_USER_ID,
-                            "offset": 0,
-                            "length": len(mention_text)
-                        }
-                    ]
-                }
+    
+    # 6) Build the substitution map for the mention
+    substitution = {
+        "vicky": {
+            "type": "mention",
+            "mentionee": {
+                "type":   "user",
+                "userId": VICKY_USER_ID
             }
-        ]
+        }
+    }    
+
+    # 7) Send as a textV2 message
+    payload = {
+      "to": VICKY_GROUP_ID,
+      "messages": [{
+        "type":        "textV2",
+        "text":        full_text,
+        "substitution": substitution
+      }]
     }
     resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
     log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
