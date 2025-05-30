@@ -257,7 +257,7 @@ def remind_vicky(day_name: str):
 
     # 2) Build the mention placeholder and header 
     #    Use a single placeholder key – e.g. "{user}" – at the very front.
-    placeholder = "{user}"
+    placeholder = "{user1}"
     header = (
         f"{placeholder} 您好，溫哥華倉庫{day_name}預計出貨。"
         "系統未偵測到内容物清單有異動，"
@@ -275,7 +275,7 @@ def remind_vicky(day_name: str):
     
     # 6) Build the substitution map for the mention
     substitution = {
-        "user": {
+        "user1": {
             "type": "mention",
             "mentionee": {
                 "type":   "user",
