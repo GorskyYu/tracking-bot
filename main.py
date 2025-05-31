@@ -275,7 +275,9 @@ def handle_ace_ezway_check_and_push(event):
         data = sheet.get_all_values()
 
         # Find the closest date to today
-        today = datetime.now(timezone.utc)
+        today = datetime.now(timezone.utc).date()
+        
+        # Find the closest date
         closest_date = None
         closest_diff = timedelta(days=99999)  # large initial value
 
@@ -285,7 +287,7 @@ def handle_ace_ezway_check_and_push(event):
             if not row_date_str:
                 continue
             try:
-                row_date = parse_date(row_date_str).replace(tzinfo=timezone.utc)
+                row_date = parse_date(row_date_str).date()  # Just use date part!
             except Exception:
                 continue
 
@@ -293,6 +295,8 @@ def handle_ace_ezway_check_and_push(event):
             if diff < closest_diff:
                 closest_diff = diff
                 closest_date = row_date
+                
+        print(f"Closest date (date only): {closest_date}")
 
         # Second, filter senders with that closest date
         results = set()
@@ -301,7 +305,7 @@ def handle_ace_ezway_check_and_push(event):
             if not row_date_str:
                 continue
             try:
-                row_date = parse_date(row_date_str).replace(tzinfo=timezone.utc)
+                row_date = parse_date(row_date_str).date()
             except Exception:
                 continue
 
