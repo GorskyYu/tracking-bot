@@ -71,9 +71,10 @@ APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
 LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
 
 # ─── Ace schedule config ──────────────────────────────────────────────────────
-ACE_GROUP_ID = os.getenv("LINE_GROUP_ID_ACE")
+ACE_GROUP_ID   = os.getenv("LINE_GROUP_ID_ACE")
 VICKY_GROUP_ID = os.getenv("LINE_GROUP_ID_VICKY")
-VICKY_USER_ID    = os.getenv("VICKY_USER_ID") 
+VICKY_USER_ID  = os.getenv("VICKY_USER_ID") 
+YVES_USER_ID   =os.getenv("YVES_USER_ID") 
 YUMI_GROUP_ID  = os.getenv("LINE_GROUP_ID_YUMI")
 
 # Trigger when you see “週四出貨”/“週日出貨” + “麻煩請” + an ACE or 250N code,
@@ -251,7 +252,7 @@ def handle_ace_ezway_check_and_push(event):
     """
     For ACE messages containing “麻煩請” + “收到EZ way通知後” + (週四出貨 or 週日出貨),
     find any senders in the last 14 days from the Google Sheet who are NOT in
-    VICKY_NAMES or YUMI_NAMES, and push them directly to the ACE group chat.
+    VICKY_NAMES or YUMI_NAMES, and push them directly to Yves privately.
     """
     text = event["message"]["text"]
 
@@ -286,22 +287,22 @@ def handle_ace_ezway_check_and_push(event):
                     results.add(sender)
 
         if results:
-            # Push header
+            # Push header to Yves privately
             header_payload = {
-                "to": ACE_GROUP_ID,
+                "to": YVES_USER_ID,  # Push directly to your private LINE chat
                 "messages": [{"type": "text", "text": "Ace散客EZWay需提醒以下寄件人："}]
             }
             requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=header_payload)
 
-            # Push each sender name as separate messages
+            # Push each sender name to Yves as separate messages
             for sender in sorted(results):
                 payload = {
-                    "to": ACE_GROUP_ID,
+                    "to": YVES_USER_ID,
                     "messages": [{"type": "text", "text": sender}]
                 }
                 requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
 
-            log.info(f"Pushed {len(results)} filtered sender names to ACE group.")
+            log.info(f"Pushed {len(results)} filtered sender names to Yves privately.")
         else:
             log.info("No filtered senders found in the last 14 days.")
 
