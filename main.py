@@ -309,7 +309,7 @@ def handle_ace_ezway_check_and_push(event):
             except Exception:
                 continue
 
-            if row_date.date() == closest_date.date():
+            if row_date == closest_date:
                 sender = row[2].strip()
                 if sender and sender not in VICKY_NAMES and sender not in YUMI_NAMES and sender not in EXCLUDED_SENDERS:
                     results.add(sender)
