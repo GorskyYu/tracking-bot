@@ -18,12 +18,14 @@ from datetime import datetime, timezone
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
-SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
 
 # load your Google service account credentials from the env var
 GA_SVC_INFO = json.loads(os.environ["GOOGLE_SVCKEY_JSON"])
 # build a fully-authorized client
 GC = gspread.service_account_from_dict(GA_SVC_INFO)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(GA_SVC_INFO, SCOPES)
+gs = gspread.authorize(creds)
 
 
 
