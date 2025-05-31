@@ -17,6 +17,8 @@ from datetime import timedelta
 from datetime import datetime, timezone
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from dateutil.parser import parse as parse_date
+
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
 
@@ -276,12 +278,18 @@ def handle_ace_ezway_check_and_push(event):
 
         results = set()
 
-        for row in data[1:]:  # Skip header
+        for i, row in enumerate(data[1:], start=2):
+            row_date_str = row[0].strip()
+            if not row_date_str:
+                continue
+
             try:
-                row_date = datetime.strptime(row[0], "%Y-%m-%d")
-                row_date = row_date.replace(tzinfo=timezone.utc)
+                row_date = parse_date(row_date_str).replace(tzinfo=timezone.utc)
             except Exception:
-                continue  # skip invalid rows
+                print(f"Skipping row {i}: {row_date_str} could not be parsed.")
+                continue
+
+            print(f"Row {i}: row_date={row_date}, cutoff={cutoff}, now={now}")
 
             if row_date >= cutoff:
                 sender = row[2].strip()
