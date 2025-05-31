@@ -282,20 +282,27 @@ def handle_ace_ezway_check_and_push(event):
         closest_diff = timedelta(days=99999)  # large initial value
 
         # First, determine the closest date
-        for row in data[1:]:
+        for row_idx, row in enumerate(data[1:], start=2):
             row_date_str = row[0].strip()
             if not row_date_str:
+                print(f"DEBUG: Row {row_idx} skipped (empty date cell).")
                 continue
+
             try:
-                row_date = parse_date(row_date_str).date()  # Just use date part!
-            except Exception:
+                row_date = parse_date(row_date_str).date()
+            except Exception as e:
+                print(f"DEBUG: Row {row_idx} skipped (could not parse date '{row_date_str}'): {e}")
                 continue
 
             diff = abs(row_date - today)
+            # Debug: show parsed date and difference
+            print(f"DEBUG: Row {row_idx} date parsed as {row_date}, diff from today: {diff}")
+            
             if diff < closest_diff:
                 closest_diff = diff
                 closest_date = row_date
-                
+        
+        # Debug: show which date was chosen as closest       
         print(f"Closest date (date only): {closest_date}")
         
         if closest_date is None:
@@ -304,7 +311,8 @@ def handle_ace_ezway_check_and_push(event):
 
         # 2) Collect senders on that closest date (excluding any names in your lists)
         results = set()
-        for row in data[1:]:
+        
+        for row_idx, row in enumerate(data[1:], start=2):
             row_date_str = row[0].strip()
             if not row_date_str:
                 continue
