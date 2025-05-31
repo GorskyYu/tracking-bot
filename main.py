@@ -246,7 +246,66 @@ def vicky_sheet_recently_edited():
     # 4) compare against now (UTC)
     age = datetime.now(timezone.utc) - last_edit
     return age.days < 3
-    
+  
+def handle_ace_ezway_check_and_push(event):
+    """
+    For ACE messages containing “麻煩請” + “收到EZ way通知後” + (週四出貨 or 週日出貨),
+    find any senders in the last 14 days from the Google Sheet who are NOT in
+    VICKY_NAMES or YUMI_NAMES, and push them directly to the ACE group chat.
+    """
+    text = event["message"]["text"]
+
+    # Only trigger if the message has all the required keywords
+    if (
+        "麻煩請" in text
+        and "收到EZ way通知後" in text
+        and ("週四出貨" in text or "週日出貨" in text)
+    ):
+        
+        # Use the new ACE sheet URL from your environment
+        ACE_SHEET_URL = os.getenv("ACE_SHEET_URL")
+        sheet = gs.open_by_url(ACE_SHEET_URL).sheet1
+        data = sheet.get_all_values()
+
+        # Build cutoff date (14 days ago from today, in local time)
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=14)
+
+        results = set()
+
+        for row in data[1:]:  # Skip header
+            try:
+                row_date = datetime.strptime(row[0], "%Y-%m-%d")
+                row_date = row_date.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue  # skip invalid rows
+
+            if row_date >= cutoff:
+                sender = row[2].strip()
+                if sender and sender not in VICKY_NAMES and sender not in YUMI_NAMES:
+                    results.add(sender)
+
+        if results:
+            # Push header
+            header_payload = {
+                "to": ACE_GROUP_ID,
+                "messages": [{"type": "text", "text": "Ace散客EZWay需提醒以下寄件人："}]
+            }
+            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=header_payload)
+
+            # Push each sender name as separate messages
+            for sender in sorted(results):
+                payload = {
+                    "to": ACE_GROUP_ID,
+                    "messages": [{"type": "text", "text": sender}]
+                }
+                requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+
+            log.info(f"Pushed {len(results)} filtered sender names to ACE group.")
+        else:
+            log.info("No filtered senders found in the last 14 days.")
+
+  
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
     """Send Vicky a reminder at 5 PM PST on Wednesday/Friday if needed."""
@@ -480,6 +539,7 @@ def webhook():
             # 2a) schedule-style notice
             if is_schedule or is_missing:
                 handle_ace_schedule(event)
+                handle_ace_ezway_check_and_push(event)
                 continue
             # 2b) shipment-block notice
             if is_shipment:
