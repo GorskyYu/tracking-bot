@@ -297,22 +297,45 @@ def handle_ace_ezway_check_and_push(event):
                 closest_date = row_date
                 
         print(f"Closest date (date only): {closest_date}")
+        
+        if closest_date is None:
+            print("DEBUG: No valid dates found in sheet; exiting.")
+            return        
 
-        # Second, filter senders with that closest date
+        # 2) Collect senders on that closest date (excluding any names in your lists)
         results = set()
         for row in data[1:]:
             row_date_str = row[0].strip()
             if not row_date_str:
                 continue
+                
             try:
                 row_date = parse_date(row_date_str).date()
             except Exception:
                 continue
 
+            # Debug: show which rows exactly match the closest_date
             if row_date == closest_date:
-                sender = row[2].strip()
-                if sender and sender not in VICKY_NAMES and sender not in YUMI_NAMES and sender not in EXCLUDED_SENDERS:
-                    results.add(sender)
+                sender = row[2].strip() if len(row) > 2 else ""
+                print(f"DEBUG: Row {idx} matches closest_date ({closest_date}). Sender name cell: '{sender}'")
+
+                # Check exclusion lists
+                if not sender:
+                    print(f"DEBUG: Row {idx} has empty sender; skipping.")
+                elif sender in VICKY_NAMES:
+                    print(f"DEBUG: Row {idx} sender '{sender}' is in VICKY_NAMES; skipping.")
+                elif sender in YUMI_NAMES:
+                    print(f"DEBUG: Row {idx} sender '{sender}' is in YUMI_NAMES; skipping.")
+                elif sender in EXCLUDED_SENDERS:
+                    print(f"DEBUG: Row {idx} sender '{sender}' is in EXCLUDED_SENDERS; skipping.")
+                else:
+                    print(f"DEBUG: Row {idx} sender '{sender}' added to results.")
+                    results.add(sender)                
+
+#            if row_date == closest_date:
+#                sender = row[2].strip()
+#                if sender and sender not in VICKY_NAMES and sender not in YUMI_NAMES and sender not in EXCLUDED_SENDERS:
+#                    results.add(sender)
 
         if results:
             # Push header to Yves privately
@@ -330,8 +353,10 @@ def handle_ace_ezway_check_and_push(event):
                 }
                 requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
 
+            print(f"DEBUG: Pushed {len(results)} filtered sender(s) to Yves privately: {sorted(results)}")
             log.info(f"Pushed {len(results)} filtered sender names to Yves privately.")
         else:
+            print("DEBUG: No filtered senders found for the closest date.")
             log.info("No filtered senders found for the closest date.")
   
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
