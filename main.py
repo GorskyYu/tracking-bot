@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from dateutil.parser import parse as parse_date
+from datetime import timedelta
 
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
@@ -89,6 +90,7 @@ MISSING_CONFIRM = "這幾位還沒有按申報相符"
 # Names to look for in each group’s list
 VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲"}
 YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑"}
+EXCLUDED_SENDERS = {"Yves Lai", "Yves KT Lai", "Yves MM Lai", "Yumi Liu", "Vicky Ku"}
 
 # ─── Redis for state persistence ───────────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL")
@@ -272,28 +274,40 @@ def handle_ace_ezway_check_and_push(event):
         sheet = gs.open_by_url(ACE_SHEET_URL).sheet1
         data = sheet.get_all_values()
 
-        # Build cutoff date (14 days ago from today, in local time)
-        now = datetime.now(timezone.utc)
-        cutoff = now - timedelta(days=14)
+        # Find the closest date to today
+        today = datetime.now(timezone.utc)
+        closest_date = None
+        closest_diff = timedelta(days=99999)  # large initial value
 
-        results = set()
-
-        for i, row in enumerate(data[1:], start=2):
+        # First, determine the closest date
+        for row in data[1:]:
             row_date_str = row[0].strip()
             if not row_date_str:
                 continue
-
             try:
                 row_date = parse_date(row_date_str).replace(tzinfo=timezone.utc)
             except Exception:
-                print(f"Skipping row {i}: {row_date_str} could not be parsed.")
                 continue
 
-            print(f"Row {i}: row_date={row_date}, cutoff={cutoff}, now={now}")
+            diff = abs(row_date - today)
+            if diff < closest_diff:
+                closest_diff = diff
+                closest_date = row_date
 
-            if row_date >= cutoff:
+        # Second, filter senders with that closest date
+        results = set()
+        for row in data[1:]:
+            row_date_str = row[0].strip()
+            if not row_date_str:
+                continue
+            try:
+                row_date = parse_date(row_date_str).replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+
+            if row_date.date() == closest_date.date():
                 sender = row[2].strip()
-                if sender and sender not in VICKY_NAMES and sender not in YUMI_NAMES:
+                if sender and sender not in VICKY_NAMES and sender not in YUMI_NAMES and sender not in EXCLUDED_SENDERS:
                     results.add(sender)
 
         if results:
@@ -314,8 +328,7 @@ def handle_ace_ezway_check_and_push(event):
 
             log.info(f"Pushed {len(results)} filtered sender names to Yves privately.")
         else:
-            log.info("No filtered senders found in the last 14 days.")
-
+            log.info("No filtered senders found for the closest date.")
   
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
