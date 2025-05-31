@@ -325,19 +325,19 @@ def handle_ace_ezway_check_and_push(event):
             # Debug: show which rows exactly match the closest_date
             if row_date == closest_date:
                 sender = row[2].strip() if len(row) > 2 else ""
-                print(f"DEBUG: Row {idx} matches closest_date ({closest_date}). Sender name cell: '{sender}'")
+                print(f"DEBUG: Row {row_idx} matches closest_date ({closest_date}). Sender name cell: '{sender}'")
 
                 # Check exclusion lists
                 if not sender:
-                    print(f"DEBUG: Row {idx} has empty sender; skipping.")
+                    print(f"DEBUG: Row {row_idx} has empty sender; skipping.")
                 elif sender in VICKY_NAMES:
-                    print(f"DEBUG: Row {idx} sender '{sender}' is in VICKY_NAMES; skipping.")
+                    print(f"DEBUG: Row {row_idx} sender '{sender}' is in VICKY_NAMES; skipping.")
                 elif sender in YUMI_NAMES:
-                    print(f"DEBUG: Row {idx} sender '{sender}' is in YUMI_NAMES; skipping.")
+                    print(f"DEBUG: Row {row_idx} sender '{sender}' is in YUMI_NAMES; skipping.")
                 elif sender in EXCLUDED_SENDERS:
-                    print(f"DEBUG: Row {idx} sender '{sender}' is in EXCLUDED_SENDERS; skipping.")
+                    print(f"DEBUG: Row {row_idx} sender '{sender}' is in EXCLUDED_SENDERS; skipping.")
                 else:
-                    print(f"DEBUG: Row {idx} sender '{sender}' added to results.")
+                    print(f"DEBUG: Row {row_idx} sender '{sender}' added to results.")
                     results.add(sender)                
 
 #            if row_date == closest_date:
