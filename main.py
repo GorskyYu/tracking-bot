@@ -622,10 +622,10 @@ def webhook():
                 log.info(f"[OCR] Downloaded {len(raw_bytes)} bytes from LINE")
 
                 # (2) Load into Pillow and auto‐crop to dark (text/barcode) region
-                img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+                # img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
                 
                 # Convert to grayscale and threshold to find the white/black text region
-                gray = img.convert("L").point(lambda x: 0 if x < 200 else 255, "1")
+                gray = img.convert("L").point(lambda x: 0 if x < 240 else 255, "1")
                 bbox = gray.getbbox()
                 if bbox:
                     # Crop out only the bounding‐box where dark text/barcode lives
@@ -652,19 +652,15 @@ def webhook():
                         {
                             "role": "system",
                             "content": (
-                                "You are an assistant whose only job is to extract exactly one UPS or FedEx tracking ID from the image.  \n"
-                                "1) For UPS:\n"
-                                "   • First locate the substring “UPS STANDARD” in the image. Below that, there is the text “TRACKING #: <…>”.  \n"
-                                "   • Immediately after “TRACKING #:” there should be exactly 18 characters (start with “1ZHF0” and then 13 digits).  \n"
-                                "   • Remove any spaces in that 18-character string and return exactly those 18 characters.  \n"
-                                "   • Example pattern: “1ZHF0XXXXXXXXXXXXX” where each “X” is a digit 0–9.  \n"
-                                "   • If you see “12” at the very beginning of that sequence, it really means “1Z”.  \n"
-                                "   • If you see “HFO” (letter O) in the ID, convert it to “HF0” (digit zero).  \n"
-                                "2) If you cannot find any valid UPS ID, look for FedEx:\n"
-                                "   • Locate the substring “TRK#” in the image.  \n"
-                                "   • Immediately after “TRK#” there should be exactly 12 digits (no letters).  \n"
-                                "   • Remove any spaces and return exactly those 12 digits.  \n"
-                                "Return exactly one string—either an 18-character UPS ID or a 12-digit FedEx ID—no extra commentary."
+                                "You are an assistant whose ONLY job is to extract exactly one UPS or FedEx tracking ID from the image.\n"
+                                "1) UPS: Find the literal substring “TRACKING #:” (case-insensitive). Immediately after “TRACKING #:” there must be exactly 18 characters in this format:\n"
+                                "     – Always start with “1ZHF0” (no spaces), then exactly 13 digits (0–9). Example: “1ZHF05452031344994”.\n"
+                                "   * If you see “12” at the very beginning instead of “1Z”, treat that “12” as “1Z”.\n"
+                                "   * If you see the letters “HFO” (letter O) in place of “HF0”, convert that “HFO” into “HF0” (digit zero) exactly.\n"
+                                "   * After you identify those 18 characters, remove all spaces and return exactly that 18-character string—nothing else.\n"
+                                "2) If no valid UPS ID is found, look for FedEx: Find the literal substring “TRK#”. Immediately after “TRK#” you will find exactly 12 numeric digits (no letters). Remove any spaces and return exactly those 12 digits.\n"
+                                "3) If you cannot find either pattern, respond with EXACTLY “NONE” (no quotes).\n"
+                                "Return exactly one string: either an 18-character UPS ID or a 12-digit FedEx ID, or “NONE”.\n"
                             )
                         },
                         {
