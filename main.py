@@ -659,22 +659,22 @@ def webhook():
 
                     # (New) Query Monday.com for subitem with exact match of tracking_id
                     gql_query = """
-                    query ($boardId: ID!) {
-                      boards(ids: $boardId) {
+                    query ($boardIds: [ID!]!) {
+                      boards(ids: $boardIds) {
                         items_page {
                           items {
                             id
                             name
                             subitems {
                               id
-                              name
+                             name
                             }
                           }
                         }
                       }
                     }
                     """
-                    variables = {"boardId": str(AIR_BOARD_ID)}
+                    variables = {"boardIds": [str(AIR_BOARD_ID)]}
 
                     headers = {
                       "Authorization": MONDAY_API_TOKEN,
