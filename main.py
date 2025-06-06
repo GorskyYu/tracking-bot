@@ -614,8 +614,8 @@ def webhook():
                 data_uri = f"data:image/jpeg;base64,{base64_image}"
 
                 # 3) Call OpenAI’s vision‐enabled Chat API
-                resp = openai.ChatCompletion.create(
-                    model="gpt-4-vision-preview",  # or "o4-mini" if available
+                resp = openai.chat.completions.create(
+                    model="gpt-4-vision-preview",
                     messages=[
                         {
                             "role": "system",
@@ -632,7 +632,7 @@ def webhook():
                     ],
                     max_tokens=128
                 )
-
+                # 新版 API 回傳格式一樣用 choices[0].message.content
                 ocr_text = resp.choices[0].message.content.strip()
 
                 # 4) Validate with regex (8–20 alphanumeric characters)
