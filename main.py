@@ -672,7 +672,7 @@ def webhook():
                       }
                     }
                     """
-                    variables = {"tracking": tracking_id}
+                    variables = {"boardId": AIR_BOARD_ID}
                     headers = {
                       "Authorization": MONDAY_API_TOKEN,
                       "Content-Type": "application/json"
