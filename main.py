@@ -590,19 +590,19 @@ app = Flask(__name__)
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     # Log incoming methods
-    print(f"[Webhook] Received {request.method} to /webhook")
-    log.info(f"Received {request.method} to /webhook")
+    # print(f"[Webhook] Received {request.method} to /webhook")
+    # log.info(f"Received {request.method} to /webhook")
     if request.method == "GET":
         return "OK", 200
 
     data = request.get_json()
     print("[Webhook] Payload:", json.dumps(data, ensure_ascii=False))
-    log.info(f"Payload: {json.dumps(data, ensure_ascii=False)}")
+    # log.info(f"Payload: {json.dumps(data, ensure_ascii=False)}")
 
     for event in data.get("events", []):
         # ─── Handle image messages for OCR via OpenAI ───────────────────
         if event.get("type") == "message" and event["message"].get("type") == "image":
-            log.info("[OCR] Detected image message, entering OCR block.")
+            # log.info("[OCR] Detected image message, entering OCR block.")
 
             try:
                 # (1) Download raw image bytes from LINE
@@ -620,35 +620,93 @@ def webhook():
                 raw_bytes = b"".join(chunks)
                 log.info(f"[OCR] Downloaded {len(raw_bytes)} bytes from LINE")
 
-                # (2) Load into Pillow and convert to grayscale for thresholding
+                # (2) Load into Pillow and auto‐crop to dark (text/barcode) region
                 img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
                 gray = img.convert("L").point(lambda x: 0 if x < 200 else 255, "1")
                 bbox = gray.getbbox()
                 if bbox:
-                    img = img.crop(bbox)  # crop to bounding box of dark pixels
+                    img = img.crop(bbox)
                     log.info(f"[OCR] Auto‐cropped to bbox {bbox}, new size={img.size}")
                 else:
                     log.info("[OCR] No dark region found, using full image")
 
-                # (3) Further blur everything except text region
-                # (Optional: if cropping was sufficient, you can skip this blur step)
-                # blurred = img.filter(ImageFilter.GaussianBlur(radius=15))
-                # blurred.paste(img.crop(bbox), (bbox[0], bbox[1]))
-                # img_to_compress = blurred
-
-                # If you cropped, just compress that cropped region:
-                img_to_compress = img
-
-                # (4) Compress the image heavily so Base64 stays small
+                # (3) Compress heavily to keep Base64 small
                 buf = io.BytesIO()
-                img_to_compress.thumbnail((400, 400))        # max dimension 400px
-                img_to_compress.save(buf, format="JPEG", quality=30)
+                img.thumbnail((400, 400))             # 400px max side
+                img.save(buf, format="JPEG", quality=30)
                 final_bytes = buf.getvalue()
                 log.info(f"[OCR] Compressed image to {len(final_bytes)} bytes")
 
-                # (5) Convert the final bytes → Base64 data URI
+                # (4) Build Base64 URI
                 data_uri = "data:image/jpeg;base64," + base64.b64encode(final_bytes).decode("utf-8")
                 log.info(f"[OCR] Base64 length: {len(data_uri)} chars")
+
+                # (5a) First try with gpt-image-1
+                try:
+                    resp = openai.chat.completions.create(
+                        model="gpt-image-1",
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are an assistant whose only job is to extract exactly one valid UPS "
+                                    "or FedEx tracking ID from the image.  \n"
+                                    "- A **UPS tracking ID** must match exactly 18 characters: it always starts "
+                                    "with '1Z' (case-insensitive), followed by 6 alphanumeric 'shipper' chars, "
+                                    "then 2 digits of service code, then 8 digits of package ID, then 1 check digit.  \n"
+                                    "- A **FedEx tracking ID** has exactly 12 numeric digits (or 15 digits for Ground).  \n"
+                                    "- Correct common OCR mistakes:  \n"
+                                    "   • If you see 'O' or 'o', treat it as '0', unless context clearly indicates a letter.  \n"
+                                    "   • If you see 'I' or 'l', treat it as '1' in a numeric position.  \n"
+                                    "   • If you see '12' at the start but no valid FedEx candidate, check if it should be '1Z' for UPS.  \n"
+                                    "- If the model’s output is longer than 18 characters and begins with '1Z', truncate to the first 18 characters.  \n"
+                                    "- Return only the tracking ID string (no extra commentary)."
+                                )
+                            },
+                            {"role": "user", "content": data_uri}
+                        ],
+                        max_tokens=32
+                    )
+                    ocr_text = resp.choices[0].message.content.strip()
+                    log.info(f"[OCR] gpt-image-1 response: {ocr_text}")
+
+                except InternalServerError:
+                    # (5b) Fall back to gpt-4o-mini with an even smaller thumbnail
+                    log.warning("[OCR] gpt-image-1 failed (500). Falling back to gpt-4o-mini.")
+                    
+                    buf2 = io.BytesIO()
+                    img.thumbnail((200, 200))       # 200px max side
+                    img.save(buf2, format="JPEG", quality=20)
+                    fallback_bytes = buf2.getvalue()
+                    data_uri2 = "data:image/jpeg;base64," + base64.b64encode(fallback_bytes).decode("utf-8")
+                    log.info(f"[OCR] Fallback Base64 length: {len(data_uri2)} chars")
+
+                    resp = openai.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are an assistant whose only job is to extract exactly one valid UPS "
+                                    "or FedEx tracking ID from the image.  \n"
+                                    "- A **UPS tracking ID** must match exactly 18 characters: it always starts "
+                                    "with '1Z' (case-insensitive), followed by 6 alphanumeric 'shipper' chars, "
+                                    "then 2 digits of service code, then 8 digits of package ID, then 1 check digit.  \n"
+                                    "- A **FedEx tracking ID** has exactly 12 numeric digits (or 15 digits for Ground).  \n"
+                                    "- Correct common OCR mistakes:  \n"
+                                    "   • If you see 'O' or 'o', treat it as '0', unless context clearly indicates a letter.  \n"
+                                    "   • If you see 'I' or 'l', treat it as '1' in a numeric position.  \n"
+                                    "   • If you see '12' at the start but no valid FedEx candidate, check if it should be '1Z' for UPS.  \n"
+                                    "- If the model’s output is longer than 18 characters and begins with '1Z', truncate to the first 18 characters.  \n"
+                                    "- Return only the tracking ID string (no extra commentary)."
+                                )
+                            },
+                            {"role": "user", "content": data_uri2}
+                        ],
+                        max_tokens=32
+                    )
+                    ocr_text = resp.choices[0].message.content.strip()
+                    log.info(f"[OCR] gpt-4o-mini fallback response: {ocr_text}")
 
                 # (6) Call OpenAI’s Vision-enabled Chat API
                 resp = openai.chat.completions.create(
@@ -679,14 +737,11 @@ def webhook():
                     max_tokens=32
                 )
 
-                # (7) Receive and normalize the OCR output
-                ocr_text = resp.choices[0].message.content.strip()
-                log.info(f"[OCR] OpenAI response: {ocr_text}")
-
+                # (6) Normalize, truncate, and regex‐match
                 normalized = re.sub(r"[^A-Za-z0-9]", "", ocr_text).upper()
                 log.info(f"[OCR] Normalized text: {normalized}")
 
-                # (8) Now apply strict UPS/FedEx patterns
+                # (7) Now apply strict UPS/FedEx patterns
                 ups_pattern   = re.compile(r"\b1Z[A-Z0-9]{6}[0-9]{2}[0-9]{8}[0-9]\b", re.IGNORECASE)
                 fedex_pattern = re.compile(r"\b\d{12}\b|\b\d{15}\b")
 
