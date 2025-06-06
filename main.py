@@ -659,51 +659,44 @@ def webhook():
 
                     # (New) Query Monday.com for subitem with exact match of tracking_id
                     gql_query = """
-                    query ($boardIds: [ID!]!) {
-                      boards(ids: $boardIds) {
-                        items_page {
-                          items {
+                    query ($boardId: ID!) {
+                      boards(ids: [$boardId]) {
+                        items(limit: 100) {
+                          id
+                          name
+                          subitems(limit: 100) {
                             id
                             name
-                            subitems {
-                              id
-                              name
-                            }
                           }
                         }
                       }
                     }
                     """
-                    variables = {"boardIds": [str(AIR_BOARD_ID)]}
-
+                    variables = {"boardId": str(AIR_BOARD_ID)}
                     headers = {
                       "Authorization": MONDAY_API_TOKEN,
                       "Content-Type": "application/json"
                     }
-
                     resp = requests.post(
                       "https://api.monday.com/v2",
                       headers=headers,
                       json={"query": gql_query, "variables": variables}
                     )
-                    # ─── DEBUG: log Monday API response if it’s not 200 ────────────────
                     if resp.status_code != 200:
                         log.error("[MONDAY] Query failed %s: %s", resp.status_code, resp.text)
-                        # bail out of the image‐handler without masking as a barcode error
-                        continue                    
-                    resp.raise_for_status()
+                        continue
                     data = resp.json()
 
-                    # Search for subitem with exact match
+                    # now scan the returned items → subitems:
                     found_subitem_id = None
                     for board in data["data"]["boards"]:
-                      # our query returned items_page, not items
-                      items = board.get("items_page", {}).get("items", [])
-                      for item in items:
-                        for subitem in item.get("subitems", []):
-                          if subitem["name"] == tracking_id:
-                            found_subitem_id = subitem["id"]
+                      for item in board["items"]:
+                        for sub in item.get("subitems", []):
+                          if sub["name"] == tracking_id:
+                            found_subitem_id = sub["id"]
                             break
+                        if found_subitem_id: break
+                      if found_subitem_id: break
 
                     # 4. If no match, send private message to Yves
                     if not found_subitem_id:
