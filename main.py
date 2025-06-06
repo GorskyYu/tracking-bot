@@ -703,6 +703,7 @@ def webhook():
                         # "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
                     # }
                 else:
+                    # No valid tracking number found
                     log.info("[OCR] No valid tracking number detected")
                     # reply_payload = {
                         # "replyToken": event["replyToken"],
@@ -716,7 +717,7 @@ def webhook():
                 # )
 
             except Exception as e:
-                # log.error("Error during OCR with OpenAI:", exc_info=True)
+                log.error("Error during OCR with OpenAI:", exc_info=True)
                 # error_payload = {
                     # "replyToken": event["replyToken"],
                     # "messages": [{"type": "text", "text": "An error occurred while reading the image. Please try again."}]
