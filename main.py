@@ -650,13 +650,14 @@ def webhook():
                             "role": "system",
                             "content": (
                                 "You are an assistant whose only job is to extract exactly one valid UPS or FedEx tracking ID from the image.  \n"
-                                "- A **UPS tracking ID** must match `1Z[A-Z0-9]{6}[0-9]{2}[0-9]{8}[0-9]` (case-insensitive).  \n"
+                                "- A **UPS tracking ID** must match exactly 18 characters: it always starts with “1Z” (case‐insensitive), followed by 6 alphanumeric “shipper” characters, then 2 digits of service code, then 8 digits of package ID, then 1 check digit.  \n"
                                 "- A **FedEx tracking ID** has exactly 12 numeric digits (or 15 digits for Ground).  \n"
                                 "- Correct common OCR mistakes:  \n"
                                 "   • If you see 'O' or 'o', treat it as '0', unless context clearly indicates a letter.  \n"
                                 "   • If you see 'I' or 'l', treat it as '1' in a numeric position.  \n"
-                                "   • If you see '12' at the start but no valid FedEx, check if it should be '1Z'.  \n"
-                                "- Return only the tracking ID string (no additional commentary)."
+                                "   • If you see '12' at the start but no valid FedEx candidate, check if it should be '1Z' for UPS.  \n"
+                                "- If the model’s output is longer than 18 characters and begins with '1Z', **truncate to the first 18 characters**.  \n"
+                                "- Return only the tracking ID string (no extra commentary)."
                             )
                         },
                         {
@@ -669,8 +670,12 @@ def webhook():
                 ocr_text = resp.choices[0].message.content.strip()
                 log.info(f"[OCR] OpenAI response: {ocr_text}")
                 
-                # (5) Post back to LINE with stricter regex
-                ups_pattern = re.compile(r"\b1Z[A-Z0-9]{6}[0-9]{2}[0-9]{8}[0-9]\b", re.IGNORECASE)
+                # If it starts with '1Z' but is longer than 18 chars, truncate to 18:
+                if ocr_text.upper().startswith("1Z") and len(ocr_text) > 18:
+                    ocr_text = ocr_text[:18]
+
+                # Now apply your strict regex
+                ups_pattern   = re.compile(r"\b1Z[A-Z0-9]{6}[0-9]{2}[0-9]{8}[0-9]\b", re.IGNORECASE)
                 fedex_pattern = re.compile(r"\b\d{12}\b|\b\d{15}\b")
 
                 text = ocr_text.upper()
@@ -686,7 +691,6 @@ def webhook():
                         "replyToken": event["replyToken"],
                         "messages": [{"type": "text", "text": "Sorry, I couldn’t detect a valid tracking number."}]
                     }
-
                 requests.post(
                     "https://api.line.me/v2/bot/message/reply",
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
