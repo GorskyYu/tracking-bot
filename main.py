@@ -28,7 +28,7 @@ import re
 from PIL import Image
 import io
 from PIL import Image, ImageFilter
-from openai import error as openai_error
+
 
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
@@ -642,72 +642,42 @@ def webhook():
                 data_uri = "data:image/jpeg;base64," + base64.b64encode(final_bytes).decode("utf-8")
                 log.info(f"[OCR] Base64 length: {len(data_uri)} chars")
 
-                # (5a) First try with gpt-image-1
-                try:
-                    resp = openai.chat.completions.create(
-                        model="gpt-image-1",
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    "You are an assistant whose only job is to extract exactly one valid UPS "
-                                    "or FedEx tracking ID from the image.  \n"
-                                    "- A **UPS tracking ID** must match exactly 18 characters: it always starts "
-                                    "with '1Z' (case-insensitive), followed by 6 alphanumeric 'shipper' chars, "
-                                    "then 2 digits of service code, then 8 digits of package ID, then 1 check digit.  \n"
-                                    "- A **FedEx tracking ID** has exactly 12 numeric digits (or 15 digits for Ground).  \n"
-                                    "- Correct common OCR mistakes:  \n"
-                                    "   • If you see 'O' or 'o', treat it as '0', unless context clearly indicates a letter.  \n"
-                                    "   • If you see 'I' or 'l', treat it as '1' in a numeric position.  \n"
-                                    "   • If you see '12' at the start but no valid FedEx candidate, check if it should be '1Z' for UPS.  \n"
-                                    "- If the model’s output is longer than 18 characters and begins with '1Z', truncate to the first 18 characters.  \n"
-                                    "- Return only the tracking ID string (no extra commentary)."
-                                )
-                            },
-                            {"role": "user", "content": data_uri}
-                        ],
-                        max_tokens=32
-                    )
-                    ocr_text = resp.choices[0].message.content.strip()
-                    log.info(f"[OCR] gpt-image-1 response: {ocr_text}")
 
-                except openai_error.APIError:
-                    # (5b) Fall back to gpt-4o-mini with an even smaller thumbnail
-                    log.warning("[OCR] gpt-image-1 failed (500). Falling back to gpt-4o-mini.")
-                    
-                    buf2 = io.BytesIO()
-                    img.thumbnail((200, 200))       # 200px max side
-                    img.save(buf2, format="JPEG", quality=20)
-                    fallback_bytes = buf2.getvalue()
-                    data_uri2 = "data:image/jpeg;base64," + base64.b64encode(fallback_bytes).decode("utf-8")
-                    log.info(f"[OCR] Fallback Base64 length: {len(data_uri2)} chars")
+                # (5b) Fall back to gpt-4o-mini with an even smaller thumbnail
+                
+                buf2 = io.BytesIO()
+                img.thumbnail((200, 200))       # 200px max side
+                img.save(buf2, format="JPEG", quality=20)
+                fallback_bytes = buf2.getvalue()
+                data_uri2 = "data:image/jpeg;base64," + base64.b64encode(fallback_bytes).decode("utf-8")
+                log.info(f"[OCR] Fallback Base64 length: {len(data_uri2)} chars")
 
-                    resp = openai.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    "You are an assistant whose only job is to extract exactly one valid UPS "
-                                    "or FedEx tracking ID from the image.  \n"
-                                    "- A **UPS tracking ID** must match exactly 18 characters: it always starts "
-                                    "with '1Z' (case-insensitive), followed by 6 alphanumeric 'shipper' chars, "
-                                    "then 2 digits of service code, then 8 digits of package ID, then 1 check digit.  \n"
-                                    "- A **FedEx tracking ID** has exactly 12 numeric digits (or 15 digits for Ground).  \n"
-                                    "- Correct common OCR mistakes:  \n"
-                                    "   • If you see 'O' or 'o', treat it as '0', unless context clearly indicates a letter.  \n"
-                                    "   • If you see 'I' or 'l', treat it as '1' in a numeric position.  \n"
-                                    "   • If you see '12' at the start but no valid FedEx candidate, check if it should be '1Z' for UPS.  \n"
-                                    "- If the model’s output is longer than 18 characters and begins with '1Z', truncate to the first 18 characters.  \n"
-                                    "- Return only the tracking ID string (no extra commentary)."
-                                )
-                            },
-                            {"role": "user", "content": data_uri2}
-                        ],
-                        max_tokens=32
-                    )
-                    ocr_text = resp.choices[0].message.content.strip()
-                    log.info(f"[OCR] gpt-4o-mini fallback response: {ocr_text}")
+                resp = openai.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an assistant whose only job is to extract exactly one valid UPS "
+                                "or FedEx tracking ID from the image.  \n"
+                                "- A **UPS tracking ID** must match exactly 18 characters: it always starts "
+                                "with '1Z' (case-insensitive), followed by 6 alphanumeric 'shipper' chars, "
+                                "then 2 digits of service code, then 8 digits of package ID, then 1 check digit.  \n"
+                                "- A **FedEx tracking ID** has exactly 12 numeric digits (or 15 digits for Ground).  \n"
+                                "- Correct common OCR mistakes:  \n"
+                                "   • If you see 'O' or 'o', treat it as '0', unless context clearly indicates a letter.  \n"
+                                "   • If you see 'I' or 'l', treat it as '1' in a numeric position.  \n"
+                                "   • If you see '12' at the start but no valid FedEx candidate, check if it should be '1Z' for UPS.  \n"
+                                "- If the model’s output is longer than 18 characters and begins with '1ZHF', truncate to the first 18 characters.  \n"
+                                "- Return only the tracking ID string (no extra commentary)."
+                            )
+                        },
+                        {"role": "user", "content": data_uri2}
+                    ],
+                    max_tokens=32
+                )
+                ocr_text = resp.choices[0].message.content.strip()
+                log.info(f"[OCR] gpt-4o-mini fallback response: {ocr_text}")
 
                 # (6) Call OpenAI’s Vision-enabled Chat API
                 resp = openai.chat.completions.create(
