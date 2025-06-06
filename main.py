@@ -593,9 +593,17 @@ def webhook():
     # log.info(f"Payload: {json.dumps(data, ensure_ascii=False)}")
 
     for event in data.get("events", []):
-        # ─── Handle image messages for OCR via OpenAI ───────────────────
-        if event.get("type") == "message" and event["message"].get("type") == "image":
-            # log.info("[OCR] Detected image message, entering OCR block.")
+        # if event.get("type") == "message" and event["message"].get("type") == "image":
+        # ─── Handle image messages for OCR via OpenAI (testing only from me) ───
+        # Original group-only filter (commented out):
+        # if event.get("source", {}).get("groupId") != ACE_GROUP_ID:
+        #     continue
+        # Now accept only images from your user ID:
+        if not (
+            event.get("type") == "message"
+            and event["message"].get("type") == "image"
+            and event.get("source", {}).get("userId") == YVES_USER_ID
+        ):            
             # log.info("[BARCODE] Detected image message, entering barcode‐scan block.")
 
             try:
@@ -657,38 +665,49 @@ def webhook():
                     tracking_id = decoded_objs[0].data.decode("utf-8").strip()
                     log.info(f"[BARCODE] Decoded tracking ID: {tracking_id}")
 
-                    # ─── Search Monday for the pulse named exactly tracking_id ─────────
-                    search_query = """
-                    query($text: String!) {
-                      search(query: $text, limit: 10) {
-                        items {
-                          id
-                          name
-                          board { id }
+                    # ─── Query Monday for items_page → subitems ────────────────────────
+                    gql_query = """
+                    query ($boardIds: [ID!]!) {
+                      boards(ids: $boardIds) {
+                        items_page {
+                          items {
+                            id
+                            name
+                            subitems {
+                              id
+                              name
+                            }
+                          }
                         }
                       }
                     }
                     """
-                    variables = {"text": tracking_id}
+                    variables = {"boardIds": [str(AIR_BOARD_ID)]}
                     resp = requests.post(
                       "https://api.monday.com/v2",
                       headers={
                         "Authorization": MONDAY_API_TOKEN,
                         "Content-Type": "application/json"
                       },
-                      json={"query": search_query, "variables": variables}
+                      json={"query": gql_query, "variables": variables}
                     )
                     if resp.status_code != 200:
-                        log.error("[MONDAY] Search failed %s: %s", resp.status_code, resp.text)
+                        log.error("[MONDAY] items_page query failed %s: %s", resp.status_code, resp.text)
                         continue
                     data = resp.json()
 
-                    # Find the exact match on our AIR_BOARD_ID
+                    # Find the exact subitem by name
                     found_subitem_id = None
-                    for itm in data["data"]["search"]["items"]:
-                        if itm["name"] == tracking_id and itm["board"]["id"] == str(AIR_BOARD_ID):
-                            found_subitem_id = itm["id"]
+                    for board in data["data"]["boards"]:
+                      for item in board["items_page"]["items"]:
+                        for sub in item.get("subitems", []):
+                          if sub["name"] == tracking_id:
+                            found_subitem_id = sub["id"]
                             break
+                        if found_subitem_id:
+                          break
+                      if found_subitem_id:
+                        break
 
                     # 4. If no match, send private message to Yves
                     if not found_subitem_id:
