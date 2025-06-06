@@ -28,7 +28,7 @@ import re
 from PIL import Image
 import io
 from PIL import Image, ImageFilter
-from openai.error import InternalServerError
+from openai import error as openai_error
 
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
@@ -671,7 +671,7 @@ def webhook():
                     ocr_text = resp.choices[0].message.content.strip()
                     log.info(f"[OCR] gpt-image-1 response: {ocr_text}")
 
-                except InternalServerError:
+                except openai_error.APIError:
                     # (5b) Fall back to gpt-4o-mini with an even smaller thumbnail
                     log.warning("[OCR] gpt-image-1 failed (500). Falling back to gpt-4o-mini.")
                     
