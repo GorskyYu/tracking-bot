@@ -627,24 +627,28 @@ def webhook():
                 img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
                 
                 # Convert to grayscale and threshold to find the white/black text region
-                gray = img.convert("L").point(lambda x: 0 if x < 200 else 255, "1")
-                bbox = gray.getbbox()
-                if bbox:
-                    # Crop out only the bounding‐box where dark text/barcode lives
-                    img_crop = img.crop(bbox)
+                # gray = img.convert("L").point(lambda x: 0 if x < 200 else 255, "1")
+                # bbox = gray.getbbox()
+                # if bbox:
+                    ## Crop out only the bounding‐box where dark text/barcode lives
+                    # img_crop = img.crop(bbox)
                     # log.info(f"[OCR] Auto‐cropped to bbox {bbox}, new size={img_crop.size}")
-                    log.info(f"[BARCODE] Auto‐cropped to bbox {bbox}, new size={img_crop.size}")
-                else:
-                    img_crop = img
+                    # log.info(f"[BARCODE] Auto‐cropped to bbox {bbox}, new size={img_crop.size}")
+                # else:
+                    # img_crop = img
                     # log.info("[OCR] No dark region found, using full image")
-                    log.info("[BARCODE] No dark region found, using full image")
+                    # log.info("[BARCODE] No dark region found, using full image")
+                
+                # ── DEBUG CHANGE: skip auto-crop entirely ──
+                img_crop = img
+                log.info(f"[BARCODE] Skipping crop; using full image size {img_crop.size}")
 
                 # (3) Resize down a bit (makes scanning more reliable & easier)
-                img_crop.thumbnail((400, 400))  # longest side ≤ 400px
+                img_crop.thumbnail((800, 800))  # longest side ≤ 800px
                 log.info(f"[BARCODE] Resized for scanning to {img_crop.size}")
 
                 # (4) Decode any barcodes in the PIL image
-                # ── CHANGED ── Instead of decoding only CODE128, we now include multiple symbologies:
+                # Instead of decoding only CODE128, we now include multiple symbologies:
                 decoded_objs = decode(
                     img_crop,
                     symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.EAN13, ZBarSymbol.UPCA]
@@ -652,9 +656,9 @@ def webhook():
 
                 if not decoded_objs:
                     log.info("[BARCODE] No barcode detected in the image.")
-                    # (Optionally: fall back to OpenAI OCR here if desired)
+                    # You could reply “No barcode found” if you like:
                 else:
-                    # ── CHANGED ── Handle multiple barcodes instead of assuming only one:
+                    # Handle multiple barcodes instead of assuming only one:
                     for idx, decoded in enumerate(decoded_objs):
                         # Convert bytes → string
                         raw_data = decoded.data.decode("utf-8").replace(" ", "")  # remove any stray spaces
