@@ -657,49 +657,38 @@ def webhook():
                     tracking_id = decoded_objs[0].data.decode("utf-8").strip()
                     log.info(f"[BARCODE] Decoded tracking ID: {tracking_id}")
 
-                    # (New) Query Monday.com for subitem with exact match of tracking_id
-                    gql_query = """
-                    query ($boardIds: [ID!]!) {
-                      boards(ids: $boardIds) {
-                        items_page {
-                          items {
-                            id
-                            name
-                            subitems {
-                              id
-                             name
-                            }
-                          }
+                    # ─── Search Monday for the pulse named exactly tracking_id ─────────
+                    search_query = """
+                    query($text: String!) {
+                      search(query: $text, limit: 10) {
+                        items {
+                          id
+                          name
+                          board { id }
                         }
                       }
                     }
                     """
-                    variables = {"boardIds": [str(AIR_BOARD_ID)]}
-
-                    headers = {
-                      "Authorization": MONDAY_API_TOKEN,
-                      "Content-Type": "application/json"
-                    }
+                    variables = {"text": tracking_id}
                     resp = requests.post(
                       "https://api.monday.com/v2",
-                      headers=headers,
-                      json={"query": gql_query, "variables": variables}
+                      headers={
+                        "Authorization": MONDAY_API_TOKEN,
+                        "Content-Type": "application/json"
+                      },
+                      json={"query": search_query, "variables": variables}
                     )
                     if resp.status_code != 200:
-                        log.error("[MONDAY] Query failed %s: %s", resp.status_code, resp.text)
+                        log.error("[MONDAY] Search failed %s: %s", resp.status_code, resp.text)
                         continue
                     data = resp.json()
 
-                    # now scan the returned items → subitems:
+                    # Find the exact match on our AIR_BOARD_ID
                     found_subitem_id = None
-                    for board in data["data"]["boards"]:
-                        for item in board["items_page"]["items"]:
-                            for sub in item.get("subitems", []):
-                                if sub["name"] == tracking_id:
-                                    found_subitem_id = sub["id"]
-                                    break
-                            if found_subitem_id: break
-                        if found_subitem_id: break
+                    for itm in data["data"]["search"]["items"]:
+                        if itm["name"] == tracking_id and itm["board"]["id"] == str(AIR_BOARD_ID):
+                            found_subitem_id = itm["id"]
+                            break
 
                     # 4. If no match, send private message to Yves
                     if not found_subitem_id:
