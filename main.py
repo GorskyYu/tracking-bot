@@ -256,115 +256,135 @@ def vicky_sheet_recently_edited():
   
 def handle_ace_ezway_check_and_push(event):
     """
-    For ACE messages containing “麻煩請” + “收到EZ way通知後” + (週四出貨 or 週日出貨),
-    find any senders in the last 14 days from the Google Sheet who are NOT in
-    VICKY_NAMES or YUMI_NAMES, and push them directly to Yves privately.
+    For any ACE message that contains “麻煩請” + “收到EZ way通知後” + (週四出貨 or 週日出貨),
+    we will look up the *sheet* for the row whose date is closest to today, but ONLY
+    for those “declaring persons” that actually appeared in the ACE text.  For each
+    matching row, we pull the “sender” (column C) and push it privately if it's not in
+    VICKY_NAMES or YUMI_NAMES or EXCLUDED_SENDERS.
     """
     text = event["message"]["text"]
 
-    # Only trigger if the message has all the required keywords
-    if (
+    # Only trigger on the exact keywords
+    if not (
         "麻煩請" in text
         and "收到EZ way通知後" in text
         and ("週四出貨" in text or "週日出貨" in text)
     ):
-        
-        # Use the new ACE sheet URL from your environment
-        ACE_SHEET_URL = os.getenv("ACE_SHEET_URL")
-        sheet = gs.open_by_url(ACE_SHEET_URL).sheet1
-        data = sheet.get_all_values()
+        return
 
-        # Find the closest date to today
-        today = datetime.now(timezone.utc).date()
-        
-        # Find the closest date
-        closest_date = None
-        closest_diff = timedelta(days=99999)  # large initial value
+    # ── 1) Extract declarer‐names from the ACE text ────────────────────────
+    lines = text.splitlines()
 
-        # First, determine the closest date
-        for row_idx, row in enumerate(data[1:], start=2):
-            row_date_str = row[0].strip()
-            if not row_date_str:
-#                print(f"DEBUG: Row {row_idx} skipped (empty date cell).")
-                continue
+    # find the line index that contains “麻煩請”
+    try:
+        idx_m = next(i for i, l in enumerate(lines) if "麻煩請" in l)
+    except StopIteration:
+        # If we can't find it, default to the top
+        idx_m = 0
 
-            try:
-                row_date = parse_date(row_date_str).date()
-            except Exception as e:
-#                print(f"DEBUG: Row {row_idx} skipped (could not parse date '{row_date_str}'): {e}")
-                continue
+    # find the line index that starts with “收到EZ way通知後”
+    try:
+        idx_r = next(i for i, l in enumerate(lines) if l.startswith("收到EZ way通知後"))
+    except StopIteration:
+        idx_r = len(lines)
 
-            diff = abs(row_date - today)
-            # Debug: show parsed date and difference
-#            print(f"DEBUG: Row {row_idx} date parsed as {row_date}, diff from today: {diff}")
-            
-            if diff < closest_diff:
-                closest_diff = diff
-                closest_date = row_date
-        
-        # Debug: show which date was chosen as closest       
-#        print(f"Closest date (date only): {closest_date}")
-        
-        if closest_date is None:
-#            print("DEBUG: No valid dates found in sheet; exiting.")
-            return        
+    # declarer lines are everything strictly between “麻煩請” and “收到EZ way通知後”
+    raw_declarer_lines = lines[idx_m+1 : idx_r]
+    declarer_names = set()
 
-        # 2) Collect senders on that closest date (excluding any names in your lists)
-        results = set()
-        
-        for row_idx, row in enumerate(data[1:], start=2):
-            row_date_str = row[0].strip()
-            if not row_date_str:
-                continue
-                
-            try:
-                row_date = parse_date(row_date_str).date()
-            except Exception:
-                continue
+    for line in raw_declarer_lines:
+        # Remove any ACE‐style code prefix (e.g. “ACE250605YL04 ”)
+        cleaned = CODE_TRIGGER_RE.sub("", line).strip().strip('"')
+        if not cleaned:
+            continue
 
-            # Debug: show which rows exactly match the closest_date
-            if row_date == closest_date:
-                sender = row[2].strip() if len(row) > 2 else ""
-#                print(f"DEBUG: Row {row_idx} matches closest_date ({closest_date}). Sender name cell: '{sender}'")
+        # Take the first “token” as the actual name (before any phone or other columns)
+        name_token = cleaned.split()[0]
+        if name_token:
+            declarer_names.add(name_token)
 
-                # Check exclusion lists
-                if not sender:
-                    pass
-#                    print(f"DEBUG: Row {row_idx} has empty sender; skipping.")
-                elif sender in VICKY_NAMES:
-                    pass
-#                    print(f"DEBUG: Row {row_idx} sender '{sender}' is in VICKY_NAMES; skipping.")
-                elif sender in YUMI_NAMES:
-                    pass
-#                    print(f"DEBUG: Row {row_idx} sender '{sender}' is in YUMI_NAMES; skipping.")
-                elif sender in EXCLUDED_SENDERS:
-                    pass
-#                    print(f"DEBUG: Row {row_idx} sender '{sender}' is in EXCLUDED_SENDERS; skipping.")
-                else:
-#                    print(f"DEBUG: Row {row_idx} sender '{sender}' added to results.")
-                    results.add(sender)                
+    if not declarer_names:
+        # No valid declarers found in the message → nothing to do
+        return
 
-        if results:
-            # Push header to Yves privately
-            header_payload = {
-                "to": YVES_USER_ID,  # Push directly to your private LINE chat
-                "messages": [{"type": "text", "text": "Ace散客EZWay需提醒以下寄件人："}]
+    # ── 2) Open the ACE sheet and find the “closest‐date” row ─────────────
+    ACE_SHEET_URL = os.getenv("ACE_SHEET_URL")
+    sheet = gs.open_by_url(ACE_SHEET_URL).sheet1
+    data = sheet.get_all_values()  # raw rows as lists of strings
+
+    today = datetime.now(timezone.utc).date()
+    closest_date = None
+    closest_diff = timedelta(days=9999)
+
+    # Assume column A is date; skip header row at index 0, so start at row 2 in the sheet
+    for row_idx, row in enumerate(data[1:], start=2):
+        date_str = row[0].strip()
+        if not date_str:
+            continue
+        try:
+            row_date = parse_date(date_str).date()
+        except Exception:
+            continue
+
+        diff = abs(row_date - today)
+        if diff < closest_diff:
+            closest_diff = diff
+            closest_date = row_date
+
+    if closest_date is None:
+        # No parseable dates in sheet → bail out
+        return
+
+    # ── 3) Scan only the rows on that closest_date, and only if column B (declarer)
+    #         is in our declarer_names set.  Then we grab column C (sender) for private push.
+    results = set()
+
+    for row_idx, row in enumerate(data[1:], start=2):
+        date_str = row[0].strip()
+        if not date_str:
+            continue
+        try:
+            row_date = parse_date(date_str).date()
+        except Exception:
+            continue
+
+        if row_date != closest_date:
+            continue
+
+        # Column B is at index 1 in 'row'
+        declarer = row[1].strip() if len(row) > 1 else ""
+        if not declarer or declarer not in declarer_names:
+            continue
+
+        # Column C is at index 2 in 'row' → this is the “sender” we want to notify
+        sender = row[2].strip() if len(row) > 2 else ""
+        if not sender:
+            continue
+
+        # Skip anyone already in VICKY_NAMES, YUMI_NAMES, or EXCLUDED_SENDERS
+        if sender in VICKY_NAMES or sender in YUMI_NAMES or sender in EXCLUDED_SENDERS:
+            continue
+
+        results.add(sender)
+
+    # ── 4) Push to Yves privately if any senders remain ────────────────────
+    if results:
+        header_payload = {
+            "to": YVES_USER_ID,
+            "messages": [{"type": "text", "text": "Ace散客EZWay需提醒以下寄件人："}]
+        }
+        requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=header_payload)
+
+        for sender in sorted(results):
+            payload = {
+                "to": YVES_USER_ID,
+                "messages": [{"type": "text", "text": sender}]
             }
-            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=header_payload)
+            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
 
-            # Push each sender name to Yves as separate messages
-            for sender in sorted(results):
-                payload = {
-                    "to": YVES_USER_ID,
-                    "messages": [{"type": "text", "text": sender}]
-                }
-                requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-
-            print(f"DEBUG: Pushed {len(results)} filtered sender(s) to Yves privately: {sorted(results)}")
-#            log.info(f"Pushed {len(results)} filtered sender names to Yves privately.")
-        else:
-            print("DEBUG: No filtered senders found for the closest date.")
-#            log.info("No filtered senders found for the closest date.")
+        print(f"DEBUG: Pushed {len(results)} sender(s) to Yves: {sorted(results)}")
+    else:
+        print("DEBUG: No matching senders found for any declarer in the ACE message.")
   
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
