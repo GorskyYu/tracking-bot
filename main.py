@@ -649,10 +649,14 @@ def webhook():
                         {
                             "role": "system",
                             "content": (
-                                "You are an assistant whose only job is to extract exactly one UPS "
-                                "or FedEx tracking ID from the image. A UPS ID starts with '1Z' "
-                                "(16 alphanumeric chars after). FedEx is 12 or 15 digits. Correct "
-                                "common OCR mistakes (O→0, '12'→'1Z', drop spaces). Return only the ID."
+                                "You are an assistant whose only job is to extract exactly one valid UPS or FedEx tracking ID from the image.  \n"
+                                "- A **UPS tracking ID** must match `1Z[A-Z0-9]{6}[0-9]{2}[0-9]{8}[0-9]` (case-insensitive).  \n"
+                                "- A **FedEx tracking ID** has exactly 12 numeric digits (or 15 digits for Ground).  \n"
+                                "- Correct common OCR mistakes:  \n"
+                                "   • If you see 'O' or 'o', treat it as '0', unless context clearly indicates a letter.  \n"
+                                "   • If you see 'I' or 'l', treat it as '1' in a numeric position.  \n"
+                                "   • If you see '12' at the start but no valid FedEx, check if it should be '1Z'.  \n"
+                                "- Return only the tracking ID string (no additional commentary)."
                             )
                         },
                         {
@@ -664,9 +668,13 @@ def webhook():
                 )
                 ocr_text = resp.choices[0].message.content.strip()
                 log.info(f"[OCR] OpenAI response: {ocr_text}")
+                
+                # (5) Post back to LINE with stricter regex
+                ups_pattern = re.compile(r"\b1Z[A-Z0-9]{6}[0-9]{2}[0-9]{8}[0-9]\b", re.IGNORECASE)
+                fedex_pattern = re.compile(r"\b\d{12}\b|\b\d{15}\b")
 
-                # (5) Post back to LINE with extracted tracking number
-                match = re.search(r"\b(?:1Z[A-Za-z0-9]{16}|\d{12,15})\b", ocr_text, flags=re.IGNORECASE)
+                text = ocr_text.upper()
+                match = ups_pattern.search(text) or fedex_pattern.search(text)
                 if match:
                     extracted = match.group(0)
                     reply_payload = {
