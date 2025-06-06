@@ -659,7 +659,7 @@ def webhook():
 
                     # (New) Query Monday.com for subitem with exact match of tracking_id
                     gql_query = """
-                    query ($boardIds: [Int!]!) {
+                    query ($boardIds: [ID!]!) {
                       boards(ids: $boardIds) {
                         items_page {
                           items {
@@ -674,7 +674,7 @@ def webhook():
                       }
                     }
                     """
-                    variables = {"boardIds": [AIR_BOARD_ID]}
+                    variables = {"boardIds": [str(AIR_BOARD_ID)]}
 
                     headers = {
                       "Authorization": MONDAY_API_TOKEN,
@@ -721,7 +721,7 @@ def webhook():
 
                       # 5. Update Location and Status columns
                       mutation = """
-                      mutation ($subitemId: Int!, $boardId: Int!, $locationVal: JSON!, $statusVal: JSON!) {
+                      mutation ($subitemId: Int!, $boardId: ID!, $locationVal: JSON!, $statusVal: JSON!) {
                         change_multiple_column_values(item_id: $subitemId, board_id: $boardId, column_values: $locationVal) {
                           id
                         }
@@ -732,7 +732,7 @@ def webhook():
                       """
                       variables = {
                         "subitemId": int(found_subitem_id),
-                        "boardId": AIR_BOARD_ID,
+                        "boardId": str(AIR_BOARD_ID),
                         "locationVal": json.dumps({"location__1": {"text": "溫哥華倉A"}}),
                         "statusVal": json.dumps({"label": "測量"})
                       }
