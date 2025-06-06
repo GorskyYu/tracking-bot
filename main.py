@@ -604,6 +604,7 @@ def webhook():
         # ─── Handle image messages for OCR via OpenAI ───────────────────
         if event.get("type") == "message" and event["message"].get("type") == "image":
             # log.info("[OCR] Detected image message, entering OCR block.")
+            # log.info("[BARCODE] Detected image message, entering barcode‐scan block.")
 
             try:
                 # (1) Download raw image bytes from LINE
@@ -619,67 +620,84 @@ def webhook():
                     if chunk:
                         chunks.append(chunk)
                 raw_bytes = b"".join(chunks)
-                log.info(f"[OCR] Downloaded {len(raw_bytes)} bytes from LINE")
+                # log.info(f"[OCR] Downloaded {len(raw_bytes)} bytes from LINE")
+                log.info(f"[BARCODE] Downloaded {len(raw_bytes)} bytes from LINE")
 
                 # (2) Load into Pillow and auto‐crop to dark (text/barcode) region
                 img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
                 
                 # Convert to grayscale and threshold to find the white/black text region
-                gray = img.convert("L").point(lambda x: 0 if x < 240 else 255, "1")
+                gray = img.convert("L").point(lambda x: 0 if x < 200 else 255, "1")
                 bbox = gray.getbbox()
                 if bbox:
                     # Crop out only the bounding‐box where dark text/barcode lives
                     img_crop = img.crop(bbox)
-                    log.info(f"[OCR] Auto‐cropped to bbox {bbox}, new size={img_crop.size}")
+                    # log.info(f"[OCR] Auto‐cropped to bbox {bbox}, new size={img_crop.size}")
+                    log.info(f"[BARCODE] Auto‐cropped to bbox {bbox}, new size={img_crop.size}")
                 else:
                     img_crop = img
-                    log.info("[OCR] No dark region found, using full image")
+                    # log.info("[OCR] No dark region found, using full image")
+                    log.info("[BARCODE] No dark region found, using full image")
 
-                # (3) Compress lightly at higher quality (90) to preserve detail
-                buf = io.BytesIO()
-                img_crop.save(buf, format="JPEG", quality=90)
-                final_bytes = buf.getvalue()
-                log.info(f"[OCR] Compressed image to {len(final_bytes)} bytes (quality=90)")
+                # (3) Resize down a bit (makes scanning more reliable & easier)
+                img_crop.thumbnail((400, 400))  # longest side ≤ 400px
+                log.info(f"[BARCODE] Resized for scanning to {img_crop.size}")
 
-                # (4) Build Base64 URI
-                data_uri = "data:image/jpeg;base64," + base64.b64encode(final_bytes).decode("utf-8")
-                log.info(f"[OCR] Base64 length: {len(data_uri)} chars")
+                # (4) Decode any barcodes in the PIL image
+                from pyzbar.pyzbar import decode, ZBarSymbol
+                decoded_objs = decode(img_crop, symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.EAN13, ZBarSymbol.UPCA])
+
+                if not decoded_objs:
+                    log.info("[BARCODE] No barcode detected in the image.")
+                    # (Optionally: fall back to OpenAI OCR here if desired)
+                else:
+                    # Take the first barcode found
+                    barcode_data = decoded_objs[0].data.decode("utf-8")
+                    log.info(f"[BARCODE] Decoded raw barcode data: {barcode_data}")
+
+                    # (5) Clean up the barcode string: remove any non‐alphanumeric chars
+                    cleaned = re.sub(r"[^A-Za-z0-9]", "", barcode_data).upper()
+                    log.info(f"[BARCODE] Normalized barcode text: {cleaned}")
+
+                    # ‘cleaned’ should now be your UPS (1Z…) or FedEx (12‐digit) code
+                    log.info(f"[BARCODE] Final tracking number: {cleaned}")
+
 
                 # (5) Call chatgpt-4o-latest **only**
-                resp = openai.chat.completions.create(
-                    model="chatgpt-4o-latest",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are an assistant whose ONLY job is to extract exactly one UPS or FedEx tracking ID from the image.\n"
-                                "1) UPS: Find the literal substring “TRACKING #:” (case-insensitive). Immediately after “TRACKING #:” there must be exactly 18 characters in this format:\n"
-                                "     – Always start with “1ZHF0” (no spaces), then exactly 13 digits (0–9). Example: “1ZHF05452031344994”.\n"
-                                "   * If you see “12” at the very beginning instead of “1Z”, treat that “12” as “1Z”.\n"
-                                "   * If you see the letters “HFO” (letter O) in place of “HF0”, convert that “HFO” into “HF0” (digit zero) exactly.\n"
-                                "   * After you identify those 18 characters, remove all spaces and return exactly that 18-character string—nothing else.\n"
-                                "2) If no valid UPS ID is found, look for FedEx: Find the literal substring “TRK#”. Immediately after “TRK#” you will find exactly 12 numeric digits (no letters). Remove any spaces and return exactly those 12 digits.\n"
-                                "3) If you cannot find either pattern, respond with EXACTLY “NONE” (no quotes).\n"
-                                "Return exactly one string: either an 18-character UPS ID or a 12-digit FedEx ID, or “NONE”.\n"
-                            )
-                        },
-                        {
-                            "role": "user",
-                            "content": data_uri
-                        }
-                    ],
-                    max_tokens=32
-                )
-                ocr_text = resp.choices[0].message.content.strip()
-                log.info(f"[OCR] gpt-4o-latest response: {ocr_text}")
+                # resp = openai.chat.completions.create(
+                    # model="chatgpt-4o-latest",
+                    # messages=[
+                        # {
+                            # "role": "system",
+                            # "content": (
+                                # "You are an assistant whose ONLY job is to extract exactly one UPS or FedEx tracking ID from the image.\n"
+                                # "1) UPS: Find the literal substring “TRACKING #:” (case-insensitive). Immediately after “TRACKING #:” there must be exactly 18 characters in this format:\n"
+                                # "     – Always start with “1ZHF0” (no spaces), then exactly 13 digits (0–9). Example: “1ZHF05452031344994”.\n"
+                                # "   * If you see “12” at the very beginning instead of “1Z”, treat that “12” as “1Z”.\n"
+                                # "   * If you see the letters “HFO” (letter O) in place of “HF0”, convert that “HFO” into “HF0” (digit zero) exactly.\n"
+                                # "   * After you identify those 18 characters, remove all spaces and return exactly that 18-character string—nothing else.\n"
+                                # "2) If no valid UPS ID is found, look for FedEx: Find the literal substring “TRK#”. Immediately after “TRK#” you will find exactly 12 numeric digits (no letters). Remove any spaces and return exactly those 12 digits.\n"
+                                # "3) If you cannot find either pattern, respond with EXACTLY “NONE” (no quotes).\n"
+                                # "Return exactly one string: either an 18-character UPS ID or a 12-digit FedEx ID, or “NONE”.\n"
+                            # )
+                        # },
+                        # {
+                            # "role": "user",
+                            # "content": data_uri
+                        # }
+                    # ],
+                    # max_tokens=32
+                # )
+                # ocr_text = resp.choices[0].message.content.strip()
+                # log.info(f"[OCR] gpt-4o-latest response: {ocr_text}")
 
                 # (6) Normalize, truncate (if necessary), and regex‐match
-                normalized = re.sub(r"[^A-Za-z0-9]", "", ocr_text).upper()
-                log.info(f"[OCR] Normalized text: {normalized}")
+                # normalized = re.sub(r"[^A-Za-z0-9]", "", ocr_text).upper()
+                # log.info(f"[OCR] Normalized text: {normalized}")
 
-                extracted = normalized
+                # extracted = normalized
                 # Instead of pushing to LINE, just log it:
-                log.info(f"[OCR] Extracted tracking number: {extracted}")
+                # log.info(f"[OCR] Extracted tracking number: {extracted}")
                 # reply_payload = {
                     # "replyToken": event["replyToken"],
                     # "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
