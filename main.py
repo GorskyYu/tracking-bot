@@ -643,45 +643,10 @@ def webhook():
                 log.info(f"[OCR] Base64 length: {len(data_uri)} chars")
 
 
-                # (5b) Fall back to gpt-4o-mini with an even smaller thumbnail
-                
-                buf2 = io.BytesIO()
-                img.thumbnail((200, 200))       # 200px max side
-                img.save(buf2, format="JPEG", quality=20)
-                fallback_bytes = buf2.getvalue()
-                data_uri2 = "data:image/jpeg;base64," + base64.b64encode(fallback_bytes).decode("utf-8")
-                log.info(f"[OCR] Fallback Base64 length: {len(data_uri2)} chars")
 
+                # ── =====> Only use gpt-4o-mini (remove gpt-image-1) <=====
                 resp = openai.chat.completions.create(
                     model="gpt-4o-mini",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are an assistant whose only job is to extract exactly one valid UPS "
-                                "or FedEx tracking ID from the image.  \n"
-                                "- A **UPS tracking ID** must match exactly 18 characters: it always starts "
-                                "with '1Z' (case-insensitive), followed by 6 alphanumeric 'shipper' chars, "
-                                "then 2 digits of service code, then 8 digits of package ID, then 1 check digit.  \n"
-                                "- A **FedEx tracking ID** has exactly 12 numeric digits (or 15 digits for Ground).  \n"
-                                "- Correct common OCR mistakes:  \n"
-                                "   • If you see 'O' or 'o', treat it as '0', unless context clearly indicates a letter.  \n"
-                                "   • If you see 'I' or 'l', treat it as '1' in a numeric position.  \n"
-                                "   • If you see '12' at the start but no valid FedEx candidate, check if it should be '1Z' for UPS.  \n"
-                                "- If the model’s output is longer than 18 characters and begins with '1ZHF', truncate to the first 18 characters.  \n"
-                                "- Return only the tracking ID string (no extra commentary)."
-                            )
-                        },
-                        {"role": "user", "content": data_uri2}
-                    ],
-                    max_tokens=32
-                )
-                ocr_text = resp.choices[0].message.content.strip()
-                log.info(f"[OCR] gpt-4o-mini fallback response: {ocr_text}")
-
-                # (6) Call OpenAI’s Vision-enabled Chat API
-                resp = openai.chat.completions.create(
-                    model="gpt-image-1",
                     messages=[
                         {
                             "role": "system",
@@ -707,10 +672,17 @@ def webhook():
                     ],
                     max_tokens=32
                 )
+                ocr_text = resp.choices[0].message.content.strip()
+                log.info(f"[OCR] gpt-4o-mini response: {ocr_text}")
 
-                # (6) Normalize, truncate, and regex‐match
+                # (5) Normalize, truncate (if necessary), and regex‐match
                 normalized = re.sub(r"[^A-Za-z0-9]", "", ocr_text).upper()
                 log.info(f"[OCR] Normalized text: {normalized}")
+
+                if normalized.startswith("1Z") and len(normalized) > 18:
+                    normalized = normalized[:18]
+                    log.info(f"[OCR] Truncated to 18 chars: {normalized}")
+
 
                 # (7) Now apply strict UPS/FedEx patterns
                 ups_pattern   = re.compile(r"\b1Z[A-Z0-9]{6}[0-9]{2}[0-9]{8}[0-9]\b", re.IGNORECASE)
