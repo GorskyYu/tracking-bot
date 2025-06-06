@@ -660,19 +660,22 @@ def webhook():
                     # (New) Query Monday.com for subitem with exact match of tracking_id
                     gql_query = """
                     query ($boardId: ID!) {
-                      boards(ids: [$boardId]) {
-                        items(limit: 100) {
-                          id
-                          name
-                          subitems(limit: 100) {
+                      boards(ids: $boardId) {
+                        items_page {
+                          items {
                             id
                             name
+                            subitems {
+                              id
+                              name
+                            }
                           }
                         }
                       }
                     }
                     """
                     variables = {"boardId": str(AIR_BOARD_ID)}
+
                     headers = {
                       "Authorization": MONDAY_API_TOKEN,
                       "Content-Type": "application/json"
@@ -690,13 +693,13 @@ def webhook():
                     # now scan the returned items → subitems:
                     found_subitem_id = None
                     for board in data["data"]["boards"]:
-                      for item in board["items"]:
-                        for sub in item.get("subitems", []):
-                          if sub["name"] == tracking_id:
-                            found_subitem_id = sub["id"]
-                            break
+                        for item in board["items_page"]["items"]:
+                            for sub in item.get("subitems", []):
+                                if sub["name"] == tracking_id:
+                                    found_subitem_id = sub["id"]
+                                    break
+                            if found_subitem_id: break
                         if found_subitem_id: break
-                      if found_subitem_id: break
 
                     # 4. If no match, send private message to Yves
                     if not found_subitem_id:
