@@ -599,11 +599,13 @@ def webhook():
         # if event.get("source", {}).get("groupId") != ACE_GROUP_ID:
         #     continue
         # Now accept only images from your user ID:
+        # Only handle image messages sent in a 1:1 (user) chat for testing
         if not (
             event.get("type") == "message"
             and event["message"].get("type") == "image"
-            and event.get("source", {}).get("userId") == YVES_USER_ID
-        ):            
+            and event.get("source", {}).get("type") == "user"
+        ):
+            continue
             # log.info("[BARCODE] Detected image message, entering barcode‐scan block.")
 
             try:
