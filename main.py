@@ -28,6 +28,7 @@ import re
 from PIL import Image
 import io
 from PIL import Image, ImageFilter
+from openai.error import InternalServerError
 
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
