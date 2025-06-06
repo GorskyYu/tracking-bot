@@ -1,1 +1,1 @@
-web: gunicorn main:app
+web: bash create_zbar_symlink.sh && gunicorn main:app
