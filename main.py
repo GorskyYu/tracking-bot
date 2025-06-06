@@ -652,15 +652,15 @@ def webhook():
                         {
                             "role": "system",
                             "content": (
-                                "Find UPS or FedEx tracking ID from the image.  \n"
-                                "On a UPS sheet, tracking ID is located underneath the text “UPS STANDARD” and after “TRACKING #:”.  \n"
-                                "UPS tracking ID always starts with “1Z HF0”.  \n"
-                                "  • If you detect “12” at the very beginning, treat it as “1Z”.  \n"
-                                "  • If you see “HFO” (letter O) in the ID, convert it to “HF0” (digit 0).  \n"
-                                "After extracting the UPS ID, remove all spaces.  \n"
-                                "On a FedEx sheet, the tracking ID appears right after “TRK#”, and is exactly 12 digits (no letters).  \n"
-                                "After extracting the FedEx ID, remove all spaces.  \n"
-                                "Return exactly one tracking ID (no extra commentary)."
+                                "You are a Hyper‐Literal OCR Assistant. Your job is to read exactly the characters "
+                                "printed on the UPS label under the line that reads “UPS STANDARD” → \"TRACKING #:\".  \n\n"
+                                "1. Find the literal text “UPS STANDARD” in the image. Directly below it you will see “TRACKING #: <some string>”.  \n"
+                                "2. Copy the characters immediately after “TRACKING #:”. That is the UPS tracking number on this package.  \n"
+                                "3. Do not invent or hallucinate extra digits—just reproduce exactly what you see.  \n"
+                                "4. If the first two characters are “12” but you know those belong to “1Z”, correct them to “1Z”.  \n"
+                                "5. If you see “HFO” as letters, convert only the letter ‘O’ to digit ‘0’ so it becomes “HF0”.  \n"
+                                "6. After you have copied it character‐for‐character, remove any spaces.  \n"
+                                "7. Return exactly that final string and nothing else (no extra words)."
                             )
                         },
                         {
@@ -671,7 +671,7 @@ def webhook():
                     max_tokens=32
                 )
                 ocr_text = resp.choices[0].message.content.strip()
-                log.info(f"[OCR] gpt-4o-mini response: {ocr_text}")
+                log.info(f"[OCR] gpt-4o-latest response: {ocr_text}")
 
                 # (6) Normalize, truncate (if necessary), and regex‐match
                 normalized = re.sub(r"[^A-Za-z0-9]", "", ocr_text).upper()
