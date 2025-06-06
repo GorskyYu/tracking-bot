@@ -622,7 +622,7 @@ def webhook():
                 log.info(f"[OCR] Downloaded {len(raw_bytes)} bytes from LINE")
 
                 # (2) Load into Pillow and auto‐crop to dark (text/barcode) region
-                # img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+                img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
                 
                 # Convert to grayscale and threshold to find the white/black text region
                 gray = img.convert("L").point(lambda x: 0 if x < 240 else 255, "1")
