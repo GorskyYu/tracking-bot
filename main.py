@@ -615,7 +615,7 @@ def webhook():
 
                 # 3) Call OpenAI’s vision‐enabled Chat API
                 resp = openai.chat.completions.create(
-                    model="gpt-4-vision-preview",
+                    model="gpt-4-mini-preview",
                     messages=[
                         {
                             "role": "system",
