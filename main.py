@@ -650,7 +650,7 @@ def webhook():
 
                 # (5) Call OpenAI’s Vision-enabled Chat API
                 resp = openai.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-image-1",
                     messages=[
                         {
                             "role": "system",
@@ -696,33 +696,36 @@ def webhook():
                 match = ups_pattern.search(normalized) or fedex_pattern.search(normalized)
                 if match:
                     extracted = match.group(0)
-                    reply_payload = {
-                        "replyToken": event["replyToken"],
-                        "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
-                    }
+                    # Instead of pushing to LINE, just log it:
+                    log.info(f"[OCR] Extracted tracking number: {extracted}")
+                    # reply_payload = {
+                        # "replyToken": event["replyToken"],
+                        # "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
+                    # }
                 else:
-                    reply_payload = {
-                        "replyToken": event["replyToken"],
-                        "messages": [{"type": "text", "text": "Sorry, I couldn’t detect a valid tracking number."}]
-                    }
+                    log.info("[OCR] No valid tracking number detected")
+                    # reply_payload = {
+                        # "replyToken": event["replyToken"],
+                        # "messages": [{"type": "text", "text": "Sorry, I couldn’t detect a valid tracking number."}]
+                    # }
 
-                requests.post(
-                    "https://api.line.me/v2/bot/message/reply",
-                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
-                    json=reply_payload
-                )
+                # requests.post(
+                    # "https://api.line.me/v2/bot/message/reply",
+                    # headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
+                    # json=reply_payload
+                # )
 
             except Exception as e:
-                log.error("Error during OCR with OpenAI:", exc_info=True)
-                error_payload = {
-                    "replyToken": event["replyToken"],
-                    "messages": [{"type": "text", "text": "An error occurred while reading the image. Please try again."}]
-                }
-                requests.post(
-                    "https://api.line.me/v2/bot/message/reply",
-                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
-                    json=error_payload
-                )
+                # log.error("Error during OCR with OpenAI:", exc_info=True)
+                # error_payload = {
+                    # "replyToken": event["replyToken"],
+                    # "messages": [{"type": "text", "text": "An error occurred while reading the image. Please try again."}]
+                # }
+                # requests.post(
+                    # "https://api.line.me/v2/bot/message/reply",
+                    # headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
+                    # json=error_payload
+                # )
 
             # Skip further handling of this event
             continue
