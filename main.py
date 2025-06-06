@@ -639,13 +639,9 @@ def webhook():
                     # log.info("[OCR] No dark region found, using full image")
                     # log.info("[BARCODE] No dark region found, using full image")
                 
-                # ── DEBUG CHANGE: skip auto-crop entirely ──
+                # ── DEBUG CHANGE: use full-resolution image, no thumbnail ──
                 img_crop = img
-                log.info(f"[BARCODE] Skipping crop; using full image size {img_crop.size}")
-
-                # (3) Resize down a bit (makes scanning more reliable & easier)
-                img_crop.thumbnail((800, 800))  # longest side ≤ 800px
-                log.info(f"[BARCODE] Resized for scanning to {img_crop.size}")
+                log.info(f"[BARCODE] Decoding full‐resolution image size {img_crop.size}")
 
                 # (4) Decode any barcodes in the PIL image
                 # Instead of decoding only CODE128, we now include multiple symbologies:
