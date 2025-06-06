@@ -1,1 +1,2 @@
-libzbar0 
+# Force Heroku to re-detect
+libzbar0
