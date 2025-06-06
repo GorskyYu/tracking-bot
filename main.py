@@ -21,6 +21,13 @@ from dateutil.parser import parse as parse_date
 from datetime import timedelta
 import openai
 
+import base64
+import requests
+import logging
+import re
+from PIL import Image
+import io
+
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
 
@@ -592,40 +599,60 @@ def webhook():
     log.info(f"Payload: {json.dumps(data, ensure_ascii=False)}")
 
     for event in data.get("events", []):
-        # ─── ADDED: Handle image messages for OCR via OpenAI ───────────────
+        # ─── Handle image messages for OCR via OpenAI ───────────────────
         if event.get("type") == "message" and event["message"].get("type") == "image":
+            log.info("[OCR] Detected image message, entering OCR block.")
+
             try:
-                # 1) Download image bytes from LINE
+                # (1) Download raw image bytes from LINE
                 message_id = event["message"]["id"]
-                # Using direct HTTP GET against LINE’s content endpoint
                 stream_resp = requests.get(
                     f"https://api-data.line.me/v2/bot/message/{message_id}/content",
                     headers={"Authorization": f"Bearer {LINE_TOKEN}"},
                     stream=True
                 )
+                stream_resp.raise_for_status()
                 chunks = []
                 for chunk in stream_resp.iter_content(chunk_size=4096):
                     if chunk:
                         chunks.append(chunk)
-                buffer = b"".join(chunks)
+                raw_bytes = b"".join(chunks)
+                log.info(f"[OCR] Downloaded {len(raw_bytes)} bytes from LINE")
 
-                # 2) Convert buffer → Base64 data URI (assume JPEG; adjust if PNG)
-                base64_image = base64.b64encode(buffer).decode("utf-8")
+                # (2) OPTIONAL: Compress / Resize the image with Pillow
+                #     so the Base64 string won’t exceed token limits
+                try:
+                    img = Image.open(io.BytesIO(raw_bytes))
+                    # Resize so the longest side is at most 800px
+                    img.thumbnail((800, 800))
+                    buf = io.BytesIO()
+                    # Save as JPEG with quality=50 to reduce file size
+                    img.save(buf, format="JPEG", quality=50)
+                    compressed_bytes = buf.getvalue()
+                    log.info(f"[OCR] Compressed image to {len(compressed_bytes)} bytes")
+                    final_bytes = compressed_bytes
+
+                except Exception as resize_err:
+                    # If compression fails, fall back to raw bytes
+                    log.warning(f"[OCR] Image compression failed, using raw bytes: {resize_err}")
+                    final_bytes = raw_bytes
+
+                # (3) Convert the final bytes → Base64 data URI
+                base64_image = base64.b64encode(final_bytes).decode("utf-8")
                 data_uri = f"data:image/jpeg;base64,{base64_image}"
+                log.info(f"[OCR] Base64 data URI length: {len(data_uri)} characters")
 
-                # 3) Call OpenAI’s vision‐enabled Chat API
+                # (4) Call OpenAI’s Vision‐enabled Chat API
                 resp = openai.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
                         {
                             "role": "system",
                             "content": (
-                                "You are an assistant whose only job is to extract exactly one UPS or FedEx tracking ID from the input. "
-                                "A valid UPS tracking ID starts with “1Z” (case‐insensitive) followed by 16 alphanumeric characters. "
-                                "A valid FedEx tracking ID is typically 12 numeric digits, or 15 digits for Ground. "
-                                "Correct common OCR mistakes: treat letters O or o as zero (0), treat “12” as “1Z” when context suggests UPS, "
-                                "and drop any spaces or punctuation. "
-                                "Return only the tracking ID (no other text)."
+                                "You are an assistant whose only job is to extract exactly one UPS "
+                                "or FedEx tracking ID from the image. A UPS ID starts with '1Z' "
+                                "(16 alphanumeric chars after). FedEx is 12 or 15 digits. Correct "
+                                "common OCR mistakes (O→0, '12'→'1Z', drop spaces). Return only the ID."
                             )
                         },
                         {
@@ -633,19 +660,18 @@ def webhook():
                             "content": data_uri
                         }
                     ],
-                    max_tokens=64
+                    max_tokens=32
                 )
-
-                # 新版 API 回傳格式一樣用 choices[0].message.content
                 ocr_text = resp.choices[0].message.content.strip()
+                log.info(f"[OCR] OpenAI response: {ocr_text}")
 
-                # 4) Validate with regex (8–20 alphanumeric characters)
-                match = re.search(r"\b[A-Z0-9]{8,20}\b", ocr_text, flags=re.IGNORECASE)
+                # (5) Post back to LINE with extracted tracking number
+                match = re.search(r"\b(?:1Z[A-Za-z0-9]{16}|\d{12,15})\b", ocr_text, flags=re.IGNORECASE)
                 if match:
                     extracted = match.group(0)
                     reply_payload = {
                         "replyToken": event["replyToken"],
-                        "messages": [{"type": "text", "text": f"Tracking number found: {extracted}"}]
+                        "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
                     }
                 else:
                     reply_payload = {
@@ -653,7 +679,6 @@ def webhook():
                         "messages": [{"type": "text", "text": "Sorry, I couldn’t detect a valid tracking number."}]
                     }
 
-                # 5) Send reply back to LINE
                 requests.post(
                     "https://api.line.me/v2/bot/message/reply",
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
@@ -661,7 +686,7 @@ def webhook():
                 )
 
             except Exception as e:
-                log.error(f"Error during OCR with OpenAI: {e}")
+                log.error("Error during OCR with OpenAI:", exc_info=True)
                 error_payload = {
                     "replyToken": event["replyToken"],
                     "messages": [{"type": "text", "text": "An error occurred while reading the image. Please try again."}]
@@ -671,7 +696,9 @@ def webhook():
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
                     json=error_payload
                 )
-            continue  # skip text‐only handlers for this event
+
+            # Skip further handling of this event
+            continue
         # ────────────────────────────────────────────────────────────────────
     
         # Only handle text messages
