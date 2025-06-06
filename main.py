@@ -642,27 +642,22 @@ def webhook():
                 data_uri = "data:image/jpeg;base64," + base64.b64encode(final_bytes).decode("utf-8")
                 log.info(f"[OCR] Base64 length: {len(data_uri)} chars")
 
-
-
-                # ── =====> Only use gpt-4o-mini (remove gpt-image-1) <=====
+                # ── One single call to gpt-4o-mini ────────────────────────────
                 resp = openai.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
                         {
                             "role": "system",
                             "content": (
-                                "You are an assistant whose only job is to extract exactly one valid UPS "
-                                "or FedEx tracking ID from the image.  \n"
-                                "- A **UPS tracking ID** must match exactly 18 characters: it always starts "
-                                "with '1Z' (case-insensitive), followed by 6 alphanumeric 'shipper' chars, "
-                                "then 2 digits of service code, then 8 digits of package ID, then 1 check digit.  \n"
-                                "- A **FedEx tracking ID** has exactly 12 numeric digits (or 15 digits for Ground).  \n"
-                                "- Correct common OCR mistakes:  \n"
-                                "   • If you see 'O' or 'o', treat it as '0', unless context clearly indicates a letter.  \n"
-                                "   • If you see 'I' or 'l', treat it as '1' in a numeric position.  \n"
-                                "   • If you see '12' at the start but no valid FedEx candidate, check if it should be '1Z' for UPS.  \n"
-                                "- If the model’s output is longer than 18 characters and begins with '1Z', truncate to the first 18 characters.  \n"
-                                "- Return only the tracking ID string (no extra commentary)."
+                                "Find UPS or FedEx tracking ID from the image.  \n"
+                                "On a UPS sheet, tracking ID is located underneath the text “UPS STANDARD” and after “TRACKING #:”.  \n"
+                                "UPS tracking ID always starts with “1Z HF0”.  \n"
+                                "  • If you detect “12” at the very beginning, treat it as “1Z”.  \n"
+                                "  • If you see “HFO” (letter O) in the ID, convert it to “HF0” (digit 0).  \n"
+                                "After extracting the UPS ID, remove all spaces.  \n"
+                                "On a FedEx sheet, the tracking ID appears right after “TRK#”, and is exactly 12 digits (no letters).  \n"
+                                "After extracting the FedEx ID, remove all spaces.  \n"
+                                "Return exactly one tracking ID (no extra commentary)."
                             )
                         },
                         {
@@ -679,31 +674,13 @@ def webhook():
                 normalized = re.sub(r"[^A-Za-z0-9]", "", ocr_text).upper()
                 log.info(f"[OCR] Normalized text: {normalized}")
 
-                if normalized.startswith("1Z") and len(normalized) > 18:
-                    normalized = normalized[:18]
-                    log.info(f"[OCR] Truncated to 18 chars: {normalized}")
-
-
-                # (7) Now apply strict UPS/FedEx patterns
-                ups_pattern   = re.compile(r"\b1Z[A-Z0-9]{6}[0-9]{2}[0-9]{8}[0-9]\b", re.IGNORECASE)
-                fedex_pattern = re.compile(r"\b\d{12}\b|\b\d{15}\b")
-
-                match = ups_pattern.search(normalized) or fedex_pattern.search(normalized)
-                if match:
-                    extracted = match.group(0)
-                    # Instead of pushing to LINE, just log it:
-                    log.info(f"[OCR] Extracted tracking number: {extracted}")
-                    # reply_payload = {
-                        # "replyToken": event["replyToken"],
-                        # "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
-                    # }
-                else:
-                    # No valid tracking number found
-                    log.info("[OCR] No valid tracking number detected")
-                    # reply_payload = {
-                        # "replyToken": event["replyToken"],
-                        # "messages": [{"type": "text", "text": "Sorry, I couldn’t detect a valid tracking number."}]
-                    # }
+                extracted = normalized
+                # Instead of pushing to LINE, just log it:
+                log.info(f"[OCR] Extracted tracking number: {extracted}")
+                # reply_payload = {
+                    # "replyToken": event["replyToken"],
+                    # "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
+                # }
 
                 # requests.post(
                     # "https://api.line.me/v2/bot/message/reply",
