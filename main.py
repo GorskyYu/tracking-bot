@@ -25,9 +25,9 @@ import base64
 import requests
 import logging
 import re
-from PIL import Image
 import io
 from PIL import Image, ImageFilter
+from pyzbar.pyzbar import decode, ZBarSymbol
 
 
 
@@ -644,23 +644,26 @@ def webhook():
                 log.info(f"[BARCODE] Resized for scanning to {img_crop.size}")
 
                 # (4) Decode any barcodes in the PIL image
-                from pyzbar.pyzbar import decode, ZBarSymbol
-                decoded_objs = decode(img_crop, symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.EAN13, ZBarSymbol.UPCA])
+                # ── CHANGED ── Instead of decoding only CODE128, we now include multiple symbologies:
+                decoded_objs = decode(
+                    img_crop,
+                    symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.EAN13, ZBarSymbol.UPCA]
+                )
 
                 if not decoded_objs:
                     log.info("[BARCODE] No barcode detected in the image.")
                     # (Optionally: fall back to OpenAI OCR here if desired)
                 else:
-                    # Take the first barcode found
-                    barcode_data = decoded_objs[0].data.decode("utf-8")
-                    log.info(f"[BARCODE] Decoded raw barcode data: {barcode_data}")
+                    # ── CHANGED ── Handle multiple barcodes instead of assuming only one:
+                    for idx, decoded in enumerate(decoded_objs):
+                        # Convert bytes → string
+                        raw_data = decoded.data.decode("utf-8").replace(" ", "")  # remove any stray spaces
+                        raw_data = raw_data.upper()
+                        log.info(f"[BARCODE] (#{idx+1}) Decoded raw barcode data: {raw_data}")
 
-                    # (5) Clean up the barcode string: remove any non‐alphanumeric chars
-                    cleaned = re.sub(r"[^A-Za-z0-9]", "", barcode_data).upper()
-                    log.info(f"[BARCODE] Normalized barcode text: {cleaned}")
-
-                    # ‘cleaned’ should now be your UPS (1Z…) or FedEx (12‐digit) code
-                    log.info(f"[BARCODE] Final tracking number: {cleaned}")
+                        # Normalize: remove non‐alphanumeric, convert to uppercase
+                        cleaned = re.sub(r"[^A-Za-z0-9]", "", raw_data).upper()
+                        log.info(f"[BARCODE] (#{idx+1}) Normalized barcode text: {cleaned}")
 
 
                 # (5) Call chatgpt-4o-latest **only**
@@ -698,28 +701,36 @@ def webhook():
                 # extracted = normalized
                 # Instead of pushing to LINE, just log it:
                 # log.info(f"[OCR] Extracted tracking number: {extracted}")
-                # reply_payload = {
-                    # "replyToken": event["replyToken"],
-                    # "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
-                # }
+                if chosen_code:
+                # reply via LINE to confirm:
+                reply_payload = {
+                    "replyToken": event["replyToken"],
+                    "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
+                }
 
-                # requests.post(
-                    # "https://api.line.me/v2/bot/message/reply",
-                    # headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
-                    # json=reply_payload
-                # )
+                requests.post(
+                    "https://api.line.me/v2/bot/message/reply",
+                    headers={
+                        "Content-Type": "application/json", 
+                        "Authorization": f"Bearer {LINE_TOKEN}"
+                    },
+                    json=reply_payload
+                )
+                log.info(f"[BARCODE] Replied with tracking number: {chosen_code}")
 
             except Exception as e:
-                log.error("Error during OCR with OpenAI:", exc_info=True)
-                # error_payload = {
-                    # "replyToken": event["replyToken"],
-                    # "messages": [{"type": "text", "text": "An error occurred while reading the image. Please try again."}]
-                # }
-                # requests.post(
-                    # "https://api.line.me/v2/bot/message/reply",
-                    # headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
-                    # json=error_payload
-                # )
+                # ── UPDATED ── None of the decoded barcodes matched a valid pattern
+                log.info("[BARCODE] No valid UPS/FedEx tracking number found in decoded barcodes.")
+                # Optionally, reply “NONE” or a helpful message:
+                error_payload = {
+                    "replyToken": event["replyToken"],
+                    "messages": [{"type": "text", "text": "An error occurred while reading the image. Please try again."}]
+                }
+                requests.post(
+                    "https://api.line.me/v2/bot/message/reply",
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
+                    json=error_payload
+                )
 
             # Skip further handling of this event
             continue
