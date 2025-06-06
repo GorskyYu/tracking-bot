@@ -620,35 +620,37 @@ def webhook():
                 raw_bytes = b"".join(chunks)
                 log.info(f"[OCR] Downloaded {len(raw_bytes)} bytes from LINE")
 
-                # (2) Crop or blur out PII, leaving only the barcode region
-                img = Image.open(io.BytesIO(raw_bytes))
-                width, height = img.size
+                # (2) Load into Pillow and convert to grayscale for thresholding
+                img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+                gray = img.convert("L").point(lambda x: 0 if x < 200 else 255, "1")
+                bbox = gray.getbbox()
+                if bbox:
+                    img = img.crop(bbox)  # crop to bounding box of dark pixels
+                    log.info(f"[OCR] Auto‐cropped to bbox {bbox}, new size={img.size}")
+                else:
+                    log.info("[OCR] No dark region found, using full image")
 
-                # Define approximate barcode region (adjust as needed)
-                left   = int(width * 0.05)
-                top    = int(height * 0.50)
-                right  = int(width * 0.95)
-                bottom = int(height * 0.90)
+                # (3) Further blur everything except text region
+                # (Optional: if cropping was sufficient, you can skip this blur step)
+                # blurred = img.filter(ImageFilter.GaussianBlur(radius=15))
+                # blurred.paste(img.crop(bbox), (bbox[0], bbox[1]))
+                # img_to_compress = blurred
 
-                # Create a blurred version of the entire image
-                blurred = img.filter(ImageFilter.GaussianBlur(radius=30))
+                # If you cropped, just compress that cropped region:
+                img_to_compress = img
 
-                # Paste the unblurred barcode area back onto the blurred image
-                barcode_region = img.crop((left, top, right, bottom))
-                blurred.paste(barcode_region, (left, top))
-
-                # (3) Compress the blurred image so Base64 isn’t too large
+                # (4) Compress the image heavily so Base64 stays small
                 buf = io.BytesIO()
-                blurred.save(buf, format="JPEG", quality=60)
+                img_to_compress.thumbnail((400, 400))        # max dimension 400px
+                img_to_compress.save(buf, format="JPEG", quality=30)
                 final_bytes = buf.getvalue()
-                log.info(f"[OCR] Prepared and compressed image to {len(final_bytes)} bytes")
+                log.info(f"[OCR] Compressed image to {len(final_bytes)} bytes")
 
-                # (4) Convert the final bytes → Base64 data URI
-                base64_image = base64.b64encode(final_bytes).decode("utf-8")
-                data_uri = f"data:image/jpeg;base64,{base64_image}"
-                log.info(f"[OCR] Base64 data URI length: {len(data_uri)} characters")
+                # (5) Convert the final bytes → Base64 data URI
+                data_uri = "data:image/jpeg;base64," + base64.b64encode(final_bytes).decode("utf-8")
+                log.info(f"[OCR] Base64 length: {len(data_uri)} chars")
 
-                # (5) Call OpenAI’s Vision-enabled Chat API
+                # (6) Call OpenAI’s Vision-enabled Chat API
                 resp = openai.chat.completions.create(
                     model="gpt-image-1",
                     messages=[
@@ -677,17 +679,12 @@ def webhook():
                     max_tokens=32
                 )
 
-                # (6) Receive and normalize the OCR output
+                # (7) Receive and normalize the OCR output
                 ocr_text = resp.choices[0].message.content.strip()
                 log.info(f"[OCR] OpenAI response: {ocr_text}")
 
                 normalized = re.sub(r"[^A-Za-z0-9]", "", ocr_text).upper()
                 log.info(f"[OCR] Normalized text: {normalized}")
-
-                # (7) Truncate if it still starts with "1Z" but is too long
-                if normalized.startswith("1Z") and len(normalized) > 18:
-                    normalized = normalized[:18]
-                    log.info(f"[OCR] Truncated to 18 chars: {normalized}")
 
                 # (8) Now apply strict UPS/FedEx patterns
                 ups_pattern   = re.compile(r"\b1Z[A-Z0-9]{6}[0-9]{2}[0-9]{8}[0-9]\b", re.IGNORECASE)
