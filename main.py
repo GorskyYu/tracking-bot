@@ -667,19 +667,25 @@ def webhook():
                     ],
                     max_tokens=32
                 )
+                
+                # 1) Receive the raw OCR output
                 ocr_text = resp.choices[0].message.content.strip()
                 log.info(f"[OCR] OpenAI response: {ocr_text}")
                 
-                # If it starts with '1Z' but is longer than 18 chars, truncate to 18:
-                if ocr_text.upper().startswith("1Z") and len(ocr_text) > 18:
-                    ocr_text = ocr_text[:18]
+                # 2) Normalize: remove spaces and any non-alphanumeric characters
+                normalized = re.sub(r"[^A-Za-z0-9]", "", ocr_text).upper()
+                log.info(f"[OCR] Normalized text: {normalized}")
 
-                # Now apply your strict regex
+                # 3) Truncate if it still starts with "1Z" but is too long
+                if normalized.startswith("1Z") and len(normalized) > 18:
+                    normalized = normalized[:18]
+                    log.info(f"[OCR] Truncated to 18 chars: {normalized}")
+                    
+                # 4) Now apply strict UPS/FedEx patterns
                 ups_pattern   = re.compile(r"\b1Z[A-Z0-9]{6}[0-9]{2}[0-9]{8}[0-9]\b", re.IGNORECASE)
-                fedex_pattern = re.compile(r"\b\d{12}\b|\b\d{15}\b")
+                fedex_pattern = re.compile(r"\b\d{12}\b|\b\d{15}\b")    
 
-                text = ocr_text.upper()
-                match = ups_pattern.search(text) or fedex_pattern.search(text)
+                match = ups_pattern.search(normalized) or fedex_pattern.search(normalized)
                 if match:
                     extracted = match.group(0)
                     reply_payload = {
@@ -691,6 +697,7 @@ def webhook():
                         "replyToken": event["replyToken"],
                         "messages": [{"type": "text", "text": "Sorry, I couldn’t detect a valid tracking number."}]
                     }
+
                 requests.post(
                     "https://api.line.me/v2/bot/message/reply",
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
