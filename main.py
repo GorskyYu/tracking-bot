@@ -683,6 +683,11 @@ def webhook():
                       headers=headers,
                       json={"query": gql_query, "variables": variables}
                     )
+                    # ─── DEBUG: log Monday API response if it’s not 200 ────────────────
+                    if resp.status_code != 200:
+                        log.error("[MONDAY] Query failed %s: %s", resp.status_code, resp.text)
+                        # bail out of the image‐handler without masking as a barcode error
+                        return                    
                     resp.raise_for_status()
                     data = resp.json()
 
@@ -733,6 +738,9 @@ def webhook():
                         headers=headers,
                         json={"query": mutation, "variables": variables}
                       )
+                      if update_resp.status_code != 200:
+                          log.error("[MONDAY] Mutation failed %s: %s", update_resp.status_code, update_resp.text)
+                          return                      
                       update_resp.raise_for_status()
                       log.info(f"Updated subitem {found_subitem_id} with Location=溫哥華倉A and Status=測量")
 
@@ -772,25 +780,28 @@ def webhook():
 
 
             except Exception as e:
-                log.error("[BARCODE] Error decoding barcode", exc_info=True)
+                # Log any barcode or Monday API errors without replying to the chat
+                log.error("[BARCODE] Error during image handling", exc_info=True)
+                # Suppressed user-facing error reply            
+                # log.error("[BARCODE] Error decoding barcode", exc_info=True)
                 # Optionally, reply “NONE” or a helpful message:
-                error_payload = {
-                    "replyToken": event["replyToken"],
-                    "messages": [
-                        {
-                            "type": "text",
-                            "text": "An error occurred while reading the image. Please try again."
-                        }
-                    ]
-                }
-                requests.post(
-                    "https://api.line.me/v2/bot/message/reply",
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {LINE_TOKEN}"
-                    },
-                    json=error_payload
-                )
+                # error_payload = {
+                    # "replyToken": event["replyToken"],
+                    # "messages": [
+                        # {
+                            # "type": "text",
+                            # "text": "An error occurred while reading the image. Please try again."
+                        # }
+                    # ]
+                # }
+                # requests.post(
+                    # "https://api.line.me/v2/bot/message/reply",
+                    # headers={
+                        # "Content-Type": "application/json",
+                        # "Authorization": f"Bearer {LINE_TOKEN}"
+                    # },
+                    # json=error_payload
+                # )
 
             # Skip further handling of this event
             continue
