@@ -19,6 +19,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from dateutil.parser import parse as parse_date
 from datetime import timedelta
+import openai
 
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
@@ -116,6 +117,9 @@ LINE_HEADERS = {
     "Content-Type":  "application/json",
     "Authorization": f"Bearer {LINE_TOKEN}"
 }
+
+# ─── ADDED: Configure OpenAI API key ───────────────────────────────────────────
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # ─── Signature Generator ──────────────────────────────────────────────────────
 def generate_sign(params: dict, secret: str) -> str:
@@ -588,6 +592,84 @@ def webhook():
     log.info(f"Payload: {json.dumps(data, ensure_ascii=False)}")
 
     for event in data.get("events", []):
+        # ─── ADDED: Handle image messages for OCR via OpenAI ───────────────
+        if event.get("type") == "message" and event["message"].get("type") == "image":
+            try:
+                # 1) Download image bytes from LINE
+                message_id = event["message"]["id"]
+                # Using direct HTTP GET against LINE’s content endpoint
+                stream_resp = requests.get(
+                    f"https://api-data.line.me/v2/bot/message/{message_id}/content",
+                    headers={"Authorization": f"Bearer {LINE_TOKEN}"},
+                    stream=True
+                )
+                chunks = []
+                for chunk in stream_resp.iter_content(chunk_size=4096):
+                    if chunk:
+                        chunks.append(chunk)
+                buffer = b"".join(chunks)
+
+                # 2) Convert buffer → Base64 data URI (assume JPEG; adjust if PNG)
+                base64_image = base64.b64encode(buffer).decode("utf-8")
+                data_uri = f"data:image/jpeg;base64,{base64_image}"
+
+                # 3) Call OpenAI’s vision‐enabled Chat API
+                resp = openai.ChatCompletion.create(
+                    model="gpt-4-vision-preview",  # or "o4-mini" if available
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an assistant whose only job is to extract the shipping/tracking "
+                                "number from an image. When given a base64-encoded data URI, return exactly "
+                                "the alphanumeric tracking code (no extra commentary)."
+                            )
+                        },
+                        {
+                            "role": "user",
+                            "content": data_uri
+                        }
+                    ],
+                    max_tokens=128
+                )
+
+                ocr_text = resp.choices[0].message.content.strip()
+
+                # 4) Validate with regex (8–20 alphanumeric characters)
+                match = re.search(r"\b[A-Z0-9]{8,20}\b", ocr_text, flags=re.IGNORECASE)
+                if match:
+                    extracted = match.group(0)
+                    reply_payload = {
+                        "replyToken": event["replyToken"],
+                        "messages": [{"type": "text", "text": f"Tracking number found: {extracted}"}]
+                    }
+                else:
+                    reply_payload = {
+                        "replyToken": event["replyToken"],
+                        "messages": [{"type": "text", "text": "Sorry, I couldn’t detect a valid tracking number."}]
+                    }
+
+                # 5) Send reply back to LINE
+                requests.post(
+                    "https://api.line.me/v2/bot/message/reply",
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
+                    json=reply_payload
+                )
+
+            except Exception as e:
+                log.error(f"Error during OCR with OpenAI: {e}")
+                error_payload = {
+                    "replyToken": event["replyToken"],
+                    "messages": [{"type": "text", "text": "An error occurred while reading the image. Please try again."}]
+                }
+                requests.post(
+                    "https://api.line.me/v2/bot/message/reply",
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
+                    json=error_payload
+                )
+            continue  # skip text‐only handlers for this event
+        # ────────────────────────────────────────────────────────────────────
+    
         # Only handle text messages
         if event.get("type") != "message" or event["message"].get("type") != "text":
             continue
@@ -608,7 +690,7 @@ def webhook():
         )
         is_missing = MISSING_CONFIRM in text
         
-        # NEW: detect pure-shipment blocks
+        # detect pure-shipment blocks
         is_shipment = (
             "出貨單號" in text
             and "宅配單號" in text
