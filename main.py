@@ -623,28 +623,31 @@ def webhook():
 
                 # (2) Load into Pillow and auto‐crop to dark (text/barcode) region
                 img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+                
+                # Convert to grayscale and threshold to find the white/black text region
                 gray = img.convert("L").point(lambda x: 0 if x < 200 else 255, "1")
                 bbox = gray.getbbox()
                 if bbox:
-                    img = img.crop(bbox)
-                    log.info(f"[OCR] Auto‐cropped to bbox {bbox}, new size={img.size}")
+                    # Crop out only the bounding‐box where dark text/barcode lives
+                    img_crop = img.crop(bbox)
+                    log.info(f"[OCR] Auto‐cropped to bbox {bbox}, new size={img_crop.size}")
                 else:
+                    img_crop = img
                     log.info("[OCR] No dark region found, using full image")
 
                 # (3) Compress heavily to keep Base64 small
                 buf = io.BytesIO()
-                img.thumbnail((400, 400))             # 400px max side
-                img.save(buf, format="JPEG", quality=30)
+                img_crop.save(buf, format="JPEG", quality=85)
                 final_bytes = buf.getvalue()
-                log.info(f"[OCR] Compressed image to {len(final_bytes)} bytes")
+                log.info(f"[OCR] Lightly compressed image to {len(final_bytes)} bytes (quality=85)")
 
                 # (4) Build Base64 URI
                 data_uri = "data:image/jpeg;base64," + base64.b64encode(final_bytes).decode("utf-8")
                 log.info(f"[OCR] Base64 length: {len(data_uri)} chars")
 
-                # ── One single call to gpt-4o-mini ────────────────────────────
+                # ─── (5) Call a single high‐quality vision model (gpt-image-1 or gpt-4o, etc.) ───
                 resp = openai.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-image-1",
                     messages=[
                         {
                             "role": "system",
@@ -670,7 +673,7 @@ def webhook():
                 ocr_text = resp.choices[0].message.content.strip()
                 log.info(f"[OCR] gpt-4o-mini response: {ocr_text}")
 
-                # (5) Normalize, truncate (if necessary), and regex‐match
+                # (6) Normalize, truncate (if necessary), and regex‐match
                 normalized = re.sub(r"[^A-Za-z0-9]", "", ocr_text).upper()
                 log.info(f"[OCR] Normalized text: {normalized}")
 
