@@ -697,7 +697,9 @@ def webhook():
                     # Search for subitem with exact match
                     found_subitem_id = None
                     for board in data["data"]["boards"]:
-                      for item in board["items"]:
+                      # our query returned items_page, not items
+                      items = board.get("items_page", {}).get("items", [])
+                      for item in items:
                         for subitem in item.get("subitems", []):
                           if subitem["name"] == tracking_id:
                             found_subitem_id = subitem["id"]
