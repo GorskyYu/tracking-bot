@@ -659,20 +659,23 @@ def webhook():
 
                     # (New) Query Monday.com for subitem with exact match of tracking_id
                     gql_query = """
-                    query ($boardId: Int!) {
-                      boards(ids: [$boardId]) {
-                        items {
-                          id
-                          name
-                          subitems {
+                    query ($boardIds: [Int!]!) {
+                      boards(ids: $boardIds) {
+                        items_page {
+                          items {
                             id
                             name
+                            subitems {
+                              id
+                              name
+                            }
                           }
                         }
                       }
                     }
                     """
-                    variables = {"boardId": AIR_BOARD_ID}
+                    variables = {"boardIds": [AIR_BOARD_ID]}
+
                     headers = {
                       "Authorization": MONDAY_API_TOKEN,
                       "Content-Type": "application/json"
@@ -687,7 +690,7 @@ def webhook():
                     if resp.status_code != 200:
                         log.error("[MONDAY] Query failed %s: %s", resp.status_code, resp.text)
                         # bail out of the image‐handler without masking as a barcode error
-                        return                    
+                        continue                    
                     resp.raise_for_status()
                     data = resp.json()
 
@@ -740,7 +743,7 @@ def webhook():
                       )
                       if update_resp.status_code != 200:
                           log.error("[MONDAY] Mutation failed %s: %s", update_resp.status_code, update_resp.text)
-                          return                      
+                          continue                      
                       update_resp.raise_for_status()
                       log.info(f"Updated subitem {found_subitem_id} with Location=溫哥華倉A and Status=測量")
 
@@ -782,7 +785,8 @@ def webhook():
             except Exception as e:
                 # Log any barcode or Monday API errors without replying to the chat
                 log.error("[BARCODE] Error during image handling", exc_info=True)
-                # Suppressed user-facing error reply            
+                # Suppressed user-facing error reply
+                continue
                 # log.error("[BARCODE] Error decoding barcode", exc_info=True)
                 # Optionally, reply “NONE” or a helpful message:
                 # error_payload = {
