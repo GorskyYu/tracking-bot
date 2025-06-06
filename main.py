@@ -652,83 +652,67 @@ def webhook():
 
                 if not decoded_objs:
                     log.info("[BARCODE] No barcode detected in the image.")
-                    # You could reply “No barcode found” if you like:
-                else:
-                    # Handle multiple barcodes instead of assuming only one:
-                    for idx, decoded in enumerate(decoded_objs):
-                        # Convert bytes → string
-                        raw_data = decoded.data.decode("utf-8").replace(" ", "")  # remove any stray spaces
-                        raw_data = raw_data.upper()
-                        log.info(f"[BARCODE] (#{idx+1}) Decoded raw barcode data: {raw_data}")
-
-                        # Normalize: remove non‐alphanumeric, convert to uppercase
-                        cleaned = re.sub(r"[^A-Za-z0-9]", "", raw_data).upper()
-                        log.info(f"[BARCODE] (#{idx+1}) Normalized barcode text: {cleaned}")
-
-
-                # (5) Call chatgpt-4o-latest **only**
-                # resp = openai.chat.completions.create(
-                    # model="chatgpt-4o-latest",
-                    # messages=[
-                        # {
-                            # "role": "system",
-                            # "content": (
-                                # "You are an assistant whose ONLY job is to extract exactly one UPS or FedEx tracking ID from the image.\n"
-                                # "1) UPS: Find the literal substring “TRACKING #:” (case-insensitive). Immediately after “TRACKING #:” there must be exactly 18 characters in this format:\n"
-                                # "     – Always start with “1ZHF0” (no spaces), then exactly 13 digits (0–9). Example: “1ZHF05452031344994”.\n"
-                                # "   * If you see “12” at the very beginning instead of “1Z”, treat that “12” as “1Z”.\n"
-                                # "   * If you see the letters “HFO” (letter O) in place of “HF0”, convert that “HFO” into “HF0” (digit zero) exactly.\n"
-                                # "   * After you identify those 18 characters, remove all spaces and return exactly that 18-character string—nothing else.\n"
-                                # "2) If no valid UPS ID is found, look for FedEx: Find the literal substring “TRK#”. Immediately after “TRK#” you will find exactly 12 numeric digits (no letters). Remove any spaces and return exactly those 12 digits.\n"
-                                # "3) If you cannot find either pattern, respond with EXACTLY “NONE” (no quotes).\n"
-                                # "Return exactly one string: either an 18-character UPS ID or a 12-digit FedEx ID, or “NONE”.\n"
-                            # )
-                        # },
-                        # {
-                            # "role": "user",
-                            # "content": data_uri
-                        # }
-                    # ],
-                    # max_tokens=32
-                # )
-                # ocr_text = resp.choices[0].message.content.strip()
-                # log.info(f"[OCR] gpt-4o-latest response: {ocr_text}")
-
-                # (6) Normalize, truncate (if necessary), and regex‐match
-                # normalized = re.sub(r"[^A-Za-z0-9]", "", ocr_text).upper()
-                # log.info(f"[OCR] Normalized text: {normalized}")
-
-                # extracted = normalized
-                # Instead of pushing to LINE, just log it:
-                # log.info(f"[OCR] Extracted tracking number: {extracted}")
-                if chosen_code:
-                # reply via LINE to confirm:
+                    # Optionally reply “No barcode found”:
                     reply_payload = {
                         "replyToken": event["replyToken"],
-                        "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
+                        "messages": [
+                            {"type": "text", "text": "No barcode detected. Please try again with a clearer image."}
+                        ]
                     }
+                    requests.post(
+                        "https://api.line.me/v2/bot/message/reply",
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {LINE_TOKEN}"
+                        },
+                        json=reply_payload
+                    )
+                else:
+                    # ── UPDATED: straight output all decoded values (no regex checking)
+                    decoded_texts = []
+                    for idx, decoded in enumerate(decoded_objs):
+                        raw_data = decoded.data.decode("utf-8")
+                        log.info(f"[BARCODE] (#{idx+1}) Decoded raw data: {raw_data}")
+                        decoded_texts.append(raw_data)
 
-                requests.post(
-                    "https://api.line.me/v2/bot/message/reply",
-                    headers={
-                        "Content-Type": "application/json", 
-                        "Authorization": f"Bearer {LINE_TOKEN}"
-                    },
-                    json=reply_payload
-                )
-                log.info(f"[BARCODE] Replied with tracking number: {chosen_code}")
+                    # Join multiple barcodes with commas (or reply only the first if you prefer)
+                    output_text = ", ".join(decoded_texts)
+
+                    # Reply back to LINE with whatever was decoded
+                    reply_payload = {
+                        "replyToken": event["replyToken"],
+                        "messages": [
+                            {"type": "text", "text": f"Scanned barcode(s): {output_text}"}
+                        ]
+                    }
+                    requests.post(
+                        "https://api.line.me/v2/bot/message/reply",
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {LINE_TOKEN}"
+                        },
+                        json=reply_payload
+                    )
+                    log.info(f"[BARCODE] Replied with: {output_text}")
 
             except Exception as e:
-                # ── UPDATED ── None of the decoded barcodes matched a valid pattern
-                log.info("[BARCODE] No valid UPS/FedEx tracking number found in decoded barcodes.")
+                log.error("[BARCODE] Error decoding barcode", exc_info=True)
                 # Optionally, reply “NONE” or a helpful message:
                 error_payload = {
                     "replyToken": event["replyToken"],
-                    "messages": [{"type": "text", "text": "An error occurred while reading the image. Please try again."}]
+                    "messages": [
+                        {
+                            "type": "text",
+                            "text": "An error occurred while reading the image. Please try again."
+                        }
+                    ]
                 }
                 requests.post(
                     "https://api.line.me/v2/bot/message/reply",
-                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {LINE_TOKEN}"
+                    },
                     json=error_payload
                 )
 
