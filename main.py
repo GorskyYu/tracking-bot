@@ -635,19 +635,19 @@ def webhook():
                     img_crop = img
                     log.info("[OCR] No dark region found, using full image")
 
-                # (3) Compress heavily to keep Base64 small
+                # (3) Compress lightly at higher quality (90) to preserve detail
                 buf = io.BytesIO()
-                img_crop.save(buf, format="JPEG", quality=85)
+                img_crop.save(buf, format="JPEG", quality=90)
                 final_bytes = buf.getvalue()
-                log.info(f"[OCR] Lightly compressed image to {len(final_bytes)} bytes (quality=85)")
+                log.info(f"[OCR] Compressed image to {len(final_bytes)} bytes (quality=90)")
 
                 # (4) Build Base64 URI
                 data_uri = "data:image/jpeg;base64," + base64.b64encode(final_bytes).decode("utf-8")
                 log.info(f"[OCR] Base64 length: {len(data_uri)} chars")
 
-                # ─── (5) Call a single high‐quality vision model (gpt-image-1 or gpt-4o, etc.) ───
+                # (5) Call chatgpt-4o-latest **only**
                 resp = openai.chat.completions.create(
-                    model="gpt-image-1",
+                    model="chatgpt-4o-latest",
                     messages=[
                         {
                             "role": "system",
