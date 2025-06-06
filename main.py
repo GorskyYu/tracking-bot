@@ -13,23 +13,16 @@ from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import timedelta
-from datetime import datetime, timezone
+from datetime import timedelta, datetime, timezone
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from dateutil.parser import parse as parse_date
-from datetime import timedelta
 import openai
 
-import base64
-import requests
-import logging
 import re
 import io
 from PIL import Image, ImageFilter
 from pyzbar.pyzbar import decode, ZBarSymbol
-
-
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
 
@@ -40,15 +33,12 @@ GC = gspread.service_account_from_dict(GA_SVC_INFO)
 creds = ServiceAccountCredentials.from_json_keyfile_dict(GA_SVC_INFO, SCOPES)
 gs = gspread.authorize(creds)
 
-
-
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
 log = logging.getLogger(__name__)
-
 
 # ─── Customer Mapping ──────────────────────────────────────────────────────────
 # Map each LINE group to the list of lowercase keywords you filter on
@@ -119,6 +109,8 @@ VICKY_SHEET_URL = os.getenv("VICKY_SHEET_URL")
 
 MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
 TIMEZONE    = "America/Vancouver"
+
+AIR_BOARD_ID = int(os.getenv("AIR_BOARD_ID"))
 
 #STATE_FILE = os.getenv("STATE_FILE", "last_seen.json")
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
@@ -625,20 +617,7 @@ def webhook():
 
                 # (2) Load into Pillow and auto‐crop to dark (text/barcode) region
                 img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-                
-                # Convert to grayscale and threshold to find the white/black text region
-                # gray = img.convert("L").point(lambda x: 0 if x < 200 else 255, "1")
-                # bbox = gray.getbbox()
-                # if bbox:
-                    ## Crop out only the bounding‐box where dark text/barcode lives
-                    # img_crop = img.crop(bbox)
-                    # log.info(f"[OCR] Auto‐cropped to bbox {bbox}, new size={img_crop.size}")
-                    # log.info(f"[BARCODE] Auto‐cropped to bbox {bbox}, new size={img_crop.size}")
-                # else:
-                    # img_crop = img
-                    # log.info("[OCR] No dark region found, using full image")
-                    # log.info("[BARCODE] No dark region found, using full image")
-                
+                                
                 # ── DEBUG CHANGE: use full-resolution image, no thumbnail ──
                 img_crop = img
                 log.info(f"[BARCODE] Decoding full‐resolution image size {img_crop.size}")
@@ -674,22 +653,104 @@ def webhook():
                     tracking_raw = decoded_objs[0].data.decode("utf-8")
                     log.info(f"[BARCODE] First decoded raw data (tracking): {tracking_raw}")
 
-                    # 2. Reply with exactly that tracking ID
-                    reply_payload = {
-                        "replyToken": event["replyToken"],
-                        "messages": [
-                            {"type": "text", "text": f"Tracking ID: {tracking_raw}"}
-                        ]
+                    # 2. If there is a tracking ID (we already decode it)
+                    tracking_id = decoded_objs[0].data.decode("utf-8").strip()
+                    log.info(f"[BARCODE] Decoded tracking ID: {tracking_id}")
+
+                    # (New) Query Monday.com for subitem with exact match of tracking_id
+                    gql_query = """
+                    query ($boardId: Int!) {
+                      boards(ids: [$boardId]) {
+                        items {
+                          id
+                          name
+                          subitems {
+                            id
+                            name
+                          }
+                        }
+                      }
                     }
-                    requests.post(
-                        "https://api.line.me/v2/bot/message/reply",
-                        headers={
-                            "Content-Type": "application/json",
-                            "Authorization": f"Bearer {LINE_TOKEN}"
-                        },
-                        json=reply_payload
+                    """
+                    variables = {"tracking": tracking_id}
+                    headers = {
+                      "Authorization": MONDAY_API_TOKEN,
+                      "Content-Type": "application/json"
+                    }
+
+                    resp = requests.post(
+                      "https://api.monday.com/v2",
+                      headers=headers,
+                      json={"query": gql_query, "variables": variables}
                     )
-                    log.info(f"[BARCODE] Replied with Tracking ID: {tracking_raw}")
+                    resp.raise_for_status()
+                    data = resp.json()
+
+                    # Search for subitem with exact match
+                    found_subitem_id = None
+                    for board in data["data"]["boards"]:
+                      for item in board["items"]:
+                        for subitem in item.get("subitems", []):
+                          if subitem["name"] == tracking_id:
+                            found_subitem_id = subitem["id"]
+                            break
+
+                    # 4. If no match, send private message to Yves
+                    if not found_subitem_id:
+                      log.warning(f"Tracking ID {tracking_id} not found in Monday.com")
+                      payload = {
+                        "to": YVES_USER_ID,
+                        "messages": [
+                          {
+                            "type": "text",
+                            "text": f"⚠️ Tracking ID {tracking_id} not found in Monday."
+                          }
+                        ]
+                      }
+                      requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+                    else:
+                      log.info(f"Found subitem ID: {found_subitem_id}")
+
+                      # 5. Update Location and Status columns
+                      mutation = """
+                      mutation ($subitemId: Int!, $boardId: Int!, $locationVal: JSON!, $statusVal: JSON!) {
+                        change_multiple_column_values(item_id: $subitemId, board_id: $boardId, column_values: $locationVal) {
+                          id
+                        }
+                        change_column_value(item_id: $subitemId, board_id: $boardId, column_id: "status__1", value: $statusVal) {
+                          id
+                        }
+                      }
+                      """
+                      variables = {
+                        "subitemId": int(found_subitem_id),
+                        "locationVal": json.dumps({"location__1": {"text": "溫哥華倉A"}}),
+                        "statusVal": json.dumps({"label": "測量"})
+                      }
+                      update_resp = requests.post(
+                        "https://api.monday.com/v2",
+                        headers=headers,
+                        json={"query": mutation, "variables": variables}
+                      )
+                      update_resp.raise_for_status()
+                      log.info(f"Updated subitem {found_subitem_id} with Location=溫哥華倉A and Status=測量")
+
+                    # 2. Reply with exactly that tracking ID
+                    # reply_payload = {
+                        # "replyToken": event["replyToken"],
+                        # "messages": [
+                            # {"type": "text", "text": f"Tracking ID: {tracking_raw}"}
+                        # ]
+                    # }
+                    # requests.post(
+                        # "https://api.line.me/v2/bot/message/reply",
+                        # headers={
+                            # "Content-Type": "application/json",
+                            # "Authorization": f"Bearer {LINE_TOKEN}"
+                        # },
+                        # json=reply_payload
+                    # )
+                    # log.info(f"[BARCODE] Replied with Tracking ID: {tracking_raw}")
 
                     # 3. If there is a second decoded value, extract the postal code portion
                     if len(decoded_objs) > 1:
