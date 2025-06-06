@@ -703,10 +703,10 @@ def webhook():
                 # log.info(f"[OCR] Extracted tracking number: {extracted}")
                 if chosen_code:
                 # reply via LINE to confirm:
-                reply_payload = {
-                    "replyToken": event["replyToken"],
-                    "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
-                }
+                    reply_payload = {
+                        "replyToken": event["replyToken"],
+                        "messages": [{"type": "text", "text": f"Tracking number: {extracted}"}]
+                    }
 
                 requests.post(
                     "https://api.line.me/v2/bot/message/reply",
