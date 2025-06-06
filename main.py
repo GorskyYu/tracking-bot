@@ -27,6 +27,7 @@ import logging
 import re
 from PIL import Image
 import io
+from PIL import Image, ImageFilter
 
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
@@ -619,44 +620,52 @@ def webhook():
                 raw_bytes = b"".join(chunks)
                 log.info(f"[OCR] Downloaded {len(raw_bytes)} bytes from LINE")
 
-                # (2) OPTIONAL: Compress / Resize the image with Pillow
-                #     so the Base64 string won’t exceed token limits
-                try:
-                    img = Image.open(io.BytesIO(raw_bytes))
-                    # Resize so the longest side is at most 800px
-                    img.thumbnail((800, 800))
-                    buf = io.BytesIO()
-                    # Save as JPEG with quality=50 to reduce file size
-                    img.save(buf, format="JPEG", quality=50)
-                    compressed_bytes = buf.getvalue()
-                    log.info(f"[OCR] Compressed image to {len(compressed_bytes)} bytes")
-                    final_bytes = compressed_bytes
+                # (2) Crop or blur out PII, leaving only the barcode region
+                img = Image.open(io.BytesIO(raw_bytes))
+                width, height = img.size
 
-                except Exception as resize_err:
-                    # If compression fails, fall back to raw bytes
-                    log.warning(f"[OCR] Image compression failed, using raw bytes: {resize_err}")
-                    final_bytes = raw_bytes
+                # Define approximate barcode region (adjust as needed)
+                left   = int(width * 0.05)
+                top    = int(height * 0.50)
+                right  = int(width * 0.95)
+                bottom = int(height * 0.90)
 
-                # (3) Convert the final bytes → Base64 data URI
+                # Create a blurred version of the entire image
+                blurred = img.filter(ImageFilter.GaussianBlur(radius=30))
+
+                # Paste the unblurred barcode area back onto the blurred image
+                barcode_region = img.crop((left, top, right, bottom))
+                blurred.paste(barcode_region, (left, top))
+
+                # (3) Compress the blurred image so Base64 isn’t too large
+                buf = io.BytesIO()
+                blurred.save(buf, format="JPEG", quality=60)
+                final_bytes = buf.getvalue()
+                log.info(f"[OCR] Prepared and compressed image to {len(final_bytes)} bytes")
+
+                # (4) Convert the final bytes → Base64 data URI
                 base64_image = base64.b64encode(final_bytes).decode("utf-8")
                 data_uri = f"data:image/jpeg;base64,{base64_image}"
                 log.info(f"[OCR] Base64 data URI length: {len(data_uri)} characters")
 
-                # (4) Call OpenAI’s Vision‐enabled Chat API
+                # (5) Call OpenAI’s Vision-enabled Chat API
                 resp = openai.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
                         {
                             "role": "system",
                             "content": (
-                                "You are an assistant whose only job is to extract exactly one valid UPS or FedEx tracking ID from the image.  \n"
-                                "- A **UPS tracking ID** must match exactly 18 characters: it always starts with “1Z” (case‐insensitive), followed by 6 alphanumeric “shipper” characters, then 2 digits of service code, then 8 digits of package ID, then 1 check digit.  \n"
+                                "You are an assistant whose only job is to extract exactly one valid UPS "
+                                "or FedEx tracking ID from the image.  \n"
+                                "- A **UPS tracking ID** must match exactly 18 characters: it always starts "
+                                "with '1Z' (case-insensitive), followed by 6 alphanumeric 'shipper' chars, "
+                                "then 2 digits of service code, then 8 digits of package ID, then 1 check digit.  \n"
                                 "- A **FedEx tracking ID** has exactly 12 numeric digits (or 15 digits for Ground).  \n"
                                 "- Correct common OCR mistakes:  \n"
                                 "   • If you see 'O' or 'o', treat it as '0', unless context clearly indicates a letter.  \n"
                                 "   • If you see 'I' or 'l', treat it as '1' in a numeric position.  \n"
                                 "   • If you see '12' at the start but no valid FedEx candidate, check if it should be '1Z' for UPS.  \n"
-                                "- If the model’s output is longer than 18 characters and begins with '1Z', **truncate to the first 18 characters**.  \n"
+                                "- If the model’s output is longer than 18 characters and begins with '1Z', truncate to the first 18 characters.  \n"
                                 "- Return only the tracking ID string (no extra commentary)."
                             )
                         },
@@ -667,23 +676,22 @@ def webhook():
                     ],
                     max_tokens=32
                 )
-                
-                # 1) Receive the raw OCR output
+
+                # (6) Receive and normalize the OCR output
                 ocr_text = resp.choices[0].message.content.strip()
                 log.info(f"[OCR] OpenAI response: {ocr_text}")
-                
-                # 2) Normalize: remove spaces and any non-alphanumeric characters
+
                 normalized = re.sub(r"[^A-Za-z0-9]", "", ocr_text).upper()
                 log.info(f"[OCR] Normalized text: {normalized}")
 
-                # 3) Truncate if it still starts with "1Z" but is too long
+                # (7) Truncate if it still starts with "1Z" but is too long
                 if normalized.startswith("1Z") and len(normalized) > 18:
                     normalized = normalized[:18]
                     log.info(f"[OCR] Truncated to 18 chars: {normalized}")
-                    
-                # 4) Now apply strict UPS/FedEx patterns
+
+                # (8) Now apply strict UPS/FedEx patterns
                 ups_pattern   = re.compile(r"\b1Z[A-Z0-9]{6}[0-9]{2}[0-9]{8}[0-9]\b", re.IGNORECASE)
-                fedex_pattern = re.compile(r"\b\d{12}\b|\b\d{15}\b")    
+                fedex_pattern = re.compile(r"\b\d{12}\b|\b\d{15}\b")
 
                 match = ups_pattern.search(normalized) or fedex_pattern.search(normalized)
                 if match:
