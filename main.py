@@ -615,14 +615,17 @@ def webhook():
 
                 # 3) Call OpenAI’s vision‐enabled Chat API
                 resp = openai.chat.completions.create(
-                    model="gpt-4-mini-preview",
+                    model="gpt-4o-mini",
                     messages=[
                         {
                             "role": "system",
                             "content": (
-                                "You are an assistant whose only job is to extract the shipping/tracking "
-                                "number from an image. When given a base64-encoded data URI, return exactly "
-                                "the alphanumeric tracking code (no extra commentary)."
+                                "You are an assistant whose only job is to extract exactly one UPS or FedEx tracking ID from the input. "
+                                "A valid UPS tracking ID starts with “1Z” (case‐insensitive) followed by 16 alphanumeric characters. "
+                                "A valid FedEx tracking ID is typically 12 numeric digits, or 15 digits for Ground. "
+                                "Correct common OCR mistakes: treat letters O or o as zero (0), treat “12” as “1Z” when context suggests UPS, "
+                                "and drop any spaces or punctuation. "
+                                "Return only the tracking ID (no other text)."
                             )
                         },
                         {
@@ -630,8 +633,9 @@ def webhook():
                             "content": data_uri
                         }
                     ],
-                    max_tokens=128
+                    max_tokens=64
                 )
+
                 # 新版 API 回傳格式一樣用 choices[0].message.content
                 ocr_text = resp.choices[0].message.content.strip()
 
