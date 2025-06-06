@@ -724,6 +724,7 @@ def webhook():
                       """
                       variables = {
                         "subitemId": int(found_subitem_id),
+                        "boardId": AIR_BOARD_ID,
                         "locationVal": json.dumps({"location__1": {"text": "溫哥華倉A"}}),
                         "statusVal": json.dumps({"label": "測量"})
                       }
