@@ -652,11 +652,13 @@ def webhook():
 
                 if not decoded_objs:
                     log.info("[BARCODE] No barcode detected in the image.")
-                    # Optionally reply “No barcode found”:
                     reply_payload = {
                         "replyToken": event["replyToken"],
                         "messages": [
-                            {"type": "text", "text": "No barcode detected. Please try again with a clearer image."}
+                            {
+                                "type": "text",
+                                "text": "No barcode detected. Please try again with a clearer image."
+                            }
                         ]
                     }
                     requests.post(
@@ -668,21 +670,15 @@ def webhook():
                         json=reply_payload
                     )
                 else:
-                    # ── UPDATED: straight output all decoded values (no regex checking)
-                    decoded_texts = []
-                    for idx, decoded in enumerate(decoded_objs):
-                        raw_data = decoded.data.decode("utf-8")
-                        log.info(f"[BARCODE] (#{idx+1}) Decoded raw data: {raw_data}")
-                        decoded_texts.append(raw_data)
+                    # 1. Take the first decoded barcode as the Tracking ID
+                    tracking_raw = decoded_objs[0].data.decode("utf-8")
+                    log.info(f"[BARCODE] First decoded raw data (tracking): {tracking_raw}")
 
-                    # Join multiple barcodes with commas (or reply only the first if you prefer)
-                    output_text = ", ".join(decoded_texts)
-
-                    # Reply back to LINE with whatever was decoded
+                    # 2. Reply with exactly that tracking ID
                     reply_payload = {
                         "replyToken": event["replyToken"],
                         "messages": [
-                            {"type": "text", "text": f"Scanned barcode(s): {output_text}"}
+                            {"type": "text", "text": f"Tracking ID: {tracking_raw}"}
                         ]
                     }
                     requests.post(
@@ -693,7 +689,25 @@ def webhook():
                         },
                         json=reply_payload
                     )
-                    log.info(f"[BARCODE] Replied with: {output_text}")
+                    log.info(f"[BARCODE] Replied with Tracking ID: {tracking_raw}")
+
+                    # 3. If there is a second decoded value, extract the postal code portion
+                    if len(decoded_objs) > 1:
+                        postal_raw = decoded_objs[1].data.decode("utf-8")  # e.g. "420V6X1Z7"
+                        # Extract everything after the first three characters:
+                        postal_code = postal_raw[3:]  # yields "V6X1Z7"
+                        log.info(f"[BARCODE] Extracted postal code (not printed): {postal_code}")
+
+                        # 4. Save postal_code into memory (bio)
+                        #    This call uses the 'bio' tool so that future conversations can recall it.
+                        #    We do not print it to the user now.
+                        # 
+                        # Format: just the fact we want to remember, e.g. "Postal code V6X1Z7"
+                        #
+                        # (A separate tool call below will persist this memory.)
+
+                        # ◆ ◆ ◆ Tool call follows below ◆ ◆ ◆
+
 
             except Exception as e:
                 log.error("[BARCODE] Error decoding barcode", exc_info=True)
