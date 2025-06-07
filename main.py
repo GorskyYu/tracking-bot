@@ -18,6 +18,8 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from dateutil.parser import parse as parse_date
 import openai
+from collections import defaultdict
+import threading
 
 import re
 import io
@@ -121,6 +123,26 @@ LINE_HEADERS = {
 
 # ─── ADDED: Configure OpenAI API key ───────────────────────────────────────────
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# keep an in-memory buffer of successfully updated tracking IDs per group
+_pending = defaultdict(list)
+_scheduled = set()
+
+def _schedule_summary(group_id):
+    """Called once per 30m window to send the summary and clear the buffer."""
+    ids = _pending.pop(group_id, [])
+    _scheduled.discard(group_id)
+    if not ids:
+        return
+    # dedupe and format
+    uniq = sorted(set(ids))
+    text = "✅ Updated packages:\n" + "\n".join(f"- {tid}" for tid in uniq)
+    payload = {
+        "to": group_id,
+        "messages": [{"type": "text", "text": text}]
+    }
+    requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+
 
 # ─── Signature Generator ──────────────────────────────────────────────────────
 def generate_sign(params: dict, secret: str) -> str:
@@ -606,7 +628,8 @@ def webhook():
         ):
             continue
             # log.info("[BARCODE] Detected image message, entering barcode‐scan block.")
-
+            
+            # decide which group or private chat
             src = event.get("source", {})
             # allow if it’s a DM from you…
             is_from_me = src.get("type") == "user" and src.get("userId") == YOUR_USER_ID
@@ -738,6 +761,18 @@ def webhook():
                 found_subitem_id = items_page[0]["id"]
                 log.info(f"Found subitem {found_subitem_id} for {tracking_id}")
 
+                # first decide location text based on which group this came from
+                src = event.get("source", {})
+                group_id = src.get("groupId")
+
+                if group_id == ACE_GROUP_ID:
+                    loc = "溫哥華倉A"
+                elif group_id == SOQUICK_GROUP_ID:
+                    loc = "溫哥華倉S"
+                else:
+                    # fallback or skip summary tracking if you prefer
+                    loc = "Yves/Simply"
+
                 # ─── Update Location & Status ─────────────────────────────────────────
                 mutation = """
                 mutation ($itemId: ID!, $boardId: ID!, $columnVals: JSON!) {
@@ -752,9 +787,7 @@ def webhook():
                   "itemId":    found_subitem_id,
                   "boardId":   os.getenv("AIR_BOARD_ID"),  # same subitem‐board
                   "columnVals": json.dumps({
-                    # "subitems_location4__1": { "label": "溫哥華倉A" },
-                    # "subitems_status__1":    { "label": "測量" }
-                    "location__1": { "label": "溫哥華倉A" },
+                    "location__1": { "label": loc },
                     "status__1":    { "label": "測量" }
                   })
                 }
@@ -771,23 +804,12 @@ def webhook():
                 else:
                     log.info(f"Updated subitem {found_subitem_id}: location & status set")
 
-
-                # 2. Reply with exactly that tracking ID
-                # reply_payload = {
-                    # "replyToken": event["replyToken"],
-                    # "messages": [
-                        # {"type": "text", "text": f"Tracking ID: {tracking_raw}"}
-                    # ]
-                # }
-                # requests.post(
-                    # "https://api.line.me/v2/bot/message/reply",
-                    # headers={
-                        # "Content-Type": "application/json",
-                        # "Authorization": f"Bearer {LINE_TOKEN}"
-                    # },
-                    # json=reply_payload
-                # )
-                # log.info(f"[BARCODE] Replied with Tracking ID: {tracking_raw}")
+                    # ─── BATCH SUMMARY TRACKING ───────────────────────────────────────
+                    _pending[group_id].append(tracking_id)
+                    if group_id not in _scheduled:
+                        _scheduled.add(group_id)
+                        # schedule the summary for this group in 30 minutes
+                        threading.Timer(30*60, _schedule_summary, args=[group_id]).start()
 
                 # 3. If there is a second decoded value, extract the postal code portion
                 if len(decoded_objs) > 1:
