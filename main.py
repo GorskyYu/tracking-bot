@@ -594,7 +594,6 @@ def webhook():
 
     for event in data.get("events", []):
         # if event.get("type") == "message" and event["message"].get("type") == "image":
-        # ─── Handle image messages for OCR via OpenAI (testing only from me) ───
         # Original group-only filter (commented out):
         # if event.get("source", {}).get("groupId") != ACE_GROUP_ID:
         #     continue
@@ -603,10 +602,20 @@ def webhook():
         if not (
             event.get("type") == "message"
             and event["message"].get("type") == "image"
-            and event.get("source", {}).get("type") == "user"
+            # and event.get("source", {}).get("type") == "user"
         ):
             continue
             # log.info("[BARCODE] Detected image message, entering barcode‐scan block.")
+
+            src = event.get("source", {})
+            # allow if it’s a DM from you…
+            is_from_me = src.get("type") == "user" and src.get("userId") == YOUR_USER_ID
+            # …or a group message from ace or soquick…
+            is_from_ace      = src.get("type") == "group" and src.get("groupId") == ACE_GROUP_ID
+            is_from_soquick  = src.get("type") == "group" and src.get("groupId") == SOQUICK_GROUP_ID
+
+            if not (is_from_me or is_from_ace or is_from_soquick):
+                continue
 
         try:
             # (1) Download raw image bytes from LINE
