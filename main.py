@@ -743,8 +743,10 @@ def webhook():
                   "itemId":    found_subitem_id,
                   "boardId":   os.getenv("AIR_BOARD_ID"),  # same subitem‐board
                   "columnVals": json.dumps({
-                    "subitems_location4__1": { "text": "溫哥華倉A" },
-                    "subitems_status__1":    { "label": "測量" }
+                    # "subitems_location4__1": { "label": "溫哥華倉A" },
+                    # "subitems_status__1":    { "label": "測量" }
+                    "location__1": { "label": "溫哥華倉A" },
+                    "status__1":    { "label": "測量" }
                   })
                 }
                 up = requests.post(
