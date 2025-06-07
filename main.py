@@ -682,7 +682,9 @@ def webhook():
                   headers={"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"},
                   json={"query": q_parents, "variables": vars_parents}
                 )
-                r1.raise_for_status()
+                if r1.status_code != 200:
+                    log.error("[MONDAY] parent items query failed %s: %s", r1.status_code, r1.text)
+                    continue
                 parent_ids = [itm["id"] for b in r1.json()["data"]["boards"] for itm in b["items"]]
 
                 # 2) Fetch subitems for those parents
