@@ -668,105 +668,78 @@ def webhook():
                 log.info(f"[BARCODE] Decoded tracking ID: {tracking_id}")
 
                 # ─── Query the subitem board’s items directly ─────────────────────
-                # 1) Fetch all parent-item IDs from board 4814336467
-                q_parents = """
-                query ($boardIds: [ID!]!) {
-                  boards(ids: $boardIds) {
-                    items { id }
-                  }
-                }
-                """
-                vars_parents = {"boardIds": [str(AIR_BOARD_ID)]}
-                log.info(f"[MONDAY] parent lookup using BOARD_ID={AIR_BOARD_ID!r}")
-                r1 = requests.post(
-                  "https://api.monday.com/v2",
-                  headers={"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"},
-                  json={"query": q_parents, "variables": vars_parents}
-                )
-                if r1.status_code != 200:
-                    log.error("[MONDAY] parent items query failed %s: %s", r1.status_code, r1.text)
-                    continue
-                parent_ids = [itm["id"] for b in r1.json()["data"]["boards"] for itm in b["items"]]
-
-                # 2) Fetch subitems for those parents
-                q_subs = """
-                query ($itemIds: [ID!]!) {
-                  items(ids: $itemIds) {
+                # ─── Lookup the subitem directly on the subitem board ───────────────
+                q_search = """
+                query ($boardId: Int!, $columnId: String!, $value: String!) {
+                  items_by_column_values(
+                    board_id: $boardId,
+                    column_id: $columnId,
+                    column_value: $value
+                  ) {
                     id
-                    subitems { id name }
+                    name
                   }
                 }
                 """
-                r2 = requests.post(
+                vars_search = {
+                  "boardId":   int(os.getenv("AIR_BOARD_ID")),  # should be 4815120249
+                  "columnId":  "name",
+                  "value":     tracking_id
+                }
+                r_search = requests.post(
                   "https://api.monday.com/v2",
-                  headers={"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"},
-                  json={"query": q_subs, "variables": {"itemIds": parent_ids}}
+                  headers={
+                    "Authorization": MONDAY_API_TOKEN,
+                    "Content-Type":  "application/json"
+                  },
+                  json={ "query": q_search, "variables": vars_search }
                 )
-                r2.raise_for_status()
-                items_list = r2.json()["data"]["items"]
+                if r_search.status_code != 200:
+                    log.error("[MONDAY] search failed %s: %s", r_search.status_code, r_search.text)
+                    continue
 
-                # 3) Find matching subitem
-                found_subitem_id = None
-                for parent in items_list:
-                    for sub in parent["subitems"]:
-                        if sub["name"] == tracking_id:
-                            found_subitem_id = sub["id"]
-                            break
-                    if found_subitem_id:
-                        break
-
-                # 4. If no match, send private message to Yves
-                if not found_subitem_id:
-                    log.warning(f"Tracking ID {tracking_id} not found in Monday.com")
+                results = r_search.json().get("data",{}).get("items_by_column_values",[])
+                if not results:
+                    log.warning(f"Tracking ID {tracking_id} not found in subitem board")
+                    # send private warning…
                     payload = {
                       "to": YVES_USER_ID,
-                      "messages": [
-                        {
-                          "type": "text",
-                          "text": f"⚠️ Tracking ID {tracking_id} not found in Monday."
-                        }
-                      ]
+                      "messages": [{"type":"text","text":f"⚠️ Tracking ID {tracking_id} not found in Monday."}]
                     }
                     requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-                else:
-                    log.info(f"Found subitem ID: {found_subitem_id}")
+                    continue # bail out of the barcode‐handler
 
-                  # 5. Update Location and Status columns
-                    mutation = """
-                    mutation (
-                      $itemId: ID!
-                      $boardId: Int!
-                      $columnVals: JSON!
-                    ) {
-                      change_multiple_column_values(
-                        item_id: $itemId,
-                        board_id: $boardId,
-                        column_values: $columnVals
-                      ) {
-                        id
-                      }
-                    }
-                    """
-                    variables = {
-                      "itemId": found_subitem_id,                   # subitem’s item ID
-                      "boardId": AIR_BOARD_ID,                      # subitem board ID (env var)
-                      "columnVals": json.dumps({
-                        "subitems_location4__1": { "text": "溫哥華倉A" },
-                        "subitems_status__1":   { "label": "測量" }
-                      })
-                    }
-                    update_resp = requests.post(
-                      "https://api.monday.com/v2",
-                      headers={
-                        "Authorization": MONDAY_API_TOKEN,
-                        "Content-Type":  "application/json"
-                      },
-                      json={ "query": mutation, "variables": variables }
-                    )
-                    if update_resp.status_code != 200:
-                        log.error("[MONDAY] Update failed %s: %s", update_resp.status_code, update_resp.text)
-                    else:
-                        log.info(f"Updated subitem {found_subitem_id}: location & status set")
+                # At this point we know there's at least one result
+                found_subitem_id = results[0]["id"]
+                log.info(f"Found subitem {found_subitem_id} for {tracking_id}")
+
+                # 5. Update Location and Status columns
+                mutation = """
+                mutation ($itemId: ID!, $boardId: Int!, $columnVals: JSON!) {
+                  change_multiple_column_values(
+                    item_id: $itemId,
+                    board_id: $boardId,
+                    column_values: $columnVals
+                  ) { id }
+                }
+                """
+                variables = {
+                  "itemId":    found_subitem_id,
+                  "boardId":   int(os.getenv("AIR_BOARD_ID")),  # 4815120249
+                  "columnVals": json.dumps({
+                    "subitems_location4__1": { "text": "溫哥華倉A" },
+                    "subitems_status__1":   { "label": "測量" }
+                  })
+                }
+                up = requests.post(
+                  "https://api.monday.com/v2",
+                  headers={"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"},
+                  json={ "query": mutation, "variables": variables }
+                )
+                if up.status_code != 200:
+                    log.error("[MONDAY] update failed %s: %s", up.status_code, up.text)
+                else:
+                    log.info(f"Updated subitem {found_subitem_id}: location & status set")
 
                 # 2. Reply with exactly that tracking ID
                 # reply_payload = {
