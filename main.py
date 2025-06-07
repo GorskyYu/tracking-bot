@@ -668,39 +668,58 @@ def webhook():
                 log.info(f"[BARCODE] Decoded tracking ID: {tracking_id}")
 
                 # ─── Query the subitem board’s items directly ─────────────────────
-                gql_query = """
+                # 1) Get all parent‐item IDs from your main board
+                q_parents = """
                 query ($boardIds: [ID!]!) {
                   boards(ids: $boardIds) {
-                    items {
+                    items { id }
+                  }
+                }
+                """
+                vars_parents = {"boardIds": [str(AIR_BOARD_ID)]}
+                r1 = requests.post(
+                  "https://api.monday.com/v2",
+                  headers={"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"},
+                  json={"query": q_parents, "variables": vars_parents}
+                )
+                if r1.status_code != 200:
+                    log.error("[MONDAY] parent items query failed %s: %s", r1.status_code, r1.text)
+                    continue
+                parents = r1.json()["data"]["boards"]
+                parent_ids = [itm["id"] for b in parents for itm in b["items"]]
+
+                # 2) Fetch all subitems for those parents
+                q_subs = """
+                query ($itemIds: [ID!]!) {
+                  items(ids: $itemIds) {
+                    id
+                    subitems {
                       id
                       name
                     }
                   }
                 }
                 """
-                variables = {"boardIds": [str(AIR_BOARD_ID)]}
-                resp = requests.post(
+                vars_subs = {"itemIds": parent_ids}
+                r2 = requests.post(
                   "https://api.monday.com/v2",
-                  headers={
-                    "Authorization": MONDAY_API_TOKEN,
-                    "Content-Type": "application/json"
-                  },
-                  json={"query": gql_query, "variables": variables}
+                  headers={"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"},
+                  json={"query": q_subs, "variables": vars_subs}
                 )
-                if resp.status_code != 200:
-                    log.error("[MONDAY] items query failed %s: %s", resp.status_code, resp.text)
+                if r2.status_code != 200:
+                    log.error("[MONDAY] subitems query failed %s: %s", r2.status_code, r2.text)
                     continue
-                data = resp.json()
+                items_list = r2.json()["data"]["items"]
 
-                # Find the exact subitem by name
+                # 3) Locate the subitem matching our tracking_id
                 found_subitem_id = None
-                for board in data["data"]["boards"]:
-                    for item in board["items"]:
-                        if item["name"] == tracking_id:
-                            found_subitem_id = item["id"]
-                            break
-                    if found_subitem_id:
-                        break
+                for parent in items_list:
+                  for sub in parent.get("subitems", []):
+                    if sub["name"] == tracking_id:
+                      found_subitem_id = sub["id"]
+                      break
+                  if found_subitem_id:
+                    break
 
                 # 4. If no match, send private message to Yves
                 if not found_subitem_id:
