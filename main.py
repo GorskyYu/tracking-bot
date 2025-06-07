@@ -110,7 +110,7 @@ VICKY_SHEET_URL = os.getenv("VICKY_SHEET_URL")
 MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
 TIMEZONE    = "America/Vancouver"
 
-AIR_BOARD_ID = int(os.getenv("AIR_BOARD_ID"))
+AIR_BOARD_ID = os.getenv("AIR_BOARD_ID")
 
 #STATE_FILE = os.getenv("STATE_FILE", "last_seen.json")
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
@@ -731,7 +731,7 @@ def webhook():
 
                 # ─── Update Location & Status ─────────────────────────────────────────
                 mutation = """
-                mutation ($itemId: ID!, $boardId: Int!, $columnVals: JSON!) {
+                mutation ($itemId: ID!, $boardId: ID!, $columnVals: JSON!) {
                   change_multiple_column_values(
                     item_id: $itemId,
                     board_id: $boardId,
@@ -741,7 +741,7 @@ def webhook():
                 """
                 variables = {
                   "itemId":    found_subitem_id,
-                  "boardId":   int(os.getenv("AIR_BOARD_ID")),  # same subitem‐board
+                  "boardId":   os.getenv("AIR_BOARD_ID"),  # same subitem‐board
                   "columnVals": json.dumps({
                     "subitems_location4__1": { "text": "溫哥華倉A" },
                     "subitems_status__1":    { "label": "測量" }
