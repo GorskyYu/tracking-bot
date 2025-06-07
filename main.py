@@ -608,202 +608,158 @@ def webhook():
             continue
             # log.info("[BARCODE] Detected image message, entering barcode‐scan block.")
 
-            try:
-                # (1) Download raw image bytes from LINE
-                message_id = event["message"]["id"]
-                stream_resp = requests.get(
-                    f"https://api-data.line.me/v2/bot/message/{message_id}/content",
-                    headers={"Authorization": f"Bearer {LINE_TOKEN}"},
-                    stream=True
-                )
-                stream_resp.raise_for_status()
-                chunks = []
-                for chunk in stream_resp.iter_content(chunk_size=4096):
-                    if chunk:
-                        chunks.append(chunk)
-                raw_bytes = b"".join(chunks)
-                # log.info(f"[OCR] Downloaded {len(raw_bytes)} bytes from LINE")
-                log.info(f"[BARCODE] Downloaded {len(raw_bytes)} bytes from LINE")
+        try:
+            # (1) Download raw image bytes from LINE
+            message_id = event["message"]["id"]
+            stream_resp = requests.get(
+                f"https://api-data.line.me/v2/bot/message/{message_id}/content",
+                headers={"Authorization": f"Bearer {LINE_TOKEN}"},
+                stream=True
+            )
+            stream_resp.raise_for_status()
+            chunks = []
+            for chunk in stream_resp.iter_content(chunk_size=4096):
+                if chunk:
+                    chunks.append(chunk)
+            raw_bytes = b"".join(chunks)
+            # log.info(f"[OCR] Downloaded {len(raw_bytes)} bytes from LINE")
+            log.info(f"[BARCODE] Downloaded {len(raw_bytes)} bytes from LINE")
 
-                # (2) Load into Pillow and auto‐crop to dark (text/barcode) region
-                img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-                                
-                # ── DEBUG CHANGE: use full-resolution image, no thumbnail ──
-                img_crop = img
-                log.info(f"[BARCODE] Decoding full‐resolution image size {img_crop.size}")
+            # (2) Load into Pillow and auto‐crop to dark (text/barcode) region
+            img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+                            
+            # ── DEBUG CHANGE: use full-resolution image, no thumbnail ──
+            img_crop = img
+            log.info(f"[BARCODE] Decoding full‐resolution image size {img_crop.size}")
 
-                # (4) Decode any barcodes in the PIL image
-                # Instead of decoding only CODE128, we now include multiple symbologies:
-                decoded_objs = decode(
-                    img_crop,
-                    symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.EAN13, ZBarSymbol.UPCA]
-                )
+            # (4) Decode any barcodes in the PIL image
+            # Instead of decoding only CODE128, we now include multiple symbologies:
+            decoded_objs = decode(
+                img_crop,
+                symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.EAN13, ZBarSymbol.UPCA]
+            )
 
-                if not decoded_objs:
-                    log.info("[BARCODE] No barcode detected in the image.")
-                    reply_payload = {
-                        "replyToken": event["replyToken"],
-                        "messages": [
-                            {
-                                "type": "text",
-                                "text": "No barcode detected. Please try again with a clearer image."
-                            }
-                        ]
-                    }
-                    requests.post(
-                        "https://api.line.me/v2/bot/message/reply",
-                        headers={
-                            "Content-Type": "application/json",
-                            "Authorization": f"Bearer {LINE_TOKEN}"
-                        },
-                        json=reply_payload
-                    )
-                else:
-                    # 1. Take the first decoded barcode as the Tracking ID
-                    tracking_raw = decoded_objs[0].data.decode("utf-8")
-                    log.info(f"[BARCODE] First decoded raw data (tracking): {tracking_raw}")
-
-                    # 2. If there is a tracking ID (we already decode it)
-                    tracking_id = decoded_objs[0].data.decode("utf-8").strip()
-                    log.info(f"[BARCODE] Decoded tracking ID: {tracking_id}")
-
-                    # ─── Query Monday for items_page → subitems ────────────────────────
-                    gql_query = """
-                    query ($boardIds: [ID!]!) {
-                      boards(ids: $boardIds) {
-                        items_page {
-                          items {
-                            id
-                            name
-                            subitems {
-                              id
-                              name
-                            }
-                          }
-                        }
-                      }
-                    }
-                    """
-                    variables = {"boardIds": [str(AIR_BOARD_ID)]}
-                    resp = requests.post(
-                      "https://api.monday.com/v2",
-                      headers={
-                        "Authorization": MONDAY_API_TOKEN,
-                        "Content-Type": "application/json"
-                      },
-                      json={"query": gql_query, "variables": variables}
-                    )
-                    if resp.status_code != 200:
-                        log.error("[MONDAY] items_page query failed %s: %s", resp.status_code, resp.text)
-                        continue
-                    data = resp.json()
-
-                    # Find the exact subitem by name
-                    found_subitem_id = None
-                    for board in data["data"]["boards"]:
-                      for item in board["items_page"]["items"]:
-                        for sub in item.get("subitems", []):
-                          if sub["name"] == tracking_id:
-                            found_subitem_id = sub["id"]
-                            break
-                        if found_subitem_id:
-                          break
-                      if found_subitem_id:
-                        break
-
-                    # 4. If no match, send private message to Yves
-                    if not found_subitem_id:
-                      log.warning(f"Tracking ID {tracking_id} not found in Monday.com")
-                      payload = {
-                        "to": YVES_USER_ID,
-                        "messages": [
-                          {
+            if not decoded_objs:
+                log.info("[BARCODE] No barcode detected in the image.")
+                reply_payload = {
+                    "replyToken": event["replyToken"],
+                    "messages": [
+                        {
                             "type": "text",
-                            "text": f"⚠️ Tracking ID {tracking_id} not found in Monday."
-                          }
-                        ]
-                      }
-                      requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-                    else:
-                      log.info(f"Found subitem ID: {found_subitem_id}")
-
-                      # 5. Update Location and Status columns
-                      mutation = """
-                      mutation ($subitemId: Int!, $boardId: ID!, $locationVal: JSON!, $statusVal: JSON!) {
-                        change_multiple_column_values(item_id: $subitemId, board_id: $boardId, column_values: $locationVal) {
-                          id
+                            "text": "No barcode detected. Please try again with a clearer image."
                         }
-                        change_column_value(item_id: $subitemId, board_id: $boardId, column_id: "status__1", value: $statusVal) {
+                    ]
+                }
+                requests.post(
+                    "https://api.line.me/v2/bot/message/reply",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {LINE_TOKEN}"
+                    },
+                    json=reply_payload
+                )
+            else:
+                # 1. Take the first decoded barcode as the Tracking ID
+                tracking_raw = decoded_objs[0].data.decode("utf-8")
+                log.info(f"[BARCODE] First decoded raw data (tracking): {tracking_raw}")
+
+                # 2. If there is a tracking ID (we already decode it)
+                tracking_id = decoded_objs[0].data.decode("utf-8").strip()
+                log.info(f"[BARCODE] Decoded tracking ID: {tracking_id}")
+
+                # ─── Query Monday for items_page → subitems ────────────────────────
+                gql_query = """
+                query ($boardIds: [ID!]!) {
+                  boards(ids: $boardIds) {
+                    items_page {
+                      items {
+                        id
+                        name
+                        subitems {
                           id
+                          name
                         }
                       }
-                      """
-                      variables = {
-                        "subitemId": int(found_subitem_id),
-                        "boardId": str(AIR_BOARD_ID),
-                        "locationVal": json.dumps({"location__1": {"text": "溫哥華倉A"}}),
-                        "statusVal": json.dumps({"label": "測量"})
+                    }
+                  }
+                }
+                """
+                variables = {"boardIds": [str(AIR_BOARD_ID)]}
+                resp = requests.post(
+                  "https://api.monday.com/v2",
+                  headers={
+                    "Authorization": MONDAY_API_TOKEN,
+                    "Content-Type": "application/json"
+                  },
+                  json={"query": gql_query, "variables": variables}
+                )
+                if resp.status_code != 200:
+                    log.error("[MONDAY] items_page query failed %s: %s", resp.status_code, resp.text)
+                    continue
+                data = resp.json()
+
+                # Find the exact subitem by name
+                found_subitem_id = None
+                for board in data["data"]["boards"]:
+                  for item in board["items_page"]["items"]:
+                    for sub in item.get("subitems", []):
+                      if sub["name"] == tracking_id:
+                        found_subitem_id = sub["id"]
+                        break
+                    if found_subitem_id:
+                      break
+                  if found_subitem_id:
+                    break
+
+                # 4. If no match, send private message to Yves
+                if not found_subitem_id:
+                  log.warning(f"Tracking ID {tracking_id} not found in Monday.com")
+                  payload = {
+                    "to": YVES_USER_ID,
+                    "messages": [
+                      {
+                        "type": "text",
+                        "text": f"⚠️ Tracking ID {tracking_id} not found in Monday."
                       }
-                      update_resp = requests.post(
-                        "https://api.monday.com/v2",
-                        headers=headers,
-                        json={"query": mutation, "variables": variables}
-                      )
-                      if update_resp.status_code != 200:
-                          log.error("[MONDAY] Mutation failed %s: %s", update_resp.status_code, update_resp.text)
-                          continue                      
-                      update_resp.raise_for_status()
-                      log.info(f"Updated subitem {found_subitem_id} with Location=溫哥華倉A and Status=測量")
+                    ]
+                  }
+                  requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+                else:
+                  log.info(f"Found subitem ID: {found_subitem_id}")
 
-                    # 2. Reply with exactly that tracking ID
-                    # reply_payload = {
-                        # "replyToken": event["replyToken"],
-                        # "messages": [
-                            # {"type": "text", "text": f"Tracking ID: {tracking_raw}"}
-                        # ]
-                    # }
-                    # requests.post(
-                        # "https://api.line.me/v2/bot/message/reply",
-                        # headers={
-                            # "Content-Type": "application/json",
-                            # "Authorization": f"Bearer {LINE_TOKEN}"
-                        # },
-                        # json=reply_payload
-                    # )
-                    # log.info(f"[BARCODE] Replied with Tracking ID: {tracking_raw}")
+                  # 5. Update Location and Status columns
+                  mutation = """
+                  mutation ($subitemId: Int!, $boardId: ID!, $locationVal: JSON!, $statusVal: JSON!) {
+                    change_multiple_column_values(item_id: $subitemId, board_id: $boardId, column_values: $locationVal) {
+                      id
+                    }
+                    change_column_value(item_id: $subitemId, board_id: $boardId, column_id: "status__1", value: $statusVal) {
+                      id
+                    }
+                  }
+                  """
+                  variables = {
+                    "subitemId": int(found_subitem_id),
+                    "boardId": str(AIR_BOARD_ID),
+                    "locationVal": json.dumps({"location__1": {"text": "溫哥華倉A"}}),
+                    "statusVal": json.dumps({"label": "測量"})
+                  }
+                  update_resp = requests.post(
+                    "https://api.monday.com/v2",
+                    headers=headers,
+                    json={"query": mutation, "variables": variables}
+                  )
+                  if update_resp.status_code != 200:
+                      log.error("[MONDAY] Mutation failed %s: %s", update_resp.status_code, update_resp.text)
+                      continue                      
+                  update_resp.raise_for_status()
+                  log.info(f"Updated subitem {found_subitem_id} with Location=溫哥華倉A and Status=測量")
 
-                    # 3. If there is a second decoded value, extract the postal code portion
-                    if len(decoded_objs) > 1:
-                        postal_raw = decoded_objs[1].data.decode("utf-8")  # e.g. "420V6X1Z7"
-                        # Extract everything after the first three characters:
-                        postal_code = postal_raw[3:]  # yields "V6X1Z7"
-                        log.info(f"[BARCODE] Extracted postal code (not printed): {postal_code}")
-
-                        # 4. Save postal_code into memory (bio)
-                        #    This call uses the 'bio' tool so that future conversations can recall it.
-                        #    We do not print it to the user now.
-                        # 
-                        # Format: just the fact we want to remember, e.g. "Postal code V6X1Z7"
-                        #
-                        # (A separate tool call below will persist this memory.)
-
-                        # ◆ ◆ ◆ Tool call follows below ◆ ◆ ◆
-
-
-            except Exception as e:
-                # Log any barcode or Monday API errors without replying to the chat
-                log.error("[BARCODE] Error during image handling", exc_info=True)
-                # Suppressed user-facing error reply
-                continue
-                # log.error("[BARCODE] Error decoding barcode", exc_info=True)
-                # Optionally, reply “NONE” or a helpful message:
-                # error_payload = {
+                # 2. Reply with exactly that tracking ID
+                # reply_payload = {
                     # "replyToken": event["replyToken"],
                     # "messages": [
-                        # {
-                            # "type": "text",
-                            # "text": "An error occurred while reading the image. Please try again."
-                        # }
+                        # {"type": "text", "text": f"Tracking ID: {tracking_raw}"}
                     # ]
                 # }
                 # requests.post(
@@ -812,11 +768,55 @@ def webhook():
                         # "Content-Type": "application/json",
                         # "Authorization": f"Bearer {LINE_TOKEN}"
                     # },
-                    # json=error_payload
+                    # json=reply_payload
                 # )
+                # log.info(f"[BARCODE] Replied with Tracking ID: {tracking_raw}")
 
-            # Skip further handling of this event
+                # 3. If there is a second decoded value, extract the postal code portion
+                if len(decoded_objs) > 1:
+                    postal_raw = decoded_objs[1].data.decode("utf-8")  # e.g. "420V6X1Z7"
+                    # Extract everything after the first three characters:
+                    postal_code = postal_raw[3:]  # yields "V6X1Z7"
+                    log.info(f"[BARCODE] Extracted postal code (not printed): {postal_code}")
+
+                    # 4. Save postal_code into memory (bio)
+                    #    This call uses the 'bio' tool so that future conversations can recall it.
+                    #    We do not print it to the user now.
+                    # 
+                    # Format: just the fact we want to remember, e.g. "Postal code V6X1Z7"
+                    #
+                    # (A separate tool call below will persist this memory.)
+
+                    # ◆ ◆ ◆ Tool call follows below ◆ ◆ ◆
+
+
+        except Exception as e:
+            # Log any barcode or Monday API errors without replying to the chat
+            log.error("[BARCODE] Error during image handling", exc_info=True)
+            # Suppressed user-facing error reply
             continue
+            # log.error("[BARCODE] Error decoding barcode", exc_info=True)
+            # Optionally, reply “NONE” or a helpful message:
+            # error_payload = {
+                # "replyToken": event["replyToken"],
+                # "messages": [
+                    # {
+                        # "type": "text",
+                        # "text": "An error occurred while reading the image. Please try again."
+                    # }
+                # ]
+            # }
+            # requests.post(
+                # "https://api.line.me/v2/bot/message/reply",
+                # headers={
+                    # "Content-Type": "application/json",
+                    # "Authorization": f"Bearer {LINE_TOKEN}"
+                # },
+                # json=error_payload
+            # )
+
+        # Skip further handling of this event
+        continue
         # ────────────────────────────────────────────────────────────────────
     
         # Only handle text messages
