@@ -677,6 +677,7 @@ def webhook():
                 }
                 """
                 vars_parents = {"boardIds": [str(AIR_BOARD_ID)]}
+                log.info(f"[MONDAY] parent lookup using BOARD_ID={AIR_BOARD_ID!r}")
                 r1 = requests.post(
                   "https://api.monday.com/v2",
                   headers={"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"},
