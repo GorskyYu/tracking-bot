@@ -674,23 +674,23 @@ def webhook():
 
             if not decoded_objs:
                 log.info("[BARCODE] No barcode detected in the image.")
-                reply_payload = {
-                    "replyToken": event["replyToken"],
-                    "messages": [
-                        {
-                            "type": "text",
-                            "text": "No barcode detected. Please try again with a clearer image."
-                        }
-                    ]
-                }
-                requests.post(
-                    "https://api.line.me/v2/bot/message/reply",
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {LINE_TOKEN}"
-                    },
-                    json=reply_payload
-                )
+                # reply_payload = {
+                    # "replyToken": event["replyToken"],
+                    # "messages": [
+                        # {
+                            # "type": "text",
+                            # "text": "No barcode detected. Please try again with a clearer image."
+                        # }
+                    # ]
+                # }
+                # requests.post(
+                    # "https://api.line.me/v2/bot/message/reply",
+                    # headers={
+                        # "Content-Type": "application/json",
+                        # "Authorization": f"Bearer {LINE_TOKEN}"
+                    # },
+                    # json=reply_payload
+                # )
             else:
                 # 1. Take the first decoded barcode as the Tracking ID
                 tracking_raw = decoded_objs[0].data.decode("utf-8")
