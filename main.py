@@ -671,15 +671,9 @@ def webhook():
                 gql_query = """
                 query ($boardIds: [ID!]!) {
                   boards(ids: $boardIds) {
-                    items_page {
-                      items {
-                        id
-                        name
-                        subitems {
-                          id
-                          name
-                        }
-                      }
+                    items {
+                      id
+                      name
                     }
                   }
                 }
@@ -701,11 +695,10 @@ def webhook():
                 # Find the exact subitem by name
                 found_subitem_id = None
                 for board in data["data"]["boards"]:
-                  for item in board["items_page"]["items"]:
-                    for sub in item.get("subitems", []):
-                      if sub["name"] == tracking_id:
-                        found_subitem_id = sub["id"]
-                        break
+                  for item in board["items"]:
+                    if item["name"] == tracking_id:
+                      found_subitem_id = item["id"]
+                      break
                     if found_subitem_id:
                       break
                   if found_subitem_id:
