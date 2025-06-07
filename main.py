@@ -667,12 +667,10 @@ def webhook():
                 tracking_id = decoded_objs[0].data.decode("utf-8").strip()
                 log.info(f"[BARCODE] Decoded tracking ID: {tracking_id}")
 
-                # ─── Query Monday for items_page → subitems ────────────────────────
+                # ─── Query the subitem board’s items directly ─────────────────────
                 gql_query = """
                 query ($boardIds: [ID!]!) {
                   boards(ids: $boardIds) {
-                    id
-                    name
                     items {
                       id
                       name
@@ -690,21 +688,19 @@ def webhook():
                   json={"query": gql_query, "variables": variables}
                 )
                 if resp.status_code != 200:
-                    log.error("[MONDAY] items_page query failed %s: %s", resp.status_code, resp.text)
+                    log.error("[MONDAY] items query failed %s: %s", resp.status_code, resp.text)
                     continue
                 data = resp.json()
 
                 # Find the exact subitem by name
                 found_subitem_id = None
                 for board in data["data"]["boards"]:
-                  for item in board["items"]:
-                    if item["name"] == tracking_id:
-                      found_subitem_id = item["id"]
-                      break
+                    for item in board["items"]:
+                        if item["name"] == tracking_id:
+                            found_subitem_id = item["id"]
+                            break
                     if found_subitem_id:
-                      break
-                  if found_subitem_id:
-                    break
+                        break
 
                 # 4. If no match, send private message to Yves
                 if not found_subitem_id:
