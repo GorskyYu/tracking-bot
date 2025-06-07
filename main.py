@@ -672,7 +672,7 @@ def webhook():
                 # ─── Lookup via items_page_by_column_values ──────────────────────────────
                 q_search = """
                 query (
-                  $boardId: Int!
+                  $boardId: ID!
                   $columnId: String!
                   $value: String!
                 ) {
@@ -691,7 +691,7 @@ def webhook():
                 }
                 """
                 vars_search = {
-                  "boardId":  int(os.getenv("AIR_BOARD_ID")),  # must be your subitem‐board ID
+                  "boardId":  os.getenv("AIR_BOARD_ID"),  # must be your subitem‐board ID
                   "columnId": "name",
                   "value":    tracking_id
                 }
