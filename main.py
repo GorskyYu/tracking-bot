@@ -671,6 +671,8 @@ def webhook():
                 gql_query = """
                 query ($boardIds: [ID!]!) {
                   boards(ids: $boardIds) {
+                    id
+                    name
                     items {
                       id
                       name
