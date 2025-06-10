@@ -567,9 +567,15 @@ def handle_ace_shipments(event):
     forwards each complete block to Yumi or Vicky based on the
     recipient name.
     """
-    text = event["message"]["text"]
+    # 1) Grab & clean the raw text
+    raw = event["message"]["text"]
+    log.info(f"[ACE SHIP] raw incoming text: {repr(raw)}")        # DEBUG log
+    text = raw.replace('"', '').strip()                         # strip stray quotes
+    
     # split into shipment‐blocks
     parts = re.split(r'(?=出貨單號:)', text)
+    log.info(f"[ACE SHIP] split into {len(parts)} parts")         # DEBUG log
+    
     vicky, yumi = [], []
 
     for blk in parts:
