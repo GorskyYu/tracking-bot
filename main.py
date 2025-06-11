@@ -536,8 +536,8 @@ def handle_soquick_full_notification(event):
         rows  = sheet.get_all_values()[1:]  # skip header
         senders = set()
         for row in rows:
-            # column M is index 12
-            if len(row) > 12 and row[12].strip() in other_recipients:
+            # column E is index 4
+            if len(row) > 4 and row[4].strip() in other_recipients:
                 sender = row[2].strip() if len(row) > 2 else ""
                 if sender and sender not in (VICKY_NAMES | YUMI_NAMES | EXCLUDED_SENDERS):
                     senders.add(sender)
