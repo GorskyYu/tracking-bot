@@ -416,7 +416,7 @@ def handle_ace_ezway_check_and_push(event):
 
 # ─── Soquick shipment-block handler ────────────────────────────────────────────
 def handle_soquick_shipments(event):
-+    """
+    """
     Parse Soquick text containing "上周六出貨包裹的派件單號",
     split out lines of tracking+code+recipient, then push
     only the matching Vicky/Yumi lines + footer.
