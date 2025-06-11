@@ -808,6 +808,7 @@ def webhook():
         # ─── If image, run ONLY the barcode logic and then continue ──────────
         if event.get("type") == "message" and event["message"].get("type") == "image":
             src = event.get("source", {})
+            group_id = src.get("groupId") 
             is_from_me      = src.get("type") == "user"  and src.get("userId")  == YOUR_USER_ID
             is_from_ace     = src.get("type") == "group" and src.get("groupId") == ACE_GROUP_ID
             is_from_soquick = src.get("type") == "group" and src.get("groupId") == SOQUICK_GROUP_ID
