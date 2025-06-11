@@ -1067,6 +1067,15 @@ def webhook():
             continue
 
         # ——— Soquick “請通知…申報相符” messages ——————————————
+        log.info(
+            "[SOQ DEBUG] group_id=%r, SOQUICK_GROUP_ID=%r, "
+            "has_您好=%r, has_按=%r, has_申報相符=%r",
+            group_id,
+            SOQUICK_GROUP_ID,
+            "您好，請通知" in text,
+            "按" in text,
+            "申報相符" in text,
+        )        
         if (group_id == SOQUICK_GROUP_ID
             and "您好，請通知" in text
             and "按" in text
