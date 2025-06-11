@@ -933,6 +933,9 @@ def webhook():
                     found_subitem_id = items_page[0]["id"]
                     log.info(f"Found subitem {found_subitem_id} for {tracking_id}")
                     
+                    # <<<< INSERT HERE: grab group_id from src >>>>>>
+                    group_id = src.get("groupId")                    
+                    
                     # ── STORE for next text event ──────────────────────────────────────────────
                     pending_key = f"last_subitem_for_{group_id}"
                     r.set(pending_key, found_subitem_id, ex=300)
