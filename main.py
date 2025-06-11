@@ -1027,15 +1027,12 @@ def webhook():
                 # )
             # now that images are handled, skip text logic
             continue
-
-        # ─── From here on it’s only text messages ──────────────────────────
-        if event["message"].get("type") == "image":
-            continue
     
         # Only handle text messages
         if event.get("type") != "message" or event["message"].get("type") != "text":
             continue
-            
+        
+        # now any remaining event is guaranteed to be a text message
         group_id = event["source"].get("groupId")
         text     = event["message"]["text"].strip()
         
