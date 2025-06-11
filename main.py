@@ -622,6 +622,9 @@ def webhook():
     # log.info(f"Payload: {json.dumps(data, ensure_ascii=False)}")
 
     for event in data.get("events", []):
+        # ignore non‐message events (eg. unsend)
+        if event.get("type") != "message":
+            continue
         # ─── If image, run ONLY the barcode logic and then continue ──────────
         if event.get("type") == "message" and event["message"].get("type") == "image":
             src = event.get("source", {})
