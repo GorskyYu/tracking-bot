@@ -791,6 +791,7 @@ app = Flask(__name__)
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
+    import re
     # Log incoming methods
     # print(f"[Webhook] Received {request.method} to /webhook")
     # log.info(f"Received {request.method} to /webhook")
