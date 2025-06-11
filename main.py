@@ -873,9 +873,7 @@ def webhook():
                     tracking_id = decoded_objs[0].data.decode("utf-8").strip()
                     log.info(f"[BARCODE] Decoded tracking ID: {tracking_id}")
 
-                    # ─── Query the subitem board’s items directly ─────────────────────
-                    # ─── Lookup the subitem directly on the subitem board ───────────────
-                    # ─── Lookup via items_page_by_column_values ──────────────────────────────
+                    # ─── Lookup the subitem directly on the subitem board via items_page_by_column_values ──────────────────────────────
                     q_search = """
                     query (
                       $boardId: ID!
@@ -934,7 +932,13 @@ def webhook():
 
                     found_subitem_id = items_page[0]["id"]
                     log.info(f"Found subitem {found_subitem_id} for {tracking_id}")
-
+                    
+                    # ── STORE for next text event ──────────────────────────────────────────────
+                    pending_key = f"last_subitem_for_{group_id}"
+                    r.set(pending_key, found_subitem_id, ex=300)
+                    log.info(f"Stored subitem ID {found_subitem_id} for next text parsing (group {group_id})")
+                    # ── END STORE ───────────────────────────────────────────────────────────────
+###
                     # first decide location text based on which group this came from
                     src = event.get("source", {})
                     group_id = src.get("groupId")
@@ -1002,7 +1006,6 @@ def webhook():
 
                         # ◆ ◆ ◆ Tool call follows below ◆ ◆ ◆
 
-
             except Exception:
                 # Log any barcode or Monday API errors without replying to the chat
                 log.error("[BARCODE] Error during image handling", exc_info=True)
@@ -1035,6 +1038,67 @@ def webhook():
         # now any remaining event is guaranteed to be a text message
         group_id = event["source"].get("groupId")
         text     = event["message"]["text"].strip()
+
+        # <<<< INSERT: size/weight parser for pending subitem >>>>>>
+        pending_key = f"last_subitem_for_{group_id}"
+        sub_id = r.get(pending_key)
+        if sub_id:
+            size_text = text
+            log.debug(f"Parsing size_text for subitem {sub_id!r}: {size_text!r}")
+
+            # 1) weight
+            wm = re.search(r"(\d+(?:\.\d+)?)\s*(kg|公斤|lbs?)", size_text, re.IGNORECASE)
+            if wm:
+                qty, unit = float(wm.group(1)), wm.group(2).lower()
+                weight_kg = qty * (0.453592 if unit.startswith("lb") else 1.0)
+                log.debug(f"  → Parsed weight_kg: {weight_kg:.2f} kg")
+            else:
+                weight_kg = None
+                log.debug("  → No weight match")
+
+            # 2) dimensions
+            dm = re.search(
+              r"(\d+(?:\.\d+)?)[×x*](\d+(?:\.\d+)?)[×x*](\d+(?:\.\d+)?)(?:\s*)(cm|公分|in|吋)?",
+              size_text, re.IGNORECASE
+            )
+            if dm:
+                w, h, d = map(float, dm.group(1,3,5))
+                unit = (dm.group(6) or "cm").lower()
+                factor = 2.54 if unit.startswith(("in","吋")) else 1.0
+                dims_cm = f"{int(w*factor)}×{int(h*factor)}×{int(d*factor)}"
+                log.debug(f"  → Parsed dims_cm: {dims_cm}")
+            else:
+                dims_cm = None
+                log.debug("  → No dimensions match")
+
+            # 3) push to Monday
+            def mutate(colId, val):
+                return f'''
+                mutation {{
+                  change_simple_column_value(
+                    item_id: {sub_id},
+                    board_id: {os.getenv("AIR_BOARD_ID")},
+                    column_id: "{colId}",
+                    value: "{val}"
+                  ) {{ id }}
+                }}'''
+
+            if dims_cm:
+                requests.post(
+                  "https://api.monday.com/v2",
+                  headers={"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"},
+                  json={"query": mutate("__1__cm__1", dims_cm)}
+                )
+            if weight_kg is not None:
+                requests.post(
+                  "https://api.monday.com/v2",
+                  headers={"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"},
+                  json={"query": mutate("numeric__1", f"{weight_kg:.2f}")}
+                )
+
+            log.info(f"Pushed dims={dims_cm!r}, weight={weight_kg!r} to Monday for subitem {sub_id}")
+            r.delete(pending_key)
+            continue
         
         # ——— New: Richmond-arrival triggers content-request to Vicky —————————
         if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
