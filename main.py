@@ -1039,6 +1039,17 @@ def webhook():
         group_id = event["source"].get("groupId")
         text     = event["message"]["text"].strip()
         
+        # ——— Vicky “Richmond arrived” auto-rebroadcast ——————————
+        if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
+            # re-push the same line back to Vicky’s group
+            payload = {
+                "to": VICKY_GROUP_ID,
+                "messages": [{"type":"text","text": text}]
+            }
+            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+            log.info(f"Rebroadcasted Richmond-arrival to Vicky: {text!r}")
+            continue        
+        
         print(f"[Debug] incoming groupId: {group_id!r}")
         print(f"[Debug] CUSTOMER_FILTERS keys: {list(CUSTOMER_FILTERS.keys())!r}")
         
