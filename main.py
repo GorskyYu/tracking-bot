@@ -1048,25 +1048,22 @@ def check_te_updates():
     save_state(state)   
 
 # ─── Poller + Scheduler Bootstrap ────────────────────────────────────────────
-sched = BackgroundScheduler(timezone="America/Vancouver")
-
-# check TE updates every half hour
-sched.add_job(
-    check_te_updates,
-    trigger="cron",
-    day_of_week="mon-sat",
-    hour="4-19",
-    minute="0,30"
-)
-
-# Vicky reminders
-sched.add_job(lambda: remind_vicky("星期三"),  # corrected to Wednesday
-              trigger="cron", day_of_week="wed", hour=17, minute=0)
-sched.add_job(lambda: remind_vicky("星期五"),  # corrected to Friday
-              trigger="cron", day_of_week="fri", hour=17, minute=0)
-
-sched.start()
-log.info("Scheduler started")
-
 if __name__ == "__main__":
+    sched = BackgroundScheduler(timezone="America/Vancouver")
+    sched.add_job(
+        check_te_updates,
+        trigger="cron",
+        day_of_week="mon-sat",
+        hour="4-19",
+        minute="0,30"
+    )
+    
+    # ——— Vicky reminders ——————————————————————
+    sched.add_job(lambda: remind_vicky("星期四"),
+                  trigger="cron", day_of_week="wed", hour=17, minute=0)
+    sched.add_job(lambda: remind_vicky("週末"),
+                  trigger="cron", day_of_week="fri", hour=17, minute=0)    
+    
+    sched.start()
+    log.info("Scheduler started")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
