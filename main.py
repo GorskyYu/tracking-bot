@@ -129,6 +129,10 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 _pending = defaultdict(list)
 _scheduled = set()
 
+def strip_mention(line):
+    # Remove an @mention at the very start of the line (e.g. "@Gorsky ")
+    return re.sub(r"^@\S+\s*", "", line)
+
 def _schedule_summary(group_id):
     """Called once per 30m window to send the summary and clear the buffer."""
     ids = _pending.pop(group_id, [])
@@ -468,7 +472,12 @@ def handle_soquick_full_notification(event):
         return
 
     # 1) extract lines & footer
-    lines = [l.strip().lstrip("@").strip() for l in text.splitlines() if l.strip()]
+    # split into non-empty lines and strip any leading @mention
+    lines = [
+        strip_mention(l.strip())
+        for l in text.splitlines()
+        if l.strip()
+    ]
     try:
         footer_idx = next(i for i,l in enumerate(lines) if "您好，請通知" in l)
     except StopIteration:
