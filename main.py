@@ -1039,47 +1039,40 @@ def webhook():
         group_id = event["source"].get("groupId")
         text     = event["message"]["text"].strip()
         
-        # ——— Vicky “Richmond arrived” auto-rebroadcast ——————————
-        if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
-            # re-push the same line back to Vicky’s group
-            payload = {
-                "to": VICKY_GROUP_ID,
-                "messages": [{"type":"text","text": text}]
-            }
-            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-            log.info(f"Rebroadcasted Richmond-arrival to Vicky: {text!r}")
-            continue        
-        
-        print(f"[Debug] incoming groupId: {group_id!r}")
-        print(f"[Debug] CUSTOMER_FILTERS keys: {list(CUSTOMER_FILTERS.keys())!r}")
-        
-        print(f"[Webhook] Detected groupId: {group_id}, text: {text}")
-        
-        # ——— 1) Ace schedule / missing-confirmation trigger ——————————
-        is_schedule = (
-            ("週四出貨" in text or "週日出貨" in text)
-            and "麻煩請" in text
-            and CODE_TRIGGER_RE.search(text)
-        )
-        is_missing = MISSING_CONFIRM in text
-        
-        # detect pure-shipment blocks
-        is_shipment = (
-            "出貨單號" in text
-            and "宅配單號" in text
-            and CODE_TRIGGER_RE.search(text)
-        )    
+    # ——— New: Richmond-arrival triggers content-request to Vicky —————————
+    if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
+        # extract the tracking ID inside parentheses
+        import re
+        m = re.search(r"\(([^)]+)\)", text)
+        if m:
+            tracking_id = m.group(1)
+        else:
+            # no ID found, skip
+            continue
 
-        if group_id == ACE_GROUP_ID:
-            # 2a) schedule-style notice
-            if is_schedule or is_missing:
-                handle_ace_schedule(event)
-                handle_ace_ezway_check_and_push(event)
-                continue
-            # 2b) shipment-block notice
-            if is_shipment:
-                handle_ace_shipments(event)
-                continue
+        # build the mention message
+        placeholder = "{user1}"
+        msg = f"{placeholder} 請提供此包裹的內容物清單：{tracking_id}"
+        substitution = {
+            "user1": {
+                "type": "mention",
+                "mentionee": {
+                    "type":   "user",
+                    "userId": VICKY_USER_ID
+                }
+            }
+        }
+        payload = {
+            "to": VICKY_GROUP_ID,
+            "messages": [{
+                "type":        "textV2",
+                "text":        msg,
+                "substitution": substitution
+            }]
+        }
+        requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        log.info(f"Requested contents list from Vicky for {tracking_id}")
+        continue
                 
         # ——— Soquick “上周六出貨包裹的派件單號” blocks ——————————————
         if group_id == SOQUICK_GROUP_ID and "上周六出貨包裹的派件單號" in text:
