@@ -1100,7 +1100,6 @@ def webhook():
                   json={ "query": mutate("__1__cm__1", dims_norm) }
                 )
 
-
             # push weight if found
             if weight_kg is not None:
                 requests.post(
@@ -1108,9 +1107,34 @@ def webhook():
                   headers={ "Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json" },
                   json={ "query": mutate("numeric__1", f"{weight_kg:.2f}") }
                 )
-                # now that we got weight, clear pending so we don't parse again
-                r.delete(pending_key)
-                log.info(f"Cleared pending for subitem {sub_id}")
+                
+            # now that we got weight, clear pending so we don't parse again
+            r.delete(pending_key)
+            log.info(f"Cleared pending for subitem {sub_id}")
+
+            # ── if dims+weight and status is “測量”, bump to “溫哥華收款” ─────
+            if dims_norm is not None and weight_kg is not None:
+                status_mut = f'''
+                mutation {{
+                  change_column_value(
+                    item_id: {sub_id},
+                    board_id: {os.getenv("AIR_BOARD_ID")},
+                    column_id: "status__1",
+                    value: "{{\\"label\\":\\"溫哥華收款\\"}}"
+                  ) {{ id }}
+                }}'''
+                resp = requests.post(
+                  "https://api.monday.com/v2",
+                  headers={
+                    "Authorization": MONDAY_API_TOKEN,
+                    "Content-Type":  "application/json"
+                  },
+                  json={ "query": status_mut }
+                )
+                if resp.status_code == 200:
+                    log.info(f"Updated status to 溫哥華收款 for subitem {sub_id}")
+                else:
+                    log.error(f"Failed to update status for subitem {sub_id}: {resp.text}")
 
             # whether dims or weight or both, log final
             log.info(f"Finished size/weight sync for subitem {sub_id}: dims={dims_norm!r}, weight={weight_kg!r}")
