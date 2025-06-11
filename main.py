@@ -628,13 +628,16 @@ def webhook():
         #     continue
         # Now accept only images from your user ID:
         # Only handle image messages sent in a 1:1 (user) chat for testing
-        if not (
-            event.get("type") == "message"
-            and event["message"].get("type") == "image"
-            # and event.get("source", {}).get("type") == "user"
-        ):
+        # ─── Dispatch on message type ──────────────────────────────
+        if event.get("type") == "message" and event["message"].get("type") == "image":
+            # — existing barcode-decode block here —
+            # (everything from downloading bytes through the postal-code bio call)
             continue
-            # log.info("[BARCODE] Detected image message, entering barcode‐scan block.")
+
+        # Only handle text now
+        if not (event.get("type") == "message" 
+                and event["message"].get("type") == "text"):
+            continue            # log.info("[BARCODE] Detected image message, entering barcode‐scan block.")
             
             # decide which group or private chat
             src = event.get("source", {})
