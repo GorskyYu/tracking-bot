@@ -454,84 +454,90 @@ def handle_soquick_shipments(event):
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID,  yumi)
 
-# ─── Soquick “請通知…申報相符” handler ────────────────────────────────────────────
-def handle_soquick_notification(event):
+def handle_soquick_full_notification(event):
     """
-    For Soquick messages containing “您好，請通知” + “按” + “申報相符”,
-    extract the code+name lines, then push to Vicky/Yumi groups,
-    and privately notify Yves for any other senders.
+    1) Parse the incoming text for “您好，請通知…” + “按申報相符”
+    2) Split off the footer and extract all recipient names
+    3) Push Vicky/Yumi group messages with their names + footer
+    4) Look up those same names in col M of your Soquick sheet
+       to find the corresponding senders in col C, and privately
+       notify Yves of any senders not already in Vicky/Yumi/Excluded.
     """
     text = event["message"]["text"]
-    # only fire on the exact keywords
     if not ("您好，請通知" in text and "按" in text and "申報相符" in text):
         return
 
-    # split into non-empty lines, strip stray quotes and leading '@'
-    raw_lines = [l.strip().lstrip("@").strip() for l in text.splitlines() if l.strip()]
-    # locate footer (the line that contains "您好，請通知")
+    # 1) extract lines & footer
+    lines = [l.strip().lstrip("@").strip() for l in text.splitlines() if l.strip()]
     try:
-        footer_idx = next(i for i,l in enumerate(raw_lines) if "您好，請通知" in l)
+        footer_idx = next(i for i,l in enumerate(lines) if "您好，請通知" in l)
     except StopIteration:
-        footer_idx = len(raw_lines)
+        footer_idx = len(lines)
+    recipients = lines[:footer_idx]
+    footer     = "\n".join(lines[footer_idx:])
 
-    # everything before footer are the client names
-    recipients = raw_lines[:footer_idx]
-    footer     = "\n".join(raw_lines[footer_idx:])
-
-    # batch by recipient
-    vicky_batch = [n for n in recipients if n in VICKY_NAMES]
-    yumi_batch  = [n for n in recipients if n in YUMI_NAMES]
-    other_batch = [
-        n for n in recipients
-        if n not in VICKY_NAMES
-        and n not in YUMI_NAMES
-        and n not in EXCLUDED_SENDERS
+    # 2) split into Vicky / Yumi / “others” batches
+    vicky_batch = [r for r in recipients if r in VICKY_NAMES]
+    yumi_batch  = [r for r in recipients if r in YUMI_NAMES]
+    other_recipients = [
+        r for r in recipients
+        if r not in VICKY_NAMES
+        and r not in YUMI_NAMES
+        and r not in EXCLUDED_SENDERS
     ]
-    # de‐duplicate while preserving order
+    # dedupe
     def dedupe(seq):
-        seen = set()
-        out = []
+        seen = set(); out=[]
         for x in seq:
             if x not in seen:
-                seen.add(x)
-                out.append(x)
+                seen.add(x); out.append(x)
         return out
-
     vicky_batch = dedupe(vicky_batch)
     yumi_batch  = dedupe(yumi_batch)
-    other_batch = dedupe(other_batch)
+    other_recipients = dedupe(other_recipients)
 
-
-    def push_to(group, batch):
-        if not batch:
-            return
-        # join names + two newlines + footer
+    # 3) push the group notifications
+    def push_group(group, batch):
+        if not batch: return
         msg = "\n".join(batch) + "\n\n" + footer
-        payload = {"to": group, "messages":[{"type":"text","text": msg}]}
+        requests.post(
+            LINE_PUSH_URL,
+            headers=LINE_HEADERS,
+            json={"to": group, "messages":[{"type":"text","text":msg}]}
+        )
+    push_group(VICKY_GROUP_ID, vicky_batch)
+    push_group(YUMI_GROUP_ID,  yumi_batch)
 
-        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Sent {len(batch)} Soquick-notify blocks to {group}: {resp.status_code}")
+    # 4) lookup the Soquick sheet for senders and notify Yves
+    if other_recipients:
+        sheet = gs.open_by_url(os.getenv("SQ_SHEET_URL")).get_worksheet(0)
+        data  = sheet.get_all_values()[1:]  # skip header
+        senders = set()
+        for row in data:
+            # col M (idx=12) must match a recipient
+            if len(row) > 12 and row[12].strip() in other_recipients:
+                sender = row[2].strip() if len(row) > 2 else ""
+                if sender and sender not in (VICKY_NAMES | YUMI_NAMES | EXCLUDED_SENDERS):
+                    senders.add(sender)
 
-    # push to groups
-    push_to(VICKY_GROUP_ID, vicky_batch)
-    push_to(YUMI_GROUP_ID,  yumi_batch)
-
-    # privately notify Yves of any others
-    if other_batch:
-        # header
-        header_payload = {
-            "to": YVES_USER_ID,
-            "messages": [{"type":"text","text":"Soquick散客EZWay需提醒以下寄件人："}]
-        }
-        requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=header_payload)
-        # one message per name
-        for name in other_batch:
-            payload = {
-                "to": YVES_USER_ID,
-                "messages": [{"type":"text","text": name}]
-            }
-            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Privately notified Yves of {len(other_batch)} other senders")  
+        if senders:
+            # header
+            requests.post(
+                LINE_PUSH_URL,
+                headers=LINE_HEADERS,
+                json={
+                  "to": YVES_USER_ID,
+                  "messages":[{"type":"text","text":"Soquick散客EZWay需提醒以下寄件人："}]
+                }
+            )
+            # one message per sender
+            for s in sorted(senders):
+                requests.post(
+                    LINE_PUSH_URL,
+                    headers=LINE_HEADERS,
+                    json={"to": YVES_USER_ID, "messages":[{"type":"text","text":s}]}
+                )
+            log.info(f"Privately notified Yves of {len(senders)} senders")
 
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
@@ -600,9 +606,6 @@ def remind_vicky(day_name: str):
         log.debug("Response body: %s", resp.text)
         log.debug("Response status: %s", resp.status_code)
         log.debug("Response headers:\n%s", resp.headers)
-
-
-
 
 # ─── Ace schedule handler ─────────────────────────────────────────────────────
 def handle_ace_schedule(event):
@@ -1059,7 +1062,7 @@ def webhook():
             and "您好，請通知" in text
             and "按" in text
             and "申報相符" in text):
-            handle_soquick_notification(event)
+            handle_soquick_full_notification(event)
             continue          
 
         # 2) Your existing “追蹤包裹” logic
