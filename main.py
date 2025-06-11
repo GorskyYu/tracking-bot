@@ -1069,8 +1069,9 @@ def webhook():
               size_text, re.IGNORECASE
             )
             if dm:
-                w, h, d = map(float, dm.group(1,3,5))
-                unit = (dm.group(6) or "cm").lower()
+                # capture groups: 1=width, 2=height, 3=depth, 4=unit (optional)
+                w, h, d = map(float, dm.group(1,2,3))
+                unit = (dm.group(4) or "cm").lower()
                 factor = 2.54 if unit.startswith(("in","吋")) else 1.0
                 dims_cm = f"{int(w*factor)}×{int(h*factor)}×{int(d*factor)}"
                 log.info(f"  → Parsed dims_cm: {dims_cm}")
