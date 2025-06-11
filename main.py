@@ -459,6 +459,8 @@ def handle_soquick_shipments(event):
     push(YUMI_GROUP_ID,  yumi)
 
 def handle_soquick_full_notification(event):
+    log.info(f"[SOQ FULL] invoked on text={event['message']['text']!r}")
+    text = event["message"]["text"]
     """
     1) Parse the incoming text for “您好，請通知…” + “按申報相符”
     2) Split off the footer and extract all recipient names
@@ -514,40 +516,44 @@ def handle_soquick_full_notification(event):
             headers=LINE_HEADERS,
             json={"to": group, "messages":[{"type":"text","text":msg}]}
         )
+
     push_group(VICKY_GROUP_ID, vicky_batch)
     push_group(YUMI_GROUP_ID,  yumi_batch)
 
-    # 4) lookup the Soquick sheet for senders and notify Yves
+    # ── Private “other” pushes ─────────────────────
+    other_recipients = [
+        r for r in recipients
+        if r not in VICKY_NAMES
+           and r not in YUMI_NAMES
+           and r not in EXCLUDED_SENDERS
+    ]
     if other_recipients:
-        sheet = gs.open_by_url(os.getenv("SQ_SHEET_URL")).get_worksheet(0)
-        data  = sheet.get_all_values()[1:]  # skip header
+        # open the Soquick sheet by ID
+        sheet = gs.open_by_key(SQ_SHEET_ID).get_worksheet(0)
+        rows  = sheet.get_all_values()[1:]  # skip header
         senders = set()
-        for row in data:
-            # col M (idx=12) must match a recipient
+        for row in rows:
+            # column M is index 12
             if len(row) > 12 and row[12].strip() in other_recipients:
                 sender = row[2].strip() if len(row) > 2 else ""
                 if sender and sender not in (VICKY_NAMES | YUMI_NAMES | EXCLUDED_SENDERS):
                     senders.add(sender)
-
         if senders:
-            # header
+            # header notification
             requests.post(
-                LINE_PUSH_URL,
-                headers=LINE_HEADERS,
+                LINE_PUSH_URL, headers=LINE_HEADERS,
                 json={
                   "to": YVES_USER_ID,
                   "messages":[{"type":"text","text":"Soquick散客EZWay需提醒以下寄件人："}]
                 }
             )
-            # one message per sender
             for s in sorted(senders):
                 requests.post(
-                    LINE_PUSH_URL,
-                    headers=LINE_HEADERS,
+                    LINE_PUSH_URL, headers=LINE_HEADERS,
                     json={"to": YVES_USER_ID, "messages":[{"type":"text","text":s}]}
                 )
-            log.info(f"Privately notified Yves of {len(senders)} senders")
-
+            log.info(f"[SOQ FULL] Privately pushed {len(senders)} senders to Yves")
+            
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
     """Send Vicky a reminder at 5 PM PST on Wednesday/Friday if needed."""
