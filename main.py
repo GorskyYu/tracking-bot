@@ -1053,7 +1053,7 @@ def webhook():
             size_text = text
             log.info(f"Parsing size_text for subitem {sub_id!r}: {size_text!r}")
 
-            # 1) weight
+            # parse weight
             wm = re.search(r"(\d+(?:\.\d+)?)\s*(kg|公斤|lbs?)", size_text, re.IGNORECASE)
             if wm:
                 qty, unit = float(wm.group(1)), wm.group(2).lower()
@@ -1061,11 +1061,11 @@ def webhook():
                 log.info(f"  → Parsed weight_kg: {weight_kg:.2f} kg")
             else:
                 weight_kg = None
-                log.debug("  → No weight match")
 
-            # 2) dimensions
+            # parse dimensions
             dm = re.search(
-              r"(\d+(?:\.\d+)?)[×x*](\d+(?:\.\d+)?)[×x*](\d+(?:\.\d+)?)(?:\s*)(cm|公分|in|吋)?",
+              # allow ×, x, *, or any whitespace between numbers
+              r"(\d+(?:\.\d+)?)[×x*\s]+(\d+(?:\.\d+)?)[×x*\s]+(\d+(?:\.\d+)?)(?:\s*)(cm|公分|in|吋)?",
               size_text, re.IGNORECASE
             )
             if dm:
@@ -1073,13 +1073,14 @@ def webhook():
                 w, h, d = map(float, dm.group(1,2,3))
                 unit = (dm.group(4) or "cm").lower()
                 factor = 2.54 if unit.startswith(("in","吋")) else 1.0
-                dims_cm = f"{int(w*factor)}×{int(h*factor)}×{int(d*factor)}"
-                log.info(f"  → Parsed dims_cm: {dims_cm}")
+                # use '*' between numbers, always
+                dims_norm = f"{int(w*factor)}*{int(h*factor)}*{int(d*factor)}"
+                log.info(f"  → Parsed dims_norm: {dims_norm}")
             else:
-                dims_cm = None
+                dims_norm = None
                 log.debug("  → No dimensions match")
 
-            # 3) push to Monday
+            # helper to build the mutation
             def mutate(colId, val):
                 return f'''
                 mutation {{
@@ -1091,22 +1092,30 @@ def webhook():
                   ) {{ id }}
                 }}'''
 
-            if dims_cm:
+            # push dimensions if found
+            if dims_norm:
                 requests.post(
                   "https://api.monday.com/v2",
-                  headers={"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"},
-                  json={"query": mutate("__1__cm__1", dims_cm)}
+                  headers={ "Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json" },
+                  json={ "query": mutate("__1__cm__1", dims_norm) }
                 )
+
+
+            # push weight if found
             if weight_kg is not None:
                 requests.post(
                   "https://api.monday.com/v2",
-                  headers={"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"},
-                  json={"query": mutate("numeric__1", f"{weight_kg:.2f}")}
+                  headers={ "Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json" },
+                  json={ "query": mutate("numeric__1", f"{weight_kg:.2f}") }
                 )
+                # now that we got weight, clear pending so we don't parse again
+                r.delete(pending_key)
+                log.info(f"Cleared pending for subitem {sub_id}")
 
-            log.info(f"Pushed dims={dims_cm!r}, weight={weight_kg!r} to Monday for subitem {sub_id}")
-            r.delete(pending_key)
+            # whether dims or weight or both, log final
+            log.info(f"Finished size/weight sync for subitem {sub_id}: dims={dims_norm!r}, weight={weight_kg!r}")
             continue
+
         
         # ——— New: Richmond-arrival triggers content-request to Vicky —————————
         if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
