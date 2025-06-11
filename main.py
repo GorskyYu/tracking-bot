@@ -85,6 +85,9 @@ VICKY_USER_ID    = os.getenv("VICKY_USER_ID")
 YVES_USER_ID     = os.getenv("YVES_USER_ID") 
 YUMI_GROUP_ID    = os.getenv("LINE_GROUP_ID_YUMI")
 
+SQ_SHEET_URL     = os.getenv("SQ_SHEET_URL")
+
+
 # Trigger when you see “週四出貨”/“週日出貨” + “麻煩請” + an ACE or 250N code,
 # or when you see the exact phrase “這幾位還沒有按申報相符”
 CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|250N)\d+[A-Z0-9]*\b")
@@ -529,7 +532,7 @@ def handle_soquick_full_notification(event):
     ]
     if other_recipients:
         # open the Soquick sheet by ID
-        sheet = gs.open_by_key(SQ_SHEET_ID).get_worksheet(0)
+        sheet = gs.open_by_url(SQ_SHEET_URL).get_worksheet(0)
         rows  = sheet.get_all_values()[1:]  # skip header
         senders = set()
         for row in rows:
