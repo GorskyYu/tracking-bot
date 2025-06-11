@@ -936,7 +936,9 @@ def webhook():
                     # <<<< INSERT HERE: grab group_id from src >>>>>>
                     group_id = src.get("groupId")                    
                     
-                    # ── STORE for next text event ──────────────────────────────────────────────
+                    # <<< INSERT: define group_id here >>>
+                    group_id = src.get("groupId")
+                    # STORE for next text event
                     pending_key = f"last_subitem_for_{group_id}"
                     r.set(pending_key, found_subitem_id, ex=300)
                     log.info(f"Stored subitem ID {found_subitem_id} for next text parsing (group {group_id})")
@@ -1047,14 +1049,14 @@ def webhook():
         sub_id = r.get(pending_key)
         if sub_id:
             size_text = text
-            log.debug(f"Parsing size_text for subitem {sub_id!r}: {size_text!r}")
+            log.info(f"Parsing size_text for subitem {sub_id!r}: {size_text!r}")
 
             # 1) weight
             wm = re.search(r"(\d+(?:\.\d+)?)\s*(kg|公斤|lbs?)", size_text, re.IGNORECASE)
             if wm:
                 qty, unit = float(wm.group(1)), wm.group(2).lower()
                 weight_kg = qty * (0.453592 if unit.startswith("lb") else 1.0)
-                log.debug(f"  → Parsed weight_kg: {weight_kg:.2f} kg")
+                log.info(f"  → Parsed weight_kg: {weight_kg:.2f} kg")
             else:
                 weight_kg = None
                 log.debug("  → No weight match")
@@ -1069,7 +1071,7 @@ def webhook():
                 unit = (dm.group(6) or "cm").lower()
                 factor = 2.54 if unit.startswith(("in","吋")) else 1.0
                 dims_cm = f"{int(w*factor)}×{int(h*factor)}×{int(d*factor)}"
-                log.debug(f"  → Parsed dims_cm: {dims_cm}")
+                log.info(f"  → Parsed dims_cm: {dims_cm}")
             else:
                 dims_cm = None
                 log.debug("  → No dimensions match")
