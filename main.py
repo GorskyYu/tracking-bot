@@ -1039,40 +1039,40 @@ def webhook():
         group_id = event["source"].get("groupId")
         text     = event["message"]["text"].strip()
         
-    # ——— New: Richmond-arrival triggers content-request to Vicky —————————
-    if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
-        # extract the tracking ID inside parentheses
-        import re
-        m = re.search(r"\(([^)]+)\)", text)
-        if m:
-            tracking_id = m.group(1)
-        else:
-            # no ID found, skip
-            continue
+        # ——— New: Richmond-arrival triggers content-request to Vicky —————————
+        if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
+            # extract the tracking ID inside parentheses
+            import re
+            m = re.search(r"\(([^)]+)\)", text)
+            if m:
+                tracking_id = m.group(1)
+            else:
+                # no ID found, skip
+                continue
 
-        # build the mention message
-        placeholder = "{user1}"
-        msg = f"{placeholder} 請提供此包裹的內容物清單：{tracking_id}"
-        substitution = {
-            "user1": {
-                "type": "mention",
-                "mentionee": {
-                    "type":   "user",
-                    "userId": VICKY_USER_ID
+            # build the mention message
+            placeholder = "{user1}"
+            msg = f"{placeholder} 請提供此包裹的內容物清單：{tracking_id}"
+            substitution = {
+                "user1": {
+                    "type": "mention",
+                    "mentionee": {
+                        "type":   "user",
+                        "userId": VICKY_USER_ID
+                    }
                 }
             }
-        }
-        payload = {
-            "to": VICKY_GROUP_ID,
-            "messages": [{
-                "type":        "textV2",
-                "text":        msg,
-                "substitution": substitution
-            }]
-        }
-        requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Requested contents list from Vicky for {tracking_id}")
-        continue
+            payload = {
+                "to": VICKY_GROUP_ID,
+                "messages": [{
+                    "type":        "textV2",
+                    "text":        msg,
+                    "substitution": substitution
+                }]
+            }
+            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+            log.info(f"Requested contents list from Vicky for {tracking_id}")
+            continue
                 
         # ——— Soquick “上周六出貨包裹的派件單號” blocks ——————————————
         if group_id == SOQUICK_GROUP_ID and "上周六出貨包裹的派件單號" in text:
