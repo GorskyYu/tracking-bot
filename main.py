@@ -622,31 +622,12 @@ def webhook():
     # log.info(f"Payload: {json.dumps(data, ensure_ascii=False)}")
 
     for event in data.get("events", []):
-        # if event.get("type") == "message" and event["message"].get("type") == "image":
-        # Original group-only filter (commented out):
-        # if event.get("source", {}).get("groupId") != ACE_GROUP_ID:
-        #     continue
-        # Now accept only images from your user ID:
-        # Only handle image messages sent in a 1:1 (user) chat for testing
-        # ─── Dispatch on message type ──────────────────────────────
+        # ─── If image, run ONLY the barcode logic and then continue ──────────
         if event.get("type") == "message" and event["message"].get("type") == "image":
-            # — existing barcode-decode block here —
-            # (everything from downloading bytes through the postal-code bio call)
-            continue
-
-        # Only handle text now
-        if not (event.get("type") == "message" 
-                and event["message"].get("type") == "text"):
-            continue            # log.info("[BARCODE] Detected image message, entering barcode‐scan block.")
-            
-            # decide which group or private chat
             src = event.get("source", {})
-            # allow if it’s a DM from you…
-            is_from_me = src.get("type") == "user" and src.get("userId") == YOUR_USER_ID
-            # …or a group message from ace or soquick…
-            is_from_ace      = src.get("type") == "group" and src.get("groupId") == ACE_GROUP_ID
-            is_from_soquick  = src.get("type") == "group" and src.get("groupId") == SOQUICK_GROUP_ID
-
+            is_from_me      = src.get("type") == "user"  and src.get("userId")  == YOUR_USER_ID
+            is_from_ace     = src.get("type") == "group" and src.get("groupId") == ACE_GROUP_ID
+            is_from_soquick = src.get("type") == "group" and src.get("groupId") == SOQUICK_GROUP_ID
             if not (is_from_me or is_from_ace or is_from_soquick):
                 continue
 
@@ -839,11 +820,9 @@ def webhook():
                     # ◆ ◆ ◆ Tool call follows below ◆ ◆ ◆
 
 
-        except Exception as e:
+        except Exception:
             # Log any barcode or Monday API errors without replying to the chat
             log.error("[BARCODE] Error during image handling", exc_info=True)
-            # Suppressed user-facing error reply
-            continue
             # log.error("[BARCODE] Error decoding barcode", exc_info=True)
             # Optionally, reply “NONE” or a helpful message:
             # error_payload = {
@@ -863,9 +842,10 @@ def webhook():
                 # },
                 # json=error_payload
             # )
+        # now that images are handled, skip text logic
+        continue
 
-        # only skip the rest of webhook for image messages —
-        # let text messages fall through to the shipment handler
+        # ─── From here on it’s only text messages ──────────────────────────
         if event["message"].get("type") == "image":
             continue
     
