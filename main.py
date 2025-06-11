@@ -413,7 +413,126 @@ def handle_ace_ezway_check_and_push(event):
         print(f"DEBUG: Pushed {len(results)} sender(s) to Yves: {sorted(results)}")
     else:
         print("DEBUG: No matching senders found for any declarer in the ACE message.")
-  
+
+# ─── Soquick shipment-block handler ────────────────────────────────────────────
+def handle_soquick_shipments(event):
++    """
+    Parse Soquick text containing "上周六出貨包裹的派件單號",
+    split out lines of tracking+code+recipient, then push
+    only the matching Vicky/Yumi lines + footer.
+    """
+    raw = event["message"]["text"]
+    if "上周六出貨包裹的派件單號" not in raw:
+        return
+
+    # Split into non-empty lines
+    lines = [l.strip() for l in raw.splitlines() if l.strip()]
+    # Locate footer (starts with “您好”)
+    footer_idx = next((i for i,l in enumerate(lines) if l.startswith("您好")), len(lines))
+    header = lines[:footer_idx]
+    footer = "\n".join(lines[footer_idx:])
+
+    vicky, yumi = [], []
+    for line in header:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        recipient = parts[-1]
+        if recipient in VICKY_NAMES:
+            vicky.append(line)
+        elif recipient in YUMI_NAMES:
+            yumi.append(line)
+
+    def push(group, msgs):
+        if not msgs:
+            return
+        text = "\n".join(msgs) + "\n\n" + footer
+        payload = {"to": group, "messages":[{"type":"text","text": text}]}
+        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        log.info(f"Sent {len(msgs)} Soquick blocks to {group}: {resp.status_code}")
+
+    push(VICKY_GROUP_ID, vicky)
+    push(YUMI_GROUP_ID,  yumi)
+
+# ─── Soquick “請通知…申報相符” handler ────────────────────────────────────────────
+def handle_soquick_notification(event):
+    """
+    For Soquick messages containing “您好，請通知” + “按” + “申報相符”,
+    extract the code+name lines, then push to Vicky/Yumi groups,
+    and privately notify Yves for any other senders.
+    """
+    text = event["message"]["text"]
+    # only fire on the exact keywords
+    if not ("您好，請通知" in text and "按" in text and "申報相符" in text):
+        return
+
+    # split into non-empty lines, strip stray quotes and leading '@'
+    raw_lines = [l.strip().lstrip("@").strip() for l in text.splitlines() if l.strip()]
+    # locate footer (the line that contains "您好，請通知")
+    try:
+        footer_idx = next(i for i,l in enumerate(raw_lines) if "您好，請通知" in l)
+    except StopIteration:
+        footer_idx = len(raw_lines)
+
+    # everything before footer are the client names
+    recipients = raw_lines[:footer_idx]
+    footer     = "\n".join(raw_lines[footer_idx:])
+
+    # batch by recipient
+    vicky_batch = [n for n in recipients if n in VICKY_NAMES]
+    yumi_batch  = [n for n in recipients if n in YUMI_NAMES]
+    other_batch = [
+        n for n in recipients
+        if n not in VICKY_NAMES
+        and n not in YUMI_NAMES
+        and n not in EXCLUDED_SENDERS
+    ]
+    # de‐duplicate while preserving order
+    def dedupe(seq):
+        seen = set()
+        out = []
+        for x in seq:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+        return out
+
+    vicky_batch = dedupe(vicky_batch)
+    yumi_batch  = dedupe(yumi_batch)
+    other_batch = dedupe(other_batch)
+
+
+    def push_to(group, batch):
+        if not batch:
+            return
+        # join names + two newlines + footer
+        msg = "\n".join(batch) + "\n\n" + footer
+        payload = {"to": group, "messages":[{"type":"text","text": msg}]}
+
+        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        log.info(f"Sent {len(batch)} Soquick-notify blocks to {group}: {resp.status_code}")
+
+    # push to groups
+    push_to(VICKY_GROUP_ID, vicky_batch)
+    push_to(YUMI_GROUP_ID,  yumi_batch)
+
+    # privately notify Yves of any others
+    if other_batch:
+        # header
+        header_payload = {
+            "to": YVES_USER_ID,
+            "messages": [{"type":"text","text":"Soquick散客EZWay需提醒以下寄件人："}]
+        }
+        requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=header_payload)
+        # one message per name
+        for name in other_batch:
+            payload = {
+                "to": YVES_USER_ID,
+                "messages": [{"type":"text","text": name}]
+            }
+            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        log.info(f"Privately notified Yves of {len(other_batch)} other senders")  
+
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
     """Send Vicky a reminder at 5 PM PST on Wednesday/Friday if needed."""
@@ -933,7 +1052,15 @@ def webhook():
         # ——— Soquick “上周六出貨包裹的派件單號” blocks ——————————————
         if group_id == SOQUICK_GROUP_ID and "上周六出貨包裹的派件單號" in text:
             handle_soquick_shipments(event)
-            continue                
+            continue
+
+        # ——— Soquick “請通知…申報相符” messages ——————————————
+        if (group_id == SOQUICK_GROUP_ID
+            and "您好，請通知" in text
+            and "按" in text
+            and "申報相符" in text):
+            handle_soquick_notification(event)
+            continue          
 
         # 2) Your existing “追蹤包裹” logic
         if text == "追蹤包裹":
