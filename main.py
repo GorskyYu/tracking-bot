@@ -861,9 +861,10 @@ def webhook():
                 # json=error_payload
             # )
 
-        # Skip further handling of this event
-        continue
-        # ────────────────────────────────────────────────────────────────────
+        # only skip the rest of webhook for image messages —
+        # let text messages fall through to the shipment handler
+        if event["message"].get("type") == "image":
+            continue
     
         # Only handle text messages
         if event.get("type") != "message" or event["message"].get("type") != "text":
