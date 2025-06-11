@@ -604,6 +604,46 @@ def handle_ace_shipments(event):
 
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID,  yumi)
+    
+# ─── Soquick shipment-block handler ────────────────────────────────────────────
+def handle_soquick_shipments(event):
+    """
++    Parse Soquick text containing "上周六出貨包裹的派件單號",
+    split out lines of tracking+code+recipient, then push
+    only the matching Vicky/Yumi lines + footer.
+    """
+    raw = event["message"]["text"]
+    if "上周六出貨包裹的派件單號" not in raw:
+        return
+
+    # Split into non-empty lines
+    lines = [l.strip() for l in raw.splitlines() if l.strip()]
+    # Locate footer (starts with “您好”)
+    footer_idx = next((i for i,l in enumerate(lines) if l.startswith("您好")), len(lines))
+    header = lines[:footer_idx]
+    footer = "\n".join(lines[footer_idx:])
+
+    vicky, yumi = [], []
+    for line in header:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        recipient = parts[-1]
+        if recipient in VICKY_NAMES:
+            vicky.append(line)
+        elif recipient in YUMI_NAMES:
+            yumi.append(line)
+
+    def push(group, msgs):
+        if not msgs:
+            return
+        text = "\n".join(msgs) + "\n\n" + footer
+        payload = {"to": group, "messages":[{"type":"text","text": text}]}
+        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        log.info(f"Sent {len(msgs)} Soquick blocks to {group}: {resp.status_code}")
+
+    push(VICKY_GROUP_ID, vicky)
+    push(YUMI_GROUP_ID,  yumi)    
 
 
 # ─── Flask Webhook ────────────────────────────────────────────────────────────
@@ -888,7 +928,12 @@ def webhook():
             # 2b) shipment-block notice
             if is_shipment:
                 handle_ace_shipments(event)
-                continue            
+                continue
+                
+        # ——— Soquick “上周六出貨包裹的派件單號” blocks ——————————————
+        if group_id == SOQUICK_GROUP_ID and "上周六出貨包裹的派件單號" in text:
+            handle_soquick_shipments(event)
+            continue                
 
         # 2) Your existing “追蹤包裹” logic
         if text == "追蹤包裹":
