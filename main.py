@@ -26,6 +26,10 @@ import io
 from PIL import Image, ImageFilter
 from pyzbar.pyzbar import decode, ZBarSymbol
 
+from datetime import datetime
+import pytz
+
+
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
 
 # load your Google service account credentials from the env var
@@ -219,8 +223,17 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
         loc        = f"[{loc_raw.replace(',',', ')}] " if loc_raw else ""
         ctx_lc     = ev.get("context","").strip().lower()
         translated = TRANSLATIONS.get(ctx_lc, ev.get("context","").replace("Triple Eagle","system"))
-        # use the API-provided timestamp
-        tme = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT",""))
+
+        # derive the *real* event time from its epoch timestamp
+        # 1) parse the numeric timestamp
+        event_ts = int(ev["timestamp"])
+        # 2) convert to a timezone‐aware datetime
+        #    (make sure you have `import pytz` and `from datetime import datetime` at the top)
+        tzobj = pytz.timezone(TIMEZONE)
+        dt = datetime.fromtimestamp(event_ts, tz=tzobj)
+        # 3) format it exactly like "Wed, 11 Jun 2025 15:05:46 -0700"
+        tme = dt.strftime('%a, %d %b %Y %H:%M:%S %z')
+
         lines.append(f"📦 {oid} ({num}) → {loc}{translated}  @ {tme}")
     return lines
 
