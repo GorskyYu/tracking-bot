@@ -570,71 +570,88 @@ def handle_soquick_full_notification(event):
             
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
-    """Send Vicky a reminder at 5 PM PST on Wednesday/Friday if needed."""
-    
-    resp = None  # Initialize!
-    
-    # 1) Gather her active orders and check sheet edits
-    oids = vicky_has_active_orders()
-    if not oids or vicky_sheet_recently_edited():
-        return
+    """Send Vicky a reminder at 5 PM PST on Wednesday/Friday if there are packages 
+    whose latest status is beyond the 'just created' steps."""
+    # ── 1) Find all active Triple Eagle order IDs for Vicky ────────────────
+    resp_list = call_api("shipment/list")
+    all_orders = resp_list.get("response", {}).get("list") or []
+    vicky_ids: list[str] = []
+    for order in all_orders:
+        oid = order.get("id")
+        if not oid:
+            continue
+        # fetch detail to inspect customer name
+        det = call_api("shipment/detail", {"id": oid}).get("response", {})
+        if isinstance(det, list):
+            det = det[0]
+        init = det.get("initiation", {})
+        loc  = next(iter(init), None)
+        name = init.get(loc, {}).get("name","").lower() if loc else ""
+        if any(kw in name for kw in CUSTOMER_FILTERS[VICKY_GROUP_ID]):
+            vicky_ids.append(str(oid))
 
-    # 2) Build the header 
+    if not vicky_ids:
+        return  # no Vicky orders at all
+
+    # ── 2) Fetch full tracking events for those orders ───────────────────────
+    resp_tr = call_api("shipment/tracking", {
+        "keyword": ",".join(vicky_ids),
+        "rsync":   0,
+        "timezone": TIMEZONE
+    }).get("response", []) or []
+
+    # ── 3) Filter out those whose latest event is still the “just created” statuses ──
+    SKIP_STATUSES = {
+        "order created at triple eagle",
+        "shipper created a label, ups has not received the package yet."
+    }
+    to_remind: list[str] = []
+
+    for item in resp_tr:
+        num = item.get("number","").strip()
+        events = item.get("list") or []
+        if not num or not events:
+            continue
+        # pick the most recent event
+        latest = max(events, key=lambda e: int(e.get("timestamp", 0)))
+        ctx = latest.get("context","").strip().lower()
+        if ctx not in SKIP_STATUSES:
+            to_remind.append(num)
+
+    if not to_remind:
+        return  # nothing to ask for
+
+    # ── 4) Build and send the reminder with a mention ────────────────────────
     placeholder = "{user1}"
     header = (
-        f"{placeholder} 您好，溫哥華倉庫{day_name}預計出貨。"
-        "系統未偵測到内容物清單有異動，"
+        f"{placeholder} 您好，溫哥華倉庫預計{day_name}出貨，"
         "請麻煩填寫以下包裹的内容物清單。謝謝！"
     )
-
-    # 3) Body is the list of tracking IDs (one per line)
-    body = "\n".join(oids)
-
-    # 4) Footer is your Google Sheet URL from env
+    body   = "\n".join(to_remind)
     footer = os.getenv("VICKY_SHEET_URL")
-    
-    # 5) Assemble full text in one message
-    full_text = "\n\n".join([header, body, footer])
-    
-    # 6) Build the substitution map for the mention
-    substitution = {
-        "user1": {
-            "type": "mention",
-            "mentionee": {
-                "type":   "user",
-                "userId": VICKY_USER_ID
-            }
-        }
-    }    
 
-    # 7) Send as a textV2 message
     payload = {
-      "to": VICKY_GROUP_ID,
-      "messages": [{
-        "type":        "textV2",
-        "text":        full_text,
-        "substitution": substitution
-      }]
+        "to": VICKY_GROUP_ID,
+        "messages": [{
+            "type":        "textV2",
+            "text":        "\n\n".join([header, body, footer]),
+            "substitution": {
+                "user1": {
+                    "type": "mention",
+                    "mentionee": {
+                        "type":   "user",
+                        "userId": VICKY_USER_ID
+                    }
+                }
+            }
+        }]
     }
-    
-#    print("VICKY_GROUP_ID:", VICKY_GROUP_ID)
-#    print("VICKY_USER_ID:", VICKY_USER_ID)
-#    print("LINE_PUSH_URL:", LINE_PUSH_URL)
-#    print("LINE_HEADERS:", LINE_HEADERS)
-#    print("Payload:\n", json.dumps(payload, ensure_ascii=False, indent=2))
-    
     try:
         resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Sent Vicky reminder for {day_name}: {len(oids)} orders (status {resp.status_code})")
+        log.info(f"Sent Vicky reminder for {day_name}: {len(to_remind)} packages (status {resp.status_code})")
     except Exception as e:
-        log.error(f"Error sending LINE push: {e}")
+        log.error(f"Error sending Vicky reminder: {e}")
 
-    # Robust logging
-    if resp:
-        log.debug("Payload: %s", json.dumps(payload, ensure_ascii=False, indent=2))
-        log.debug("Response body: %s", resp.text)
-        log.debug("Response status: %s", resp.status_code)
-        log.debug("Response headers:\n%s", resp.headers)
 
 # ─── Ace schedule handler ─────────────────────────────────────────────────────
 def handle_ace_schedule(event):
