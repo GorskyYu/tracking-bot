@@ -187,7 +187,6 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
     resp = call_api("shipment/list")
     lst  = resp.get("response", {}).get("list") or resp.get("response") or []
     order_ids = [o["id"] for o in lst if "id" in o]
-
     # 2) filter by these keywords
     cust_ids = []
     for oid in order_ids:
@@ -198,36 +197,33 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
         name = init.get(loc,{}).get("name","").lower() if loc else ""
         if any(kw in name for kw in keywords):
             cust_ids.append(oid)
-
     if not cust_ids:
         return ["📦 沒有此客戶的有效訂單"]
-
     # 3) fetch tracking updates
     td = call_api("shipment/tracking", {
         "keyword": ",".join(cust_ids),
         "rsync":   0,
         "timezone": TIMEZONE
     })
-
-    # 4) format reply exactly as before, with translation & location
+    # 4) format reply using each event’s own timestamp
     lines: list[str] = []
     for item in td.get("response", []):
         oid = item.get("id"); num = item.get("number","")
         events = item.get("list") or []
         if not events:
-            lines.append(f"{oid} ({num}) – 尚無追蹤紀錄"); continue
-
+            lines.append(f"📦 {oid} ({num}) – 尚無追蹤紀錄")
+            continue
+        # pick the most recent event
         ev = max(events, key=lambda e: int(e["timestamp"]))
-        loc_raw = ev.get("location","")
-        loc     = f"[{loc_raw.replace(',',', ')}] " if loc_raw else ""
-        ctx_lc  = ev.get("context","").strip().lower()
+        loc_raw    = ev.get("location","")
+        loc        = f"[{loc_raw.replace(',',', ')}] " if loc_raw else ""
+        ctx_lc     = ev.get("context","").strip().lower()
         translated = TRANSLATIONS.get(ctx_lc, ev.get("context","").replace("Triple Eagle","system"))
-        # Use the API’s timestamp:
+        # use the API-provided timestamp
         tme = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT",""))
         lines.append(f"📦 {oid} ({num}) → {loc}{translated}  @ {tme}")
-
-
     return lines
+
 
 # ─── Vicky-reminder helpers ───────────────────────────────────────────────────    
 def vicky_has_active_orders() -> list[str]:
@@ -750,7 +746,7 @@ def handle_ace_shipments(event):
 # ─── Soquick shipment-block handler ────────────────────────────────────────────
 def handle_soquick_shipments(event):
     """
-+    Parse Soquick text containing "上周六出貨包裹的派件單號",
+    Parse Soquick text containing "上周六出貨包裹的派件單號",
     split out lines of tracking+code+recipient, then push
     only the matching Vicky/Yumi lines + footer.
     """
