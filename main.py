@@ -879,11 +879,18 @@ def webhook():
                     # )
                 else:
                     # 1. Take the first decoded barcode as the Tracking ID
-                    tracking_raw = decoded_objs[0].data.decode("utf-8")
+                    for obj in decoded_objs:
+                        log.info(f"[BARCODE] Detected: {obj.type} → {obj.data.decode('utf-8')}")
+                    tracking_raw = next(
+                        (obj.data.decode("utf-8") for obj in decoded_objs if obj.data.decode("utf-8").startswith("1Z")),
+                        decoded_objs[0].data.decode("utf-8")  # fallback
+                    )
+
                     log.info(f"[BARCODE] First decoded raw data (tracking): {tracking_raw}")
 
                     # 2. If there is a tracking ID (we already decode it)
-                    tracking_id = decoded_objs[0].data.decode("utf-8").strip()
+                    # tracking_id = decoded_objs[0].data.decode("utf-8").strip()
+                    tracking_id = tracking_raw.strip()
                     log.info(f"[BARCODE] Decoded tracking ID: {tracking_id}")
 
                     # ─── Lookup the subitem directly on the subitem board via items_page_by_column_values ──────────────────────────────
