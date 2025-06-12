@@ -107,7 +107,8 @@ def main():
         })
 
         new_lines = []
-        for item in resp.get("response", []):
+        # make sure we always iterate a list, even if response is None
+        for item in (resp.get("response") or []):
             pkg_id = item["id"]
             num = item.get("number","")
             if not num:
