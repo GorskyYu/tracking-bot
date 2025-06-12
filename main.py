@@ -210,7 +210,7 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
     })
 
     # 4) format reply exactly as before, with translation & location
-    lines = [f"📦 {time.strftime('%Y-%m-%d %H:%M', time.localtime())}"]
+    lines: list[str] = []
     for item in td.get("response", []):
         oid = item.get("id"); num = item.get("number","")
         events = item.get("list") or []
@@ -222,8 +222,10 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
         loc     = f"[{loc_raw.replace(',',', ')}] " if loc_raw else ""
         ctx_lc  = ev.get("context","").strip().lower()
         translated = TRANSLATIONS.get(ctx_lc, ev.get("context","").replace("Triple Eagle","system"))
-        tme     = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT",""))
-        lines.append(f"{oid} ({num}) → {loc}{translated}  @ {tme}")
+        # Use the API’s timestamp:
+        tme = ev["datetime"].get(TIMEZONE, ev["datetime"].get("GMT",""))
+        lines.append(f"📦 {oid} ({num}) → {loc}{translated}  @ {tme}")
+
 
     return lines
 
