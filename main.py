@@ -21,7 +21,6 @@ import openai
 from collections import defaultdict
 import threading
 
-import re
 import io
 from PIL import Image, ImageFilter
 from pyzbar.pyzbar import decode, ZBarSymbol
@@ -567,7 +566,29 @@ def handle_soquick_full_notification(event):
                     json={"to": YVES_USER_ID, "messages":[{"type":"text","text":s}]}
                 )
             log.info(f"[SOQ FULL] Privately pushed {len(senders)} senders to Yves")
-            
+ 
+# ─── 新增：處理「申報相符」提醒 ─────────────────────────
+def handle_missing_confirm(event):
+    text = event["message"]["text"]
+    # 如果訊息裡沒有「申報相符」，就跳過
+    if "申報相符" not in text:
+        return
+    # 逐行找 ACE/250N 單號
+    for l in text.splitlines():
+        if CODE_TRIGGER_RE.search(l):
+            parts = re.split(r"\s+", l.strip())
+            # 確保至少有三段：單號、姓名、電話
+            if len(parts) < 2:
+                continue
+            name = parts[1]
+            target = VICKY_GROUP_ID if name in VICKY_NAMES else YUMI_GROUP_ID
+            # 推播姓名（你可以改成更完整的訊息）
+            requests.post(
+                LINE_PUSH_URL,
+                headers=LINE_HEADERS,
+                json={"to": target, "messages":[{"type":"text","text": f"{name} 尚未按申報相符"}]}
+            )
+ 
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
     """Send Vicky a reminder at 5 PM PST on Wednesday/Friday if there are packages 
@@ -772,47 +793,6 @@ def handle_ace_shipments(event):
 
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID,  yumi)
-    
-# ─── Soquick shipment-block handler ────────────────────────────────────────────
-def handle_soquick_shipments(event):
-    """
-    Parse Soquick text containing "上周六出貨包裹的派件單號",
-    split out lines of tracking+code+recipient, then push
-    only the matching Vicky/Yumi lines + footer.
-    """
-    raw = event["message"]["text"]
-    if "上周六出貨包裹的派件單號" not in raw:
-        return
-
-    # Split into non-empty lines
-    lines = [l.strip() for l in raw.splitlines() if l.strip()]
-    # Locate footer (starts with “您好”)
-    footer_idx = next((i for i,l in enumerate(lines) if l.startswith("您好")), len(lines))
-    header = lines[:footer_idx]
-    footer = "\n".join(lines[footer_idx:])
-
-    vicky, yumi = [], []
-    for line in header:
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        recipient = parts[-1]
-        if recipient in VICKY_NAMES:
-            vicky.append(line)
-        elif recipient in YUMI_NAMES:
-            yumi.append(line)
-
-    def push(group, msgs):
-        if not msgs:
-            return
-        text = "\n".join(msgs) + "\n\n" + footer
-        payload = {"to": group, "messages":[{"type":"text","text": text}]}
-        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Sent {len(msgs)} Soquick blocks to {group}: {resp.status_code}")
-
-    push(VICKY_GROUP_ID, vicky)
-    push(YUMI_GROUP_ID,  yumi)    
-
 
 # ─── Flask Webhook ────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -834,11 +814,17 @@ def webhook():
         # ignore non‐message events (eg. unsend)
         if event.get("type") != "message":
             continue
+        
+        # 立刻抓 source / group_id
+        src = event["source"]
+        group_id = src.get("groupId")
+        msg      = event["message"]
+        text     = msg.get("text", "").strip()
+        mtype    = msg.get("type")
+        
         # ─── If image, run ONLY the barcode logic and then continue ──────────
-        if event.get("type") == "message" and event["message"].get("type") == "image":
-            src = event.get("source", {})
-            group_id = src.get("groupId") 
-            is_from_me      = src.get("type") == "user"  and src.get("userId")  == YOUR_USER_ID
+        if mtype == "image":
+            is_from_me      = src.get("type") == "user"  and src.get("userId")  == YVES_USER_ID
             is_from_ace     = src.get("type") == "group" and src.get("groupId") == ACE_GROUP_ID
             is_from_soquick = src.get("type") == "group" and src.get("groupId") == SOQUICK_GROUP_ID
             if not (is_from_me or is_from_ace or is_from_soquick):
@@ -969,12 +955,7 @@ def webhook():
 
                     found_subitem_id = items_page[0]["id"]
                     log.info(f"Found subitem {found_subitem_id} for {tracking_id}")
-                    
-                    # <<<< INSERT HERE: grab group_id from src >>>>>>
-                    group_id = src.get("groupId")                    
-                    
-                    # <<< INSERT: define group_id here >>>
-                    group_id = src.get("groupId")
+                                 
                     # STORE for next text event
                     pending_key = f"last_subitem_for_{group_id}"
                     r.set(pending_key, found_subitem_id, ex=300)
@@ -983,7 +964,6 @@ def webhook():
 ###
                     # first decide location text based on which group this came from
                     src = event.get("source", {})
-                    group_id = src.get("groupId")
 
                     if group_id == ACE_GROUP_ID:
                         loc = "溫哥華倉A"
@@ -1074,12 +1054,21 @@ def webhook():
             continue
     
         # Only handle text messages
-        if event.get("type") != "message" or event["message"].get("type") != "text":
+        if mtype != "text":
             continue
         
-        # now any remaining event is guaranteed to be a text message
-        group_id = event["source"].get("groupId")
-        text     = event["message"]["text"].strip()
+        # ——— 處理「申報相符」提醒 ———
+        if "申報相符" in text and CODE_TRIGGER_RE.search(text):
+            handle_missing_confirm(event)
+            continue
+        
+        if group_id == ACE_GROUP_ID:
+            handle_ace_ezway_check_and_push(event)
+            continue
+            
+        if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
+            handle_ace_schedule(event)
+            continue
 
         # <<<< INSERT: size/weight parser for pending subitem >>>>>>
         pending_key = f"last_subitem_for_{group_id}"
