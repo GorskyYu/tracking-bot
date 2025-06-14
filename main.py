@@ -540,23 +540,29 @@ def handle_soquick_full_notification(event):
     push_group(YUMI_GROUP_ID,  yumi_batch)
 
     # ── Private “other” pushes ─────────────────────
-    other_recipients = [
+    other_recipients = dedupe([
         r for r in recipients
         if r not in VICKY_NAMES
            and r not in YUMI_NAMES
            and r not in EXCLUDED_SENDERS
-    ]
+    ])
+    log.info(f"[SOQ FULL][DEBUG] other_recipients = {other_recipients!r}")
+
     if other_recipients:
-        # open the Soquick sheet by ID
-        sheet = gs.open_by_url(SQ_SHEET_URL).get_worksheet(0)
-        rows  = sheet.get_all_values()[1:]  # skip header
+        sheet  = gs.open_by_url(SQ_SHEET_URL).get_worksheet(0)
+        rows   = sheet.get_all_values()[1:]  # skip header
         senders = set()
-        for row in rows:
-            # column E is index 4
-            if len(row) > 4 and row[4].strip() in other_recipients:
+
+        for idx, row in enumerate(rows, start=2):
+            name_in_sheet = row[4].strip() if len(row) > 4 else ""
+            log.info(f"[SOQ FULL][DEBUG] row {idx} colE = {name_in_sheet!r}")
+
+            if name_in_sheet in other_recipients:
                 sender = row[2].strip() if len(row) > 2 else ""
+                log.info(f"[SOQ FULL][DEBUG] matched recipient {name_in_sheet!r} → sender {sender!r}")
                 if sender and sender not in (VICKY_NAMES | YUMI_NAMES | EXCLUDED_SENDERS):
                     senders.add(sender)
+
         if senders:
             # header notification
             requests.post(
