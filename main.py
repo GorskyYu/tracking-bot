@@ -506,8 +506,8 @@ def handle_soquick_full_notification(event):
     other_recipients = [
         r for r in recipients
         if r not in VICKY_NAMES
-        and r not in YUMI_NAMES
-        and r not in EXCLUDED_SENDERS
+           and r not in YUMI_NAMES
+           and r not in EXCLUDED_SENDERS
     ]
 
     # ===== 插入這裡：列印 other_recipients =====
@@ -527,16 +527,15 @@ def handle_soquick_full_notification(event):
     # 3) push the group notifications
     def push_group(group, batch):
         if not batch: return
-        # msg = "\n".join(batch) + "\n\n" + footer
-        # 不用原 footer，改成統一的通知文字
         standard_footer = "您好，請提醒以上認證人按申報相符"
-        msg = "\n".join(batch) + "\n\n" + standard_footer        
+        msg = "\n".join(batch) + "\n\n" + standard_footer
         requests.post(
             LINE_PUSH_URL,
             headers=LINE_HEADERS,
             json={"to": group, "messages":[{"type":"text","text":msg}]}
         )
 
+    # 這行取消註解就不會推給 Vicky
     # push_group(VICKY_GROUP_ID, vicky_batch)
     push_group(YUMI_GROUP_ID,  yumi_batch)
 
