@@ -591,57 +591,92 @@ def handle_missing_confirm(event):
  
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
-    """Send Vicky a reminder at 5 PM PST on Wednesday/Friday if there are packages 
-    whose latest status is beyond the 'just created' steps."""
-    # ── 1) Find all active Triple Eagle order IDs for Vicky ────────────────
+    """Send Vicky a one-per-day reminder at 17:30 if there are packages 
+       beyond the two 'just created' statuses."""
+    # ── 0) Idempotency guard: only once per day per day_name ───────────────
+    tz = pytz.timezone(TIMEZONE)
+    today_str = datetime.now(tz).date().isoformat()
+    guard_key = f"vicky_reminder_{day_name}_{today_str}"
+    if r.get(guard_key):
+        return   
+        
+    # ── 1) Gather all Vicky order IDs ────────────────────────────────────
     resp_list = call_api("shipment/list")
-    all_orders = resp_list.get("response", {}).get("list") or []
-    vicky_ids: list[str] = []
-    for order in all_orders:
-        oid = order.get("id")
+    all_orders = resp_list.get("response", {}).get("list", []) or []
+    vicky_ids = []
+    for o in all_orders:
+        oid = o.get("id")
         if not oid:
             continue
-        # fetch detail to inspect customer name
         det = call_api("shipment/detail", {"id": oid}).get("response", {})
-        if isinstance(det, list):
-            det = det[0]
+        if isinstance(det, list): det = det[0]
         init = det.get("initiation", {})
         loc  = next(iter(init), None)
-        name = init.get(loc, {}).get("name","").lower() if loc else ""
+        name = init.get(loc, {}).get("name", "").lower() if loc else ""
         if any(kw in name for kw in CUSTOMER_FILTERS[VICKY_GROUP_ID]):
             vicky_ids.append(str(oid))
-
     if not vicky_ids:
-        return  # no Vicky orders at all
+        return
 
-    # ── 2) Fetch full tracking events for those orders ───────────────────────
+    # ── 2) Fetch tracking events and filter by status ───────────────────
     resp_tr = call_api("shipment/tracking", {
         "keyword": ",".join(vicky_ids),
         "rsync":   0,
         "timezone": TIMEZONE
     }).get("response", []) or []
 
-    # ── 3) Filter out those whose latest event is still the “just created” statuses ──
     SKIP_STATUSES = {
         "order created at triple eagle",
         "shipper created a label, ups has not received the package yet."
     }
-    to_remind: list[str] = []
-
+    to_remind = []
     for item in resp_tr:
-        num = item.get("number","").strip()
-        events = item.get("list") or []
-        if not num or not events:
+        num = item.get("number", "").strip()
+        evs = item.get("list") or []
+        if not num or not evs:
             continue
-        # pick the most recent event
-        latest = max(events, key=lambda e: int(e.get("timestamp", 0)))
-        ctx = latest.get("context","").strip().lower()
+        latest = max(evs, key=lambda e: int(e.get("timestamp", 0)))
+        ctx = latest.get("context", "").strip().lower()
         if ctx not in SKIP_STATUSES:
             to_remind.append(num)
 
     if not to_remind:
-        return  # nothing to ask for
+        return
 
+    # ── 3) Assemble and send reminder (no sheet link) ──────────────────
+    placeholder = "{user1}"
+    header = (
+        f"{placeholder} 您好，溫哥華倉庫預計{day_name}出貨，"
+        "請麻煩填寫以下包裹的内容物清單。謝謝！"
+    )
+    body = "\n".join(to_remind)
+    payload = {
+        "to": VICKY_GROUP_ID,
+        "messages": [{
+            "type":        "textV2",
+            "text":        "\n\n".join([header, body]),
+            "substitution": {
+                "user1": {
+                    "type": "mention",
+                    "mentionee": {
+                        "type":   "user",
+                        "userId": VICKY_USER_ID
+                    }
+                }
+            }
+        }]
+    }
+    try:
+        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        if resp.status_code == 200:
+            # mark as sent for today
+            r.set(guard_key, "1", ex=24*3600)
+            log.info(f"Sent Vicky reminder for {day_name}: {len(to_remind)} packages")
+        else:
+            log.error(f"Failed to send Vicky reminder: {resp.status_code} {resp.text}")
+    except Exception as e:
+        log.error(f"Error sending Vicky reminder: {e}")
+        
     # ── 4) Build and send the reminder with a mention ────────────────────────
     placeholder = "{user1}"
     header = (
@@ -1368,15 +1403,6 @@ def check_te_updates():
 
 # ─── Poller + Scheduler Bootstrap ────────────────────────────────────────────
 sched = BackgroundScheduler(timezone="America/Vancouver")
-
-# TE updates poller
-sched.add_job(
-    check_te_updates,
-    trigger="cron",
-    day_of_week="mon-sat",
-    hour="4-19",
-    minute="0,30"
-)
 
 # ——— Vicky reminders (Wed & Fri at 17:30) ——————————————————————
 sched.add_job(lambda: remind_vicky("星期四"),
