@@ -475,7 +475,7 @@ def handle_soquick_full_notification(event):
     log.info(f"[SOQ FULL] invoked on text={event['message']['text']!r}")
     text = event["message"]["text"]
     """
-    1) Parse the incoming text for “您好，請通知…” + “按申報相符”
+    1) Parse the incoming text for “您好，請…” + “按申報相符”
     2) Split off the footer and extract all recipient names
     3) Push Vicky/Yumi group messages with their names + footer
     4) Look up those same names in col M of your Soquick sheet
@@ -483,7 +483,7 @@ def handle_soquick_full_notification(event):
        notify Yves of any senders not already in Vicky/Yumi/Excluded.
     """
     text = event["message"]["text"]
-    if not ("您好，請通知" in text and "按" in text and "申報相符" in text):
+    if not ("您好，請" in text and "按" in text and "申報相符" in text):
         return
 
     # 1) extract lines & footer
@@ -494,7 +494,7 @@ def handle_soquick_full_notification(event):
         if l.strip()
     ]
     try:
-        footer_idx = next(i for i,l in enumerate(lines) if "您好，請通知" in l)
+        footer_idx = next(i for i,l in enumerate(lines) if "您好，請" in l)
     except StopIteration:
         footer_idx = len(lines)
     recipients = lines[:footer_idx]
@@ -1246,12 +1246,12 @@ def webhook():
             "has_您好=%r, has_按=%r, has_申報相符=%r",
             group_id,
             SOQUICK_GROUP_ID,
-            "您好，請通知" in text,
+            "您好，請" in text,
             "按" in text,
             "申報相符" in text,
         )        
         if (group_id == SOQUICK_GROUP_ID
-            and "您好，請通知" in text
+            and "您好，請" in text
             and "按" in text
             and "申報相符" in text):
             handle_soquick_full_notification(event)
