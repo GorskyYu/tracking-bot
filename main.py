@@ -549,11 +549,28 @@ def handle_soquick_full_notification(event):
     log.info(f"[SOQ FULL][DEBUG] other_recipients = {other_recipients!r}")
 
     if other_recipients:
-        sheet  = gs.open_by_url(SQ_SHEET_URL).get_worksheet(0)
-        rows   = sheet.get_all_values()[1:]  # skip header
+        # 依照訊息日期動態選分頁：前3天到後2天
+        import datetime
+        ts = event["timestamp"]                              # ms
+        dt = datetime.datetime.fromtimestamp(ts/1000,         # +08:00
+            tz=datetime.timezone(datetime.timedelta(hours=8)))
+        # 候選日期字串：e.g. ['250611','250612','250613','250614','250615','250616']
+        base = dt.date()
+        candidates = [(base + datetime.timedelta(days=d)).strftime("%y%m%d")
+                      for d in range(-3, 3)]
+        ss = gs.open_by_url(SQ_SHEET_URL)
+        found = [ws.title for ws in ss.worksheets() if ws.title in candidates]
+        if len(found) == 1:
+            sheet = ss.worksheet(found[0])
+            log.info(f"[SOQ FULL][DEBUG] 使用分頁 {found[0]}")
+        else:
+            log.error(f"[SOQ FULL] 分頁數量不唯一，expected=1 got={len(found)}; candidates={candidates}, found={found}")
+            return
+        rows = sheet.get_all_values()[1:]  # skip header
         senders = set()
 
         for idx, row in enumerate(rows, start=2):
+            # 印每一列 E 欄
             name_in_sheet = row[4].strip() if len(row) > 4 else ""
             log.info(f"[SOQ FULL][DEBUG] row {idx} colE = {name_in_sheet!r}")
 
@@ -578,6 +595,7 @@ def handle_soquick_full_notification(event):
                     json={"to": YVES_USER_ID, "messages":[{"type":"text","text":s}]}
                 )
             log.info(f"[SOQ FULL] Privately pushed {len(senders)} senders to Yves")
+
  
 # ─── 新增：處理「申報相符」提醒 ─────────────────────────
 def handle_missing_confirm(event):
