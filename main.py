@@ -236,29 +236,45 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
         lines.append(f"📦 {oid} ({num}) → {loc}{translated}  @ {tme}")
     return lines
 
+MONDAY_API_URL    = "https://api.monday.com/v2"
+MONDAY_TOKEN      = os.getenv("MONDAY_TOKEN")
+VICKY_SUBITEM_BOARD_ID = 9359342766    # 請填你 Vicky 子任務所在的 Board ID
+VICKY_STATUS_COLUMN_ID = "status__1"   # 請填溫哥華收款那個欄位的 column_id
 
 # ─── Vicky-reminder helpers ───────────────────────────────────────────────────    
 def vicky_has_active_orders() -> list[str]:
     """
     Return a list of Vicky’s active UPS tracking numbers (the 1Z… codes).
     """
-    # 1) Get all active TE order IDs
-    resp_list = call_api("shipment/list")
-    lst = resp_list.get("response", {}).get("list") or resp_list.get("response", [])
-    te_ids: list[str] = [str(o["id"]) for o in lst if "id" in o]
-    # 2) Filter those down to only Vicky’s orders
-    vicky_ids: list[str] = []
-    for oid in te_ids:
-        det = call_api("shipment/detail", {"id": oid}).get("response", {})
-        if isinstance(det, list):
-            det = det[0]
-        init = det.get("initiation", {})
-        loc  = next(iter(init), None)
-        name = init.get(loc, {}).get("name","").lower() if loc else ""
-        if any(kw in name for kw in CUSTOMER_FILTERS[VICKY_GROUP_ID]):
-            vicky_ids.append(oid)
-    if not vicky_ids:
-        return []
+    # ── 1.1) 從 Monday 拿所有「狀態＝溫哥華收款」的 Subitem 名稱當 Tracking IDs ────────────────
+    query = '''
+    query ($boardId: ID!, $columnId: String!, $value: String!) {
+      items_page_by_column_values(
+        board_id: $boardId,
+        limit: 100,
+        columns: [{ column_id: $columnId, column_values: [$value] }]
+      ) {
+        items { name }
+      }
+    }
+    '''
+    variables = {
+      "boardId": VICKY_SUBITEM_BOARD_ID,
+      "columnId": VICKY_STATUS_COLUMN_ID,
+      "value": "溫哥華收款"
+    }
+    resp = requests.post(
+      MONDAY_API_URL,
+      headers={ "Authorization": MONDAY_TOKEN, "Content-Type": "application/json" },
+      json={ "query": query, "variables": variables }
+    )
+    data = resp.json().get("data", {}) \
+                   .get("items_page_by_column_values", {}) \
+                   .get("items", [])
+    to_remind = [ item["name"].strip() for item in data if item.get("name") ]
+    if not to_remind:
+      return
+
 
     # 3) Fetch raw tracking info for exactly those TE IDs
     resp_tr = call_api("shipment/tracking", {
