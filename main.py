@@ -878,38 +878,63 @@ def handle_ace_shipments(event):
     push(YUMI_GROUP_ID,  yumi)
 
 # ─── 新增：PDF 處理函式 (置於 Flask webhook 之前) ─────────────────────────────────────
+import fitz  # PyMuPDF
+from PIL import Image
+
 def process_ups_pdf(pdf_bytes):
     log.info(f"[UPS PDF] Called process_ups_pdf, bytes={len(pdf_bytes)}")
-    """
-    將 UPS PDF 轉成影像，掃描條碼，並解析發貨人與收貨人資訊，之後在 log 中輸出。
-    """
-    # 1. 轉成影像
-    images = convert_from_bytes(pdf_bytes)
-    log.info(f"[UPS PDF] 轉換出 {len(images)} 張影像")
-    # 2. 條碼掃描
+
+    images = []
+    # 1. 嘗試用 poppler 轉成影像
+    try:
+        images = convert_from_bytes(pdf_bytes, dpi=200)
+        log.info(f"[UPS PDF] Poppler 轉換出 {len(images)} 張影像")
+    except Exception as e:
+        log.error(f"[UPS PDF] Poppler 轉換失敗: {e}")
+
+    # 2. 如果 poppler 沒成功，再用 PyMuPDF 轉
+    if not images:
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            imgs = []
+            for page in doc:
+                pix = page.get_pixmap()
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                imgs.append(img)
+            images = imgs
+            log.info(f"[UPS PDF] PyMuPDF 轉換出 {len(images)} 張影像")
+        except Exception as e:
+            log.error(f"[UPS PDF] PyMuPDF 轉換失敗: {e}")
+
+    # 3. 條碼掃描
     for page_num, img in enumerate(images, start=1):
         symbols = decode(img, symbols=[ZBarSymbol.CODE128, ZBarSymbol.QRCODE])
         log.info(f"[UPS PDF] Page {page_num} 找到 {len(symbols)} 個條碼")
         for symbol in symbols:
-            data = symbol.data.decode('utf-8')
+            data = symbol.data.decode('utf-8', errors='ignore')
             log.info(f"[UPS PDF] Page {page_num} 條碼內容：{data}")
-    # 3. 文字解析 shipper & receiver 資訊
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    text_all = []
-    for page in reader.pages:
-        text = page.extract_text() or ""
-        text_all.append(text)
-    full_text = "\n".join(text_all)
-    log.info(f"[UPS PDF] 擷取文字長度：{len(full_text)}")
+
+    # 4. 文字解析 shipper & receiver 資訊
+    full_text = ""
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        pages_text = [page.extract_text() or "" for page in reader.pages]
+        full_text = "\n".join(pages_text)
+        log.info(f"[UPS PDF] 擷取文字長度：{len(full_text)}")
+    except Exception as e:
+        log.error(f"[UPS PDF] PdfReader 擷取文字失敗: {e}")
+
     # 簡單匹配示例
-    shipper_match = re.search(r"Shipper[\s\S]*?Consignee", full_text)
-    if shipper_match:
-        shipper_info = shipper_match.group(0)
-        log.info(f"[UPS PDF] 製單人資訊：{shipper_info}")
-    receiver_match = re.search(r"Consignee[\s\S]*?(?:\n\n|$)", full_text)
-    if receiver_match:
-        receiver_info = receiver_match.group(0)
-        log.info(f"[UPS PDF] 收貨人資訊：{receiver_info}")
+    if full_text:
+        shipper_match = re.search(r"Shipper[\s\S]*?Consignee", full_text)
+        if shipper_match:
+            shipper_info = shipper_match.group(0).strip()
+            log.info(f"[UPS PDF] Shipper 資訊：\n{shipper_info}")
+
+        receiver_match = re.search(r"Consignee[\s\S]*?(?:\n\n|$)", full_text)
+        if receiver_match:
+            receiver_info = receiver_match.group(0).strip()
+            log.info(f"[UPS PDF] Consignee 資訊：\n{receiver_info}")
 
 # ─── Flask Webhook ────────────────────────────────────────────────────────────
 app = Flask(__name__)
