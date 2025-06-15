@@ -925,7 +925,22 @@ def webhook():
         # ignore non‐message events (eg. unsend)
         if event.get("type") != "message":
             continue
-        
+    
+        # ←── 在這開始process pdf
+        msg = event["message"]
+        if msg.get("type") == "file" and msg.get("fileName", "").lower().endswith(".pdf"):
+            file_id = msg["id"]
+            resp = requests.get(
+                f"https://api-data.line.me/v2/bot/message/{file_id}/content",
+                headers={"Authorization": f"Bearer {LINE_TOKEN}"},
+            )
+            if resp.status_code == 200:
+                process_ups_pdf(resp.content)
+            else:
+                log.error(f"[WEBHOOK] 無法下載檔案 {file_id}，狀態碼 {resp.status_code}")
+            return jsonify({}), 200
+        # ←── 到這結束
+    
         # 立刻抓 source / group_id
         src = event["source"]
         group_id = src.get("groupId")
