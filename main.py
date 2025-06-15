@@ -879,23 +879,28 @@ def handle_ace_shipments(event):
 
 # ─── 新增：PDF 處理函式 (置於 Flask webhook 之前) ─────────────────────────────────────
 def process_ups_pdf(pdf_bytes):
+    log.info(f"[UPS PDF] Called process_ups_pdf, bytes={len(pdf_bytes)}")
     """
     將 UPS PDF 轉成影像，掃描條碼，並解析發貨人與收貨人資訊，之後在 log 中輸出。
     """
     # 1. 轉成影像
     images = convert_from_bytes(pdf_bytes)
-    # 條碼掃描
+    log.info(f"[UPS PDF] 轉換出 {len(images)} 張影像")
+    # 2. 條碼掃描
     for page_num, img in enumerate(images, start=1):
         symbols = decode(img, symbols=[ZBarSymbol.CODE128, ZBarSymbol.QRCODE])
+        log.info(f"[UPS PDF] Page {page_num} 找到 {len(symbols)} 個條碼")
         for symbol in symbols:
             data = symbol.data.decode('utf-8')
             log.info(f"[UPS PDF] Page {page_num} 條碼內容：{data}")
-    # 2. 文字解析 shipper & receiver 資訊
+    # 3. 文字解析 shipper & receiver 資訊
     reader = PdfReader(io.BytesIO(pdf_bytes))
     text_all = []
     for page in reader.pages:
-        text_all.append(page.extract_text() or "")
+        text = page.extract_text() or ""
+        text_all.append(text)
     full_text = "\n".join(text_all)
+    log.info(f"[UPS PDF] 擷取文字長度：{len(full_text)}")
     # 簡單匹配示例
     shipper_match = re.search(r"Shipper[\s\S]*?Consignee", full_text)
     if shipper_match:
