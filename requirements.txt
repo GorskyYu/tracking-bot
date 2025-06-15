@@ -59,3 +59,4 @@ urllib3==2.4.0
 Werkzeug==3.1.3
 pyzbar 
 pdf2image
+PyPDF2
