@@ -25,6 +25,7 @@ import io
 from PIL import Image, ImageFilter
 from pyzbar.pyzbar import decode, ZBarSymbol
 from pdf2image import convert_from_bytes  # 新增：將 PDF 頁面轉為影像供條碼掃描
+from PyPDF2 import PdfReader  # 新增：解析 PDF 文字內容
 
 from datetime import datetime
 import pytz
