@@ -826,11 +826,11 @@ def handle_ace_schedule(event):
         if not batch:
             return
         
-        for line in batch:
-            # remove leading/trailing whitespace and quotation marks
-            stripped = line.strip().strip('"')
-            if stripped:                   # skip empty / quote-only lines
-                clean_batch.append(stripped)
+        # clean_batch = []
+        # for line in batch:
+            # stripped = line.strip().strip('"')  # remove leading/trailing whitespace and quotation marks
+            # if stripped:                   # skip empty / quote-only lines
+                # clean_batch.append(stripped)
         
         # message = []          # build the new message: header, blank line, names, blank line, footer
         # message += header
