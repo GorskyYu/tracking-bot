@@ -916,14 +916,14 @@ from PIL import Image
     # log.info(f"[UPS PDF] Called process_ups_pdf, bytes={len(pdf_bytes)}")
 
     # images = []
-    1. 嘗試用 poppler 轉成影像
+    ##1. 嘗試用 poppler 轉成影像
     # try:
         # images = convert_from_bytes(pdf_bytes, dpi=200)
         # log.info(f"[UPS PDF] Poppler 轉換出 {len(images)} 張影像")
     # except Exception as e:
         # log.error(f"[UPS PDF] Poppler 轉換失敗: {e}")
 
-    2. 如果 poppler 沒成功，再用 PyMuPDF 轉
+    ##2. 如果 poppler 沒成功，再用 PyMuPDF 轉
     # if not images:
         # try:
             # doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -937,7 +937,7 @@ from PIL import Image
         # except Exception as e:
             # log.error(f"[UPS PDF] PyMuPDF 轉換失敗: {e}")
 
-    3. 條碼掃描
+    ##3. 條碼掃描
     # for page_num, img in enumerate(images, start=1):
         # symbols = decode(img, symbols=[ZBarSymbol.CODE128, ZBarSymbol.QRCODE])
         # log.info(f"[UPS PDF] Page {page_num} 找到 {len(symbols)} 個條碼")
@@ -945,7 +945,7 @@ from PIL import Image
             # data = symbol.data.decode('utf-8', errors='ignore')
             # log.info(f"[UPS PDF] Page {page_num} 條碼內容：{data}")
 
-    4. 文字解析 shipper & receiver 資訊
+    ##4. 文字解析 shipper & receiver 資訊
     # full_text = ""
     # try:
         # reader = PdfReader(io.BytesIO(pdf_bytes))
@@ -955,7 +955,7 @@ from PIL import Image
     # except Exception as e:
         # log.error(f"[UPS PDF] PdfReader 擷取文字失敗: {e}")
 
-    簡單匹配示例
+    ##簡單匹配示例
     # if full_text:
         # shipper_match = re.search(r"Shipper[\s\S]*?Consignee", full_text)
         # if shipper_match:
