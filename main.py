@@ -846,8 +846,9 @@ def handle_ace_schedule(event):
         # resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
         # log.info(f"Pushed Ace summary to {group}: {resp.status_code}")
         
+        # --- TEST MODE: just log the would-be message ---
         # rebuild the mini-message: header + blank + batch + blank + footer
-        msg = header + [""] + batch + [""] + footer
+        msg_lines = header + [""] + batch + [""] + footer
         final = "\n".join(msg_lines)
         # real push to the group here
         # requests.post(
