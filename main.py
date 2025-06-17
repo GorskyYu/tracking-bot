@@ -1086,7 +1086,11 @@ def webhook():
 
                 # 2) PDF 轉圖像
                 from pdf2image import convert_from_bytes
+                from io import BytesIO
                 images = convert_from_bytes(resp.content, dpi=300)
+                if not images:
+                    log.warning("[PDF OCR] convert_from_bytes returned empty, using pdf_to_image fallback")
+                    images = [ pdf_to_image(BytesIO(resp.content), dpi=300) ]
 
                 # 3) 指定提取內容用的 prompt
                 prompt = """
