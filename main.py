@@ -957,11 +957,15 @@ class LLMAgent:
             return None
 
 # Convert PDF pages to PIL Images using PyMuPDF
-def pdf_to_image(pdf_path, dpi=300):
+def pdf_to_image(pdf_input, dpi=300):
     """
-    Convert all pages of a PDF to a list of PIL Image objects using PyMuPDF.
+    Convert all pages of a PDF (path or bytes) to a list of PIL Image objects using PyMuPDF.
     """
-    doc = fitz.open(pdf_path)
+    # 如果傳入的是 bytes 或 BytesIO，就用 stream 模式開啟
+    if isinstance(pdf_input, (bytes, BytesIO)):
+        doc = fitz.open(stream=pdf_input, filetype="pdf")
+    else:
+        doc = fitz.open(pdf_input)
     images = []
     # Calculate zoom factor to achieve desired DPI (default is 72)
     zoom = dpi / 72
