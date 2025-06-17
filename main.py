@@ -101,6 +101,49 @@ MISSING_CONFIRM = "這幾位還沒有按申報相符"
 # Names to look for in each group’s list
 VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲"}
 YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑"}
+YVES_NAMES = {
+    "梁穎琦",
+    "張詠凱",
+    "劉育伶",
+    "羅唯英",
+    "陳品茹",
+    "張碧蓮",
+    "吳政融",
+    "解瑋庭",
+    "洪君豪",
+    "洪芷翎",
+    "羅木癸",
+    "洪金珠",
+    "林憶慧",
+    "葉怡秀",
+    "葉詹明",
+    "廖聰毅",
+    "蔡英豪",
+    "魏媴蓁",
+    "黃淑芬",
+    "解佩頴",
+    "曹芷茜",
+    "王詠皓",
+    "曹亦芳",
+    "李慧芝",
+    "李錦祥",
+    "詹欣陵",
+    "陳志賢",
+    "曾惠玲",
+    "詹士逸",
+    "李白秀",
+    "陳聖玄",
+    "柯雅甄",
+    "游玉慧",
+    "游繼堯",
+    "鄭詠渝",
+    "鄭芸婷",
+    "游承哲",
+    "游傳杰",
+    "陳秀華",
+    "陳秀玲",
+    "陳恒楷"
+}
 EXCLUDED_SENDERS = {"Yves Lai", "Yves KT Lai", "Yves MM Lai", "Yumi Liu", "Vicky Ku"}
 
 # ─── Redis for state persistence ───────────────────────────────────────────────
@@ -816,52 +859,32 @@ def handle_ace_schedule(event):
     yumi_batch  = [c for c in cleaned if any(name in c for name in YUMI_NAMES )]
     # “others” = not in Vicky, not in Yumi, and not an excluded sender
     other_batch = [
-        c for c in cleaned
-        if c not in vicky_batch
-           and c not in yumi_batch
-           and all(exc not in c for exc in EXCLUDED_SENDERS)
+        cleaned[i] for i, nm in enumerate(names_only)
+        if nm not in VICKY_NAMES
+           and nm not in YUMI_NAMES
+           and nm not in YVES_NAMES
     ]    
 
     def push_to(group, batch, label):
         if not batch:
-            log.info(f"[ACE_SCHEDULE:{label}] batch empty, skipping")
+            # log.info(f"[ACE_SCHEDULE:{label}] batch empty, skipping")
             return
-        
-        # clean_batch = []
-        # for line in batch:
-            # stripped = line.strip().strip('"')  # remove leading/trailing whitespace and quotation marks
-            # if stripped:                   # skip empty / quote-only lines
-                # clean_batch.append(stripped)
-        
-        # message = []          # build the new message: header, blank line, names, blank line, footer
-        # message += header
-        # message += [""]       # blank line
-        # message += batch
-        # message += [""]       # blank line
-        # message += footer
-
-        # payload = {
-            # "to": group,
-            # "messages": [{"type":"text","text":"\n".join(message)}]
-        # }
-        # resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        # log.info(f"Pushed Ace summary to {group}: {resp.status_code}")
         
         # --- TEST MODE: just log the would-be message ---
         # rebuild the mini-message: header + blank + batch + blank + footer
         msg_lines = header + [""] + batch + [""] + footer
         final = "\n".join(msg_lines)
-        # real push to the group here
-        # requests.post(
-            # LINE_PUSH_URL,
-            # headers=LINE_HEADERS,
-            # json={"to": recipient, "messages":[{"type":"text","text":"\n".join(msg)}]}
-        # )
-        
         # —– LOG instead —–
-        log.info(f"[ACE_SCHEDULE:{label}] to {group}:\n{final}")
-
-    log.info(f"[ACE_SCHEDULE] vicky_batch={vicky_batch!r}, yumi_batch={yumi_batch!r}, others={other_batch!r}")
+        # log.info(f"[ACE_SCHEDULE:{label}] to {group}:\n{final}")
+        
+        # real push to the group here
+        requests.post(
+            LINE_PUSH_URL,
+            headers=LINE_HEADERS,
+            json={"to": group, "messages":[{"type":"text","text": body }]}
+        )
+    
+    # log.info(f"[ACE_SCHEDULE] vicky_batch={vicky_batch!r}, yumi_batch={yumi_batch!r}, others={other_batch!r}")
     push_to(VICKY_GROUP_ID, vicky_batch, label="VICKY")
     push_to(YUMI_GROUP_ID, yumi_batch,  label="YUMI")
     # your personal chat
