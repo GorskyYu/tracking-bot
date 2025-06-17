@@ -1061,19 +1061,66 @@ def webhook():
         if event.get("type") != "message":
             continue
     
-        # ←── 在這開始process pdf
-        msg = event["message"]
-        # if msg.get("type") == "file" and msg.get("fileName", "").lower().endswith(".pdf"):
-            # file_id = msg["id"]
-            # resp = requests.get(
-                # f"https://api-data.line.me/v2/bot/message/{file_id}/content",
-                # headers={"Authorization": f"Bearer {LINE_TOKEN}"},
-            # )
-            # if resp.status_code == 200:
-                # process_ups_pdf(resp.content)
-            # else:
-                # log.error(f"[WEBHOOK] 無法下載檔案 {file_id}，狀態碼 {resp.status_code}")
-            # return jsonify({}), 200
+        # ─── PDF OCR trigger (only for a specific group) ─────────────────────
+        if (
+            msg.get("type") == "file"
+            and msg.get("fileName", "").lower().endswith(".pdf")
+            and src.get("type") == "group"
+            and src.get("groupId") == "C1f77f5ef1fe48f4782574df449eac0cf"  # ← your group ID
+        ):
+            file_id = msg["id"]
+            try:
+                # 1) 下載 PDF 檔案
+                resp = requests.get(
+                    f"https://api-data.line.me/v2/bot/message/{file_id}/content",
+                    headers={"Authorization": f"Bearer {LINE_TOKEN}"},
+                )
+                resp.raise_for_status()
+
+                # 2) PDF 轉圖像
+                from pdf2image import convert_from_bytes
+                images = convert_from_bytes(resp.content, dpi=300)
+
+                # 3) 指定提取內容用的 prompt
+                prompt = """
+Task: Extract the following information from this shipping ticket
+- Sender name, phone, address (top-right corner)
+- Receiver post code (in SHIP TO section)
+- Reference Number after 'Reference No.1:'
+
+Response Format:
+{"sender": {"name": "", "phone": "", "address": ""}, "receiver": {"post_code": ""}, "reference number": ""}
+* Only output pure JSON. No explanation.
+"""
+
+                # 4) OCR + LLM 擷取文字
+                result = extract_text_from_images(images[0], prompt=prompt)
+
+                # 5) 回傳到同一個群組
+                requests.post(
+                    "https://api.line.me/v2/bot/message/push",
+                    headers=LINE_HEADERS,
+                    json={
+                        "to": "C1f77f5ef1fe48f4782574df449eac0cf",
+                        "messages": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]
+                    }
+                )
+                log.info(f"[PDF OCR] extracted → {result}")
+
+            except Exception as e:
+                log.error(f"[PDF OCR] Failed to process PDF: {e}", exc_info=True)
+                requests.post(
+                    "https://api.line.me/v2/bot/message/push",
+                    headers=LINE_HEADERS,
+                    json={
+                        "to": "C1f77f5ef1fe48f4782574df449eac0cf",
+                        "messages": [{"type": "text", "text": "⚠️ 無法處理 PDF，請確認格式或內容是否清晰"}]
+                    }
+                )
+
+            # 中止後續處理這個 event
+            return jsonify({}), 200
+
         # ←── 到這結束
     
         # 立刻抓 source / group_id
