@@ -1019,7 +1019,12 @@ def extract_text_from_images(image, prompt="Please extract text from this image.
 
     # Inference
     text = agent.inference(messages)
-    result = json.loads(text)
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        log.error(f"[PDF OCR] JSON parse failed, raw output → {text!r}")
+        # 回傳原始字串以便後續檢查
+        return {"_raw": text, "tracking number": tracking_number}
     result["tracking number"] = tracking_number
     return result
 
