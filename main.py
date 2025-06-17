@@ -942,8 +942,10 @@ def handle_ace_shipments(event):
 
 class LLMAgent:
     def __init__(self):
-        # Initialize OpenAI client
-        self.client = openai.Client(api_key=OPENAI_API_KEY)
+        # Initialize OpenAI client using env var
+        import os
+        api_key = os.getenv("OPENAI_API_KEY")
+        self.client = openai.Client(api_key=api_key)
 
     def inference(self, messages):
         try:
