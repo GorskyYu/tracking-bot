@@ -554,7 +554,7 @@ def handle_soquick_full_notification(event):
         )
 
     # 這行取消註解就不會推給 Vicky
-    # push_group(VICKY_GROUP_ID, vicky_batch)
+    push_group(VICKY_GROUP_ID, vicky_batch)
     push_group(YUMI_GROUP_ID,  yumi_batch)
 
     # ── Private “other” pushes ─────────────────────
@@ -618,9 +618,15 @@ def handle_soquick_full_notification(event):
 # ─── 新增：處理「申報相符」提醒 ─────────────────────────
 def handle_missing_confirm(event):
     text = event["message"]["text"]
+    
+    # 如果這是原始 EZ-Way 通知，就跳過
+    if "收到EZ way通知後" in text:
+        return
+    
     # 如果訊息裡沒有「申報相符」，就跳過
     if "申報相符" not in text:
         return
+        
     # 逐行找 ACE/250N 單號
     for l in text.splitlines():
         if CODE_TRIGGER_RE.search(l):
@@ -629,7 +635,14 @@ def handle_missing_confirm(event):
             if len(parts) < 2:
                 continue
             name = parts[1]
-            target = VICKY_GROUP_ID if name in VICKY_NAMES else YUMI_GROUP_ID
+            if name in VICKY_NAMES:
+                target = VICKY_GROUP_ID
+            elif name in YUMI_NAMES:
+                target = YUMI_GROUP_ID
+            else:
+                # 不是 Vicky 也不是 Yumi 的人，直接跳過
+                continue
+                
             # 推播姓名（你可以改成更完整的訊息）
             requests.post(
                 LINE_PUSH_URL,
@@ -801,36 +814,50 @@ def handle_ace_schedule(event):
     # now split into per-group lists
     vicky_batch = [c for c in cleaned if any(name in c for name in VICKY_NAMES)]
     yumi_batch  = [c for c in cleaned if any(name in c for name in YUMI_NAMES )]
+    # “others” = not in Vicky, not in Yumi, and not an excluded sender
+    other_batch = [
+        c for c in cleaned
+        if c not in vicky_batch
+           and c not in yumi_batch
+           and all(exc not in c for exc in EXCLUDED_SENDERS)
+    ]    
 
     def push_to(group, batch):
         if not batch:
             return
         
-        # first, strip out any pure-quote lines and remove quotes from the rest
-        clean_batch = []
         for line in batch:
             # remove leading/trailing whitespace and quotation marks
             stripped = line.strip().strip('"')
             if stripped:                   # skip empty / quote-only lines
                 clean_batch.append(stripped)
         
-        # build the new message: header, blank line, names, blank line, footer
-        message = []
-        message += header
-        message += [""]       # blank line
-        message += batch
-        message += [""]       # blank line
-        message += footer
+        # message = []          # build the new message: header, blank line, names, blank line, footer
+        # message += header
+        # message += [""]       # blank line
+        # message += batch
+        # message += [""]       # blank line
+        # message += footer
 
-        payload = {
-            "to": group,
-            "messages": [{"type":"text","text":"\n".join(message)}]
-        }
-        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Pushed Ace summary to {group}: {resp.status_code}")
+        # payload = {
+            # "to": group,
+            # "messages": [{"type":"text","text":"\n".join(message)}]
+        # }
+        # resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        # log.info(f"Pushed Ace summary to {group}: {resp.status_code}")
+        
+        # rebuild the mini-message: header + blank + batch + blank + footer
+        msg = header + [""] + batch + [""] + footer
+        requests.post(
+            LINE_PUSH_URL,
+            headers=LINE_HEADERS,
+            json={"to": recipient, "messages":[{"type":"text","text":"\n".join(msg)}]}
+        )
 
     push_to(VICKY_GROUP_ID, vicky_batch)
     push_to(YUMI_GROUP_ID,  yumi_batch)
+    # your personal chat
+    push_to(YVES_USER_ID,  other_batch)    
 
 # ─── Ace shipment-block handler ────────────────────────────────────────────────
 def handle_ace_shipments(event):
@@ -881,60 +908,60 @@ def handle_ace_shipments(event):
 import fitz  # PyMuPDF
 from PIL import Image
 
-def process_ups_pdf(pdf_bytes):
-    log.info(f"[UPS PDF] Called process_ups_pdf, bytes={len(pdf_bytes)}")
+# def process_ups_pdf(pdf_bytes):
+    # log.info(f"[UPS PDF] Called process_ups_pdf, bytes={len(pdf_bytes)}")
 
-    images = []
-    # 1. 嘗試用 poppler 轉成影像
-    try:
-        images = convert_from_bytes(pdf_bytes, dpi=200)
-        log.info(f"[UPS PDF] Poppler 轉換出 {len(images)} 張影像")
-    except Exception as e:
-        log.error(f"[UPS PDF] Poppler 轉換失敗: {e}")
+    # images = []
+    1. 嘗試用 poppler 轉成影像
+    # try:
+        # images = convert_from_bytes(pdf_bytes, dpi=200)
+        # log.info(f"[UPS PDF] Poppler 轉換出 {len(images)} 張影像")
+    # except Exception as e:
+        # log.error(f"[UPS PDF] Poppler 轉換失敗: {e}")
 
-    # 2. 如果 poppler 沒成功，再用 PyMuPDF 轉
-    if not images:
-        try:
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            imgs = []
-            for page in doc:
-                pix = page.get_pixmap()
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                imgs.append(img)
-            images = imgs
-            log.info(f"[UPS PDF] PyMuPDF 轉換出 {len(images)} 張影像")
-        except Exception as e:
-            log.error(f"[UPS PDF] PyMuPDF 轉換失敗: {e}")
+    2. 如果 poppler 沒成功，再用 PyMuPDF 轉
+    # if not images:
+        # try:
+            # doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            # imgs = []
+            # for page in doc:
+                # pix = page.get_pixmap()
+                # img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                # imgs.append(img)
+            # images = imgs
+            # log.info(f"[UPS PDF] PyMuPDF 轉換出 {len(images)} 張影像")
+        # except Exception as e:
+            # log.error(f"[UPS PDF] PyMuPDF 轉換失敗: {e}")
 
-    # 3. 條碼掃描
-    for page_num, img in enumerate(images, start=1):
-        symbols = decode(img, symbols=[ZBarSymbol.CODE128, ZBarSymbol.QRCODE])
-        log.info(f"[UPS PDF] Page {page_num} 找到 {len(symbols)} 個條碼")
-        for symbol in symbols:
-            data = symbol.data.decode('utf-8', errors='ignore')
-            log.info(f"[UPS PDF] Page {page_num} 條碼內容：{data}")
+    3. 條碼掃描
+    # for page_num, img in enumerate(images, start=1):
+        # symbols = decode(img, symbols=[ZBarSymbol.CODE128, ZBarSymbol.QRCODE])
+        # log.info(f"[UPS PDF] Page {page_num} 找到 {len(symbols)} 個條碼")
+        # for symbol in symbols:
+            # data = symbol.data.decode('utf-8', errors='ignore')
+            # log.info(f"[UPS PDF] Page {page_num} 條碼內容：{data}")
 
-    # 4. 文字解析 shipper & receiver 資訊
-    full_text = ""
-    try:
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-        pages_text = [page.extract_text() or "" for page in reader.pages]
-        full_text = "\n".join(pages_text)
-        log.info(f"[UPS PDF] 擷取文字長度：{len(full_text)}")
-    except Exception as e:
-        log.error(f"[UPS PDF] PdfReader 擷取文字失敗: {e}")
+    4. 文字解析 shipper & receiver 資訊
+    # full_text = ""
+    # try:
+        # reader = PdfReader(io.BytesIO(pdf_bytes))
+        # pages_text = [page.extract_text() or "" for page in reader.pages]
+        # full_text = "\n".join(pages_text)
+        # log.info(f"[UPS PDF] 擷取文字長度：{len(full_text)}")
+    # except Exception as e:
+        # log.error(f"[UPS PDF] PdfReader 擷取文字失敗: {e}")
 
-    # 簡單匹配示例
-    if full_text:
-        shipper_match = re.search(r"Shipper[\s\S]*?Consignee", full_text)
-        if shipper_match:
-            shipper_info = shipper_match.group(0).strip()
-            log.info(f"[UPS PDF] Shipper 資訊：\n{shipper_info}")
+    簡單匹配示例
+    # if full_text:
+        # shipper_match = re.search(r"Shipper[\s\S]*?Consignee", full_text)
+        # if shipper_match:
+            # shipper_info = shipper_match.group(0).strip()
+            # log.info(f"[UPS PDF] Shipper 資訊：\n{shipper_info}")
 
-        receiver_match = re.search(r"Consignee[\s\S]*?(?:\n\n|$)", full_text)
-        if receiver_match:
-            receiver_info = receiver_match.group(0).strip()
-            log.info(f"[UPS PDF] Consignee 資訊：\n{receiver_info}")
+        # receiver_match = re.search(r"Consignee[\s\S]*?(?:\n\n|$)", full_text)
+        # if receiver_match:
+            # receiver_info = receiver_match.group(0).strip()
+            # log.info(f"[UPS PDF] Consignee 資訊：\n{receiver_info}")
 
 # ─── Flask Webhook ────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -959,17 +986,17 @@ def webhook():
     
         # ←── 在這開始process pdf
         msg = event["message"]
-        if msg.get("type") == "file" and msg.get("fileName", "").lower().endswith(".pdf"):
-            file_id = msg["id"]
-            resp = requests.get(
-                f"https://api-data.line.me/v2/bot/message/{file_id}/content",
-                headers={"Authorization": f"Bearer {LINE_TOKEN}"},
-            )
-            if resp.status_code == 200:
-                process_ups_pdf(resp.content)
-            else:
-                log.error(f"[WEBHOOK] 無法下載檔案 {file_id}，狀態碼 {resp.status_code}")
-            return jsonify({}), 200
+        # if msg.get("type") == "file" and msg.get("fileName", "").lower().endswith(".pdf"):
+            # file_id = msg["id"]
+            # resp = requests.get(
+                # f"https://api-data.line.me/v2/bot/message/{file_id}/content",
+                # headers={"Authorization": f"Bearer {LINE_TOKEN}"},
+            # )
+            # if resp.status_code == 200:
+                # process_ups_pdf(resp.content)
+            # else:
+                # log.error(f"[WEBHOOK] 無法下載檔案 {file_id}，狀態碼 {resp.status_code}")
+            # return jsonify({}), 200
         # ←── 到這結束
     
         # 立刻抓 source / group_id
@@ -1214,11 +1241,12 @@ def webhook():
         if mtype != "text":
             continue
         
-        # ——— 處理「申報相符」提醒 ———
-        if "申報相符" in text and CODE_TRIGGER_RE.search(text):
-            handle_missing_confirm(event)
+        # ─── ① Ace schedule (週四／週日出貨) ───────────────────────────────
+        if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
+            handle_ace_schedule(event)
             continue
-        
+
+        # ─── ② ACE EZ-Way check (your existing sender-lookup) ─────────────
         if group_id == ACE_GROUP_ID:
             handle_ace_ezway_check_and_push(event)
             continue
