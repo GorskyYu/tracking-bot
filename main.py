@@ -22,14 +22,18 @@ from collections import defaultdict
 import threading
 
 import io
+from io import BytesIO
 from PIL import Image, ImageFilter
 from pyzbar.pyzbar import decode, ZBarSymbol
 from pdf2image import convert_from_bytes  # 新增：將 PDF 頁面轉為影像供條碼掃描
 from PyPDF2 import PdfReader  # 新增：解析 PDF 文字內容
+import fitz  # PyMuPDF
 
 from datetime import datetime
 import pytz
 
+# Requires:
+# pip install pymupdf pillow openai
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
 
@@ -175,6 +179,7 @@ LINE_HEADERS = {
 
 # ─── ADDED: Configure OpenAI API key ───────────────────────────────────────────
 openai.api_key = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # keep an in-memory buffer of successfully updated tracking IDs per group
 _pending = defaultdict(list)
@@ -935,64 +940,105 @@ def handle_ace_shipments(event):
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID,  yumi)
 
-# ─── 新增：PDF 處理函式 (置於 Flask webhook 之前) ─────────────────────────────────────
-import fitz  # PyMuPDF
-from PIL import Image
+class LLMAgent:
+    def __init__(self):
+        # Initialize OpenAI client
+        self.client = openai.Client(api_key=OPENAI_API_KEY)
 
-# def process_ups_pdf(pdf_bytes):
-    # log.info(f"[UPS PDF] Called process_ups_pdf, bytes={len(pdf_bytes)}")
+    def inference(self, messages):
+        try:
+            response = self.client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Error during inference: {e}")
+            return None
 
-    # images = []
-    ##1. 嘗試用 poppler 轉成影像
-    # try:
-        # images = convert_from_bytes(pdf_bytes, dpi=200)
-        # log.info(f"[UPS PDF] Poppler 轉換出 {len(images)} 張影像")
-    # except Exception as e:
-        # log.error(f"[UPS PDF] Poppler 轉換失敗: {e}")
+# Convert PDF pages to PIL Images using PyMuPDF
+def pdf_to_image(pdf_path, dpi=300):
+    """
+    Convert all pages of a PDF to a list of PIL Image objects using PyMuPDF.
+    """
+    doc = fitz.open(pdf_path)
+    images = []
+    # Calculate zoom factor to achieve desired DPI (default is 72)
+    zoom = dpi / 72
+    matrix = fitz.Matrix(zoom, zoom)
 
-    ##2. 如果 poppler 沒成功，再用 PyMuPDF 轉
-    # if not images:
-        # try:
-            # doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            # imgs = []
-            # for page in doc:
-                # pix = page.get_pixmap()
-                # img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                # imgs.append(img)
-            # images = imgs
-            # log.info(f"[UPS PDF] PyMuPDF 轉換出 {len(images)} 張影像")
-        # except Exception as e:
-            # log.error(f"[UPS PDF] PyMuPDF 轉換失敗: {e}")
+    for page in doc:
+        pix = page.get_pixmap(matrix=matrix)
+        img = Image.frombytes(
+            "RGB",
+            [pix.width, pix.height],
+            pix.samples
+        )
+        return img
 
-    ##3. 條碼掃描
-    # for page_num, img in enumerate(images, start=1):
-        # symbols = decode(img, symbols=[ZBarSymbol.CODE128, ZBarSymbol.QRCODE])
-        # log.info(f"[UPS PDF] Page {page_num} 找到 {len(symbols)} 個條碼")
-        # for symbol in symbols:
-            # data = symbol.data.decode('utf-8', errors='ignore')
-            # log.info(f"[UPS PDF] Page {page_num} 條碼內容：{data}")
+# Extract text from images using the OpenAI API
+def extract_text_from_images(image, prompt="Please extract text from this image."):
+    """
+    Sends each image to the LLM via base64-encoded data URI and returns a list of responses.
+    Also saves each temporary image to disk under temp_images/.
+    """
+    agent = LLMAgent()
+    
+    # Corp second bar code for tracking number
+    x, y, w, h = 120, 995, 750, 260
+    cropped_img = image.crop((x, y, x + w, y + h))        
+    decoded_objects = decode(cropped_img)
+    tracking_number = decoded_objects[0].data.decode('utf-8')
 
-    ##4. 文字解析 shipper & receiver 資訊
-    # full_text = ""
-    # try:
-        # reader = PdfReader(io.BytesIO(pdf_bytes))
-        # pages_text = [page.extract_text() or "" for page in reader.pages]
-        # full_text = "\n".join(pages_text)
-        # log.info(f"[UPS PDF] 擷取文字長度：{len(full_text)}")
-    # except Exception as e:
-        # log.error(f"[UPS PDF] PdfReader 擷取文字失敗: {e}")
+    # Serialize image to JPEG bytes
+    buf = BytesIO()
+    image.save(buf, format="JPEG")
+    img_bytes = buf.getvalue()
+    buf.close()
 
-    ##簡單匹配示例
-    # if full_text:
-        # shipper_match = re.search(r"Shipper[\s\S]*?Consignee", full_text)
-        # if shipper_match:
-            # shipper_info = shipper_match.group(0).strip()
-            # log.info(f"[UPS PDF] Shipper 資訊：\n{shipper_info}")
+    # Base64 encode
+    b64 = base64.b64encode(img_bytes).decode("utf-8")
+    data_uri = f"data:image/jpeg;base64,{b64}"
 
-        # receiver_match = re.search(r"Consignee[\s\S]*?(?:\n\n|$)", full_text)
-        # if receiver_match:
-            # receiver_info = receiver_match.group(0).strip()
-            # log.info(f"[UPS PDF] Consignee 資訊：\n{receiver_info}")
+    # Build chat payload
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_uri}},
+            ],
+        }
+    ]
+
+    # Inference
+    text = agent.inference(messages)
+    result = json.loads(text)
+    result["tracking number"] = tracking_number
+    return result
+
+# CLI entrypoint
+def main():
+    pdf_path = "U110252577.pdf"
+    dpi = 300
+    prompt = """
+Task: Extract the following information from this shipping ticket
+- Information of Sender on the `top-right corner`:
+  - name
+  - phone
+  - address
+- Information of Receiver in the `SHIP TO` section
+  - post code(format `SNS NSN`, N stand for number and S stand for english character)
+- Reference Number at the bottom after `Reference No.1:`
+  - reference number
+Response Format: {"sender": {"name": "", "phone": "", "address": ""}, "receiver": {"post_code": ""}, "reference number": ""}
+* Do not include any extra text, explanation, or JSON outside of this format.
+"""
+
+    # Convert and extract
+    images = pdf_to_image(pdf_path, dpi=dpi)
+    text = extract_text_from_images(images, prompt=prompt)
+    print(text)
 
 # ─── Flask Webhook ────────────────────────────────────────────────────────────
 app = Flask(__name__)
