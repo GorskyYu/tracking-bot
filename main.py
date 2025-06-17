@@ -848,6 +848,7 @@ def handle_ace_schedule(event):
         
         # rebuild the mini-message: header + blank + batch + blank + footer
         msg = header + [""] + batch + [""] + footer
+        final = "\n".join(msg_lines)
         # real push to the group here
         # requests.post(
             # LINE_PUSH_URL,
@@ -856,7 +857,7 @@ def handle_ace_schedule(event):
         # )
         
         # —– LOG instead —–
-        print(f"[ACE_SCHEDULE] to {recipient}:\n{final}")
+        print(f"[ACE_SCHEDULE] to {group}:\n{final}")
 
     push_to(VICKY_GROUP_ID, vicky_batch)
     push_to(YUMI_GROUP_ID,  yumi_batch)
