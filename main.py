@@ -860,6 +860,7 @@ def handle_ace_schedule(event):
         # —– LOG instead —–
         print(f"[ACE_SCHEDULE] to {group}:\n{final}")
 
+    log.info(f"[ACE_SCHEDULE] vicky_batch={vicky_batch!r}, yumi_batch={yumi_batch!r}, others={other_batch!r}")
     push_to(VICKY_GROUP_ID, vicky_batch)
     push_to(YUMI_GROUP_ID,  yumi_batch)
     # your personal chat
