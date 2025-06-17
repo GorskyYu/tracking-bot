@@ -822,8 +822,9 @@ def handle_ace_schedule(event):
            and all(exc not in c for exc in EXCLUDED_SENDERS)
     ]    
 
-    def push_to(group, batch):
+    def push_to(group, batch, label):
         if not batch:
+            log.info(f"[ACE_SCHEDULE:{label}] batch empty, skipping")
             return
         
         # clean_batch = []
@@ -858,13 +859,13 @@ def handle_ace_schedule(event):
         # )
         
         # —– LOG instead —–
-        print(f"[ACE_SCHEDULE] to {group}:\n{final}")
+        log.info(f"[ACE_SCHEDULE:{label}] to {group}:\n{final}")
 
     log.info(f"[ACE_SCHEDULE] vicky_batch={vicky_batch!r}, yumi_batch={yumi_batch!r}, others={other_batch!r}")
-    push_to(VICKY_GROUP_ID, vicky_batch)
-    push_to(YUMI_GROUP_ID,  yumi_batch)
+    push_to(VICKY_GROUP_ID, vicky_batch, label="VICKY")
+    push_to(YUMI_GROUP_ID, yumi_batch,  label="YUMI")
     # your personal chat
-    push_to(YVES_USER_ID,  other_batch)    
+    push_to(YVES_USER_ID, other_batch,  label="OTHERS")    
 
 # ─── Ace shipment-block handler ────────────────────────────────────────────────
 def handle_ace_shipments(event):
