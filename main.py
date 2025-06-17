@@ -1060,6 +1060,13 @@ def webhook():
         # ignore non‐message events (eg. unsend)
         if event.get("type") != "message":
             continue
+            
+        # 立刻抓 source / group_id
+        src = event["source"]
+        group_id = src.get("groupId")
+        msg      = event["message"]
+        text     = msg.get("text", "").strip()
+        mtype    = msg.get("type")
     
         # ─── PDF OCR trigger (only for a specific group) ─────────────────────
         if (
@@ -1122,13 +1129,6 @@ Response Format:
             return jsonify({}), 200
 
         # ←── 到這結束
-    
-        # 立刻抓 source / group_id
-        src = event["source"]
-        group_id = src.get("groupId")
-        msg      = event["message"]
-        text     = msg.get("text", "").strip()
-        mtype    = msg.get("type")
         
         # ─── If image, run ONLY the barcode logic and then continue ──────────
         if mtype == "image":
