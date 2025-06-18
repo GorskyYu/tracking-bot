@@ -1137,10 +1137,6 @@ def webhook():
                 full_data["all_tracking_numbers"] = sorted(dict.fromkeys(tracking_numbers))
                 log.info(f"[PDF OCR] final data → {full_data}")                        
 
-                # 取第一頁（或依需求過濾最完整的結果）
-                page, result = all_results[0]
-                log.info(f"[PDF OCR] took page {page} → {result}")
-
                 # 4) 合併結果
                 full_data["all_tracking_numbers"] = sorted(dict.fromkeys(tracking_numbers))
 
