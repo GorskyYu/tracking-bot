@@ -1037,13 +1037,13 @@ Task: Extract the following information from this shipping ticket
 - Information of Sender on the `top-right corner`:
   - name
   - phone
-  - client ID
+  - client ID (the text on the third line between phone and address)
   - address
 - Information of Receiver in the `SHIP TO` section
-  - post code(format `SNS NSN`, N stand for number and S stand for english character)
+  - postal code(format `SNS NSN`, N stand for number and S stand for english character)
 - Reference Number at the bottom after `Reference No.1:`
   - reference number
-Response Format: {"sender": {"name": "", "phone": "", "address": ""}, "client_id": "", "receiver": {"post_code": ""}, "reference number": ""}
+Response Format: {"sender": {"name": "", "phone": "", "client_id": "", "address": ""}, "receiver": {"postal_code": ""}, "reference number": ""}
 * Do not include any extra text, explanation, or JSON outside of this format.
 """
 
