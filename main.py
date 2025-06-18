@@ -1124,6 +1124,16 @@ def webhook():
                         if idx == 1:
                             # 第1頁：抽全部欄位
                             full_data = extract_text_from_images(img, prompt=OCR_SHIPPING_PROMPT)
+                            # 如果回傳 key 是 "tracking number"，改成下劃線
+                            if "tracking number" in full_data:
+                                full_data["tracking_number"] = full_data.pop("tracking number")
+                            # 將第一頁的 tracking 也加入列表
+                            first_tn = full_data.get("tracking_number")
+                            if first_tn:
+                                tracking_numbers.append(first_tn)
+                            # 同理處理 reference number
+                            if "reference number" in full_data:
+                                full_data["reference_number"] = full_data.pop("reference number")
                         else:
                             # 後續頁：只抽 tracking_number
                             res = extract_text_from_images(img, prompt=TRACKING_PROMPT)
@@ -1136,9 +1146,6 @@ def webhook():
                 # 合併並去重所有 tracking numbers
                 full_data["all_tracking_numbers"] = sorted(dict.fromkeys(tracking_numbers))
                 log.info(f"[PDF OCR] final data → {full_data}")                        
-
-                # 4) 合併結果
-                full_data["all_tracking_numbers"] = sorted(dict.fromkeys(tracking_numbers))
 
                 # 5) 回傳同群組
                 requests.post(
