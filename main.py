@@ -1171,58 +1171,58 @@ def webhook():
                 # )
                 log.info(f"[PDF OCR] extracted → {full_data}")
                 
-            # ─── 6) Sheet 更新：以 reference_number 當作 Timestamp 搜尋，寫入追蹤碼 & 檢查 ABB ID
-            ref_str = full_data.get("reference_number", "").strip()
-            try:
-                # 確認是合法 timestamp
-                ts = parse_date(ref_str)
-            except Exception:
-                log.error(f"[PDF OCR] reference_number '{ref_str}' is not a valid timestamp, abort sheet update.")
-            else:
-                # 開啟試算表與 Tracking 試算表頁籤
-                SHEET_ID = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
-                WS_TITLE = "Tracking"
-                ss = gs.open_by_key(SHEET_ID)
-                ws = ss.worksheet(WS_TITLE)
-                # 在 A 欄找比對
-                values = ws.col_values(1)
-                row_idx = next((i for i,v in enumerate(values, start=1) if v.strip()==ref_str), None)
-                if not row_idx:
-                    log.error(f"[PDF OCR] timestamp '{ref_str}' not found in sheet, abort sheet update.")
+                # ─── 6) Sheet 更新：以 reference_number 當作 Timestamp 搜尋，寫入追蹤碼 & 檢查 ABB ID
+                ref_str = full_data.get("reference_number", "").strip()
+                try:
+                    # 確認是合法 timestamp
+                    ts = parse_date(ref_str)
+                except Exception:
+                    log.error(f"[PDF OCR] reference_number '{ref_str}' is not a valid timestamp, abort sheet update.")
                 else:
-                    # 填追蹤碼到 S(19), T(20), U(21)
-                    for i, tn in enumerate(full_data.get("all_tracking_numbers", []), start=1):
-                        if i>3: break
-                        ws.update_cell(row_idx, 18+i, tn)
-                    # 檢查 ABB會員帳號 (F=6)
-                    sheet_abb = (ws.cell(row_idx,6).value or "").strip().lower()
-                    client_id = full_data.get("client_id","").strip().lower()
-                    if sheet_abb != client_id:
-                        log.error(f"[PDF OCR] ABB會員帳號 mismatch: sheet='{sheet_abb}', pdf='{client_id}'")
-                        # 標示剛填的 S～U 欄為紅底
-                        import googleapiclient.discovery
-                        sheets_srv = googleapiclient.discovery.build("sheets","v4",credentials=creds)
-                        sheet_gid = ws._properties["sheetId"]
-                        reqs = [{
-                            "repeatCell": {
-                                "range": {
-                                    "sheetId": sheet_gid,
-                                    "startRowIndex": row_idx-1,
-                                    "endRowIndex":   row_idx,
-                                    "startColumnIndex": 18,
-                                    "endColumnIndex":   21
-                                },
-                                "cell": {
-                                    "userEnteredFormat": {
-                                        "backgroundColor": {"red":1, "green":0.8, "blue":0.8}
-                                    }
-                                },
-                                "fields": "userEnteredFormat.backgroundColor"
-                            }
-                        }]
-                        sheets_srv.spreadsheets().batchUpdate(
-                            spreadsheetId=SHEET_ID, body={"requests": reqs}
-                        ).execute()
+                    # 開啟試算表與 Tracking 試算表頁籤
+                    SHEET_ID = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
+                    WS_TITLE = "Tracking"
+                    ss = gs.open_by_key(SHEET_ID)
+                    ws = ss.worksheet(WS_TITLE)
+                    # 在 A 欄找比對
+                    values = ws.col_values(1)
+                    row_idx = next((i for i,v in enumerate(values, start=1) if v.strip()==ref_str), None)
+                    if not row_idx:
+                        log.error(f"[PDF OCR] timestamp '{ref_str}' not found in sheet, abort sheet update.")
+                    else:
+                        # 填追蹤碼到 S(19), T(20), U(21)
+                        for i, tn in enumerate(full_data.get("all_tracking_numbers", []), start=1):
+                            if i>3: break
+                            ws.update_cell(row_idx, 18+i, tn)
+                        # 檢查 ABB會員帳號 (F=6)
+                        sheet_abb = (ws.cell(row_idx,6).value or "").strip().lower()
+                        client_id = full_data.get("client_id","").strip().lower()
+                        if sheet_abb != client_id:
+                            log.error(f"[PDF OCR] ABB會員帳號 mismatch: sheet='{sheet_abb}', pdf='{client_id}'")
+                            # 標示剛填的 S～U 欄為紅底
+                            import googleapiclient.discovery
+                            sheets_srv = googleapiclient.discovery.build("sheets","v4",credentials=creds)
+                            sheet_gid = ws._properties["sheetId"]
+                            reqs = [{
+                                "repeatCell": {
+                                    "range": {
+                                        "sheetId": sheet_gid,
+                                        "startRowIndex": row_idx-1,
+                                        "endRowIndex":   row_idx,
+                                        "startColumnIndex": 18,
+                                        "endColumnIndex":   21
+                                    },
+                                    "cell": {
+                                        "userEnteredFormat": {
+                                            "backgroundColor": {"red":1, "green":0.8, "blue":0.8}
+                                        }
+                                    },
+                                    "fields": "userEnteredFormat.backgroundColor"
+                                }
+                            }]
+                            sheets_srv.spreadsheets().batchUpdate(
+                                spreadsheetId=SHEET_ID, body={"requests": reqs}
+                            ).execute()
 
             except Exception as e:
                 log.error(f"[PDF OCR] Failed to process PDF: {e}", exc_info=True)
