@@ -1132,9 +1132,9 @@ def webhook():
                             if "tracking number" in full_data:
                                 full_data["tracking_number"] = full_data.pop("tracking number")
                             # 將第一頁的 tracking 也加入列表
-                            first_tn = full_data.get("tracking_number")
-                            if first_tn:
-                                tracking_numbers.append(first_tn)
+                            tn = full_data.get("tracking_number")
+                            if tn:
+                                tracking_numbers.append(tn)
                             # 同理處理 reference number
                             if "reference number" in full_data:
                                 full_data["reference_number"] = full_data.pop("reference number")
@@ -1142,6 +1142,12 @@ def webhook():
                             # 後續頁：只抽 tracking_number
                             res = extract_text_from_images(img, prompt=TRACKING_PROMPT)
                             tn = res.get("tracking_number")
+                            if not tn and "_raw" in res:
+                                # e.g. res["_raw"] == '```json\n{"tracking_number": "1Z HF0 ..."}\n```'
+                                raw = res["_raw"]
+                                m = re.search(r"(1Z[\sA-Za-z0-9]+)", raw)
+                                if m:
+                                    tn = m.group(1).replace(" ", "")
                             if tn:
                                 tracking_numbers.append(tn)
                     except Exception as e:
