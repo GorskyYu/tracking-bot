@@ -1199,7 +1199,7 @@ def webhook():
                                 headers=LINE_HEADERS,
                                 json={
                                     "to": "C1f77f5ef1fe48f4782574df449eac0cf",
-                                    "messages": [{"type": "text", "text": "已上傳上傳到Tracking Tab"}]
+                                    "messages": [{"type": "text", "text": "已上傳到Tracking Tab"}]
                                 }
                             )                            
                         # 檢查 ABB會員帳號 (F=6)
