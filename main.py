@@ -35,7 +35,7 @@ import pytz
 # Requires:
 # pip install pymupdf pillow openai
 
-SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly","https://www.googleapis.com/auth/drive.metadata.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
 
 # load your Google service account credentials from the env var
 GA_SVC_INFO = json.loads(os.environ["GOOGLE_SVCKEY_JSON"])
