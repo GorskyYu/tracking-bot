@@ -1200,29 +1200,12 @@ def webhook():
                         if sheet_abb != client_id:
                             log.error(f"[PDF OCR] ABB會員帳號 mismatch: sheet='{sheet_abb}', pdf='{client_id}'")
                             # 標示剛填的 S～U 欄為紅底
-                            import googleapiclient.discovery
-                            sheets_srv = googleapiclient.discovery.build("sheets","v4",credentials=creds)
-                            sheet_gid = ws._properties["sheetId"]
-                            reqs = [{
-                                "repeatCell": {
-                                    "range": {
-                                        "sheetId": sheet_gid,
-                                        "startRowIndex": row_idx-1,
-                                        "endRowIndex":   row_idx,
-                                        "startColumnIndex": 18,
-                                        "endColumnIndex":   21
-                                    },
-                                    "cell": {
-                                        "userEnteredFormat": {
-                                            "backgroundColor": {"red":1, "green":0.8, "blue":0.8}
-                                        }
-                                    },
-                                    "fields": "userEnteredFormat.backgroundColor"
-                                }
-                            }]
-                            sheets_srv.spreadsheets().batchUpdate(
-                                spreadsheetId=SHEET_ID, body={"requests": reqs}
-                            ).execute()
+                            # 用 gspread 直接格式化 S~U 這一行
+                            range_str = f"S{row_idx}:U{row_idx}"
+                            fmt = {
+                                "backgroundColor": {"red": 1, "green": 0.8, "blue": 0.8}
+                            }
+                            ws.format(range_str, fmt)
 
             except Exception as e:
                 log.error(f"[PDF OCR] Failed to process PDF: {e}", exc_info=True)
