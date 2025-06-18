@@ -1005,7 +1005,10 @@ def pdf_to_image(pdf_input, dpi=300):
             [pix.width, pix.height],
             pix.samples
         )
-        return images
+        images.append(img)
+        
+    # 走完所有頁後一次回傳完整列表
+    return images  
 
 # Extract text from images using the OpenAI API
 def extract_text_from_images(image, prompt="Please extract text from this image."):
