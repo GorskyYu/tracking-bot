@@ -1197,15 +1197,12 @@ def webhook():
                         # 檢查 ABB會員帳號 (F=6)
                         sheet_abb = (ws.cell(row_idx,6).value or "").strip().lower()
                         client_id = full_data.get("client_id","").strip().lower()
-                        if sheet_abb != client_id:
-                            log.error(f"[PDF OCR] ABB會員帳號 mismatch: sheet='{sheet_abb}', pdf='{client_id}'")
-                            # 標示剛填的 S～U 欄為紅底
-                            # 用 gspread 直接格式化 S~U 這一行
-                            range_str = f"S{row_idx}:U{row_idx}"
-                            fmt = {
-                                "backgroundColor": {"red": 1, "green": 0.8, "blue": 0.8}
-                            }
-                            ws.format(range_str, fmt)
+                        # 只高亮 F<row_idx> 這個儲存格
+                        cell = f"F{row_idx}"
+                        fmt = {
+                            "backgroundColor": {"red": 1, "green": 0.8, "blue": 0.8}
+                        }
+                        ws.format(cell, fmt)
 
             except Exception as e:
                 log.error(f"[PDF OCR] Failed to process PDF: {e}", exc_info=True)
