@@ -1152,7 +1152,7 @@ def webhook():
                         }]
                     }
                 )
-                log.info(f"[PDF OCR] extracted → {result}")
+                log.info(f"[PDF OCR] extracted → {full_data}")
 
             except Exception as e:
                 log.error(f"[PDF OCR] Failed to process PDF: {e}", exc_info=True)
