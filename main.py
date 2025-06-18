@@ -1462,20 +1462,6 @@ def webhook():
         # Only handle text messages
         if mtype != "text":
             continue
-        
-        # ─── ① Ace schedule (週四／週日出貨) ───────────────────────────────
-        if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
-            handle_ace_schedule(event)
-            continue
-
-        # ─── ② ACE EZ-Way check (your existing sender-lookup) ─────────────
-        if group_id == ACE_GROUP_ID:
-            handle_ace_ezway_check_and_push(event)
-            continue
-            
-        if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
-            handle_ace_schedule(event)
-            continue
 
         # <<<< INSERT: size/weight parser for pending subitem >>>>>>
         pending_key = f"last_subitem_for_{group_id}"
@@ -1570,7 +1556,16 @@ def webhook():
             # whether dims or weight or both, log final
             log.info(f"Finished size/weight sync for subitem {sub_id}: dims={dims_norm!r}, weight={weight_kg!r}")
             continue
+        
+        # ─── ① Ace schedule (週四／週日出貨) ───────────────────────────────
+        if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
+            handle_ace_schedule(event)
+            continue
 
+        # ─── ② ACE EZ-Way check (your existing sender-lookup) ─────────────
+        if group_id == ACE_GROUP_ID:
+            handle_ace_ezway_check_and_push(event)
+            continue
         
         # ——— New: Richmond-arrival triggers content-request to Vicky —————————
         if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
