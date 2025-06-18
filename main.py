@@ -1194,6 +1194,14 @@ def webhook():
                         for i, tn in enumerate(full_data.get("all_tracking_numbers", []), start=1):
                             if i>3: break
                             ws.update_cell(row_idx, 18+i, tn)
+                            requests.post(
+                                "https://api.line.me/v2/bot/message/push",
+                                headers=LINE_HEADERS,
+                                json={
+                                    "to": "C1f77f5ef1fe48f4782574df449eac0cf",
+                                    "messages": [{"type": "text", "text": "已上傳上傳到Tracking Tab"}]
+                                }
+                            )                            
                         # 檢查 ABB會員帳號 (F=6)
                         sheet_abb = (ws.cell(row_idx,6).value or "").strip().lower()
                         client_id = full_data.get("client_id","").strip().lower()
