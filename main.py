@@ -1034,15 +1034,9 @@ def main():
     dpi = 300
     prompt = """
 Task: Extract the following information from this shipping ticket
-- Information of Sender on the `top-right corner`:
-  - name
-  - phone
-  - client ID (the text on the third line between phone and address)
-  - address
-- Information of Receiver in the `SHIP TO` section
-  - postal code(format `SNS NSN`, N stand for number and S stand for english character)
-- Reference Number at the bottom after `Reference No.1:`
-  - reference number
+1) Sender name, phone, client ID (the text on the third line between phone and address), address — all from the top-right corner
+2) Receiver postal code (format SNS NSN) — from the SHIP TO section
+3) Reference Number (the value after 'Reference No.1:' at the bottom)
 Response Format: {"sender": {"name": "", "phone": "", "client_id": "", "address": ""}, "receiver": {"postal_code": ""}, "reference number": ""}
 * Do not include any extra text, explanation, or JSON outside of this format.
 """
