@@ -181,6 +181,21 @@ LINE_HEADERS = {
 openai.api_key = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+OCR_SHIPPING_PROMPT = """
+Task: Extract the following information from this shipping ticket
+- Information of Sender on the `top-right corner`:
+  - name
+  - phone
+  - client ID (the text on the third line between phone and address)
+  - address
+- Information of Receiver in the `SHIP TO` section
+  - postal code(format `SNS NSN`, N stand for number and S stand for english character)
+- Reference Number at the bottom after `Reference No.1:`
+  - reference number
+Response Format: {"sender": {"name": "", "phone": "", "client_id": "", "address": ""}, "receiver": {"postal_code": ""}, "reference number": ""}
+* Do not include any extra text, explanation, or JSON outside of this format.
+"""
+
 # keep an in-memory buffer of successfully updated tracking IDs per group
 _pending = defaultdict(list)
 _scheduled = set()
@@ -1032,14 +1047,7 @@ def extract_text_from_images(image, prompt="Please extract text from this image.
 def main():
     pdf_path = "U110252577.pdf"
     dpi = 300
-    prompt = """
-Task: Extract the following information from this shipping ticket
-1) Sender name, phone, client ID (the text on the third line between phone and address), address — all from the top-right corner
-2) Receiver postal code (format SNS NSN) — from the SHIP TO section
-3) Reference Number (the value after 'Reference No.1:' at the bottom)
-Response Format: {"sender": {"name": "", "phone": "", "client_id": "", "address": ""}, "receiver": {"postal_code": ""}, "reference number": ""}
-* Do not include any extra text, explanation, or JSON outside of this format.
-"""
+    prompt = OCR_SHIPPING_PROMPT
 
     # Convert and extract
     images = pdf_to_image(pdf_path, dpi=dpi)
@@ -1099,16 +1107,7 @@ def webhook():
                     images = [ pdf_to_image(BytesIO(resp.content), dpi=300) ]
 
                 # 3) 指定提取內容用的 prompt
-                prompt = """
-Task: Extract the following information from this shipping ticket
-- Sender name, phone, address (top-right corner)
-- Receiver post code (in SHIP TO section)
-- Reference Number after 'Reference No.1:'
-
-Response Format:
-{"sender": {"name": "", "phone": "", "address": ""}, "receiver": {"post_code": ""}, "reference number": ""}
-* Only output pure JSON. No explanation.
-"""
+                prompt = OCR_SHIPPING_PROMPT
 
                 # 4) OCR + LLM 擷取文字
                 result = extract_text_from_images(images[0], prompt=prompt)
