@@ -1098,13 +1098,27 @@ def webhook():
                 )
                 resp.raise_for_status()
 
-                # 2) PDF 轉圖像
+                # 2) PDF 轉圖像，拿到所有頁面
                 from pdf2image import convert_from_bytes
                 from io import BytesIO
+                # 先試 pdf2image，若回傳空，就用 fallback
                 images = convert_from_bytes(resp.content, dpi=300)
                 if not images:
-                    log.warning("[PDF OCR] convert_from_bytes returned empty, using pdf_to_image fallback")
-                    images = [ pdf_to_image(BytesIO(resp.content), dpi=300) ]
+                  log.warning("[PDF OCR] convert_from_bytes returned empty, fallback to PyMuPDF")
+                  images = [ pdf_to_image(BytesIO(resp.content), dpi=300) ]
+
+                # 逐頁跑 OCR
+                all_results = []
+                for idx, img in enumerate(images, start=1):
+                  try:
+                      res = extract_text_from_images(img, prompt=OCR_SHIPPING_PROMPT)
+                      all_results.append((idx, res))
+                  except Exception as e:
+                      log.error(f"[PDF OCR] page {idx} failed: {e}", exc_info=True)
+
+                # 取第一頁（或依需求過濾最完整的結果）
+                page, result = all_results[0]
+                log.info(f"[PDF OCR] took page {page} → {result}")
 
                 # 3) 指定提取內容用的 prompt
                 prompt = OCR_SHIPPING_PROMPT
