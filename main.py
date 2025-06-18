@@ -196,6 +196,15 @@ Response Format: {"sender": {"name": "", "phone": "", "client_id": "", "address"
 * Do not include any extra text, explanation, or JSON outside of this format.
 """
 
+TRACKING_PROMPT = """
+Task: From this image of a shipping ticket page, extract ONLY the UPS tracking number.
+The tracking number always starts with "1Z" and is alphanumeric.
+
+Response Format (pure JSON):
+{"tracking_number": ""}
+* Do not include extra text or other fields.
+"""
+
 # keep an in-memory buffer of successfully updated tracking IDs per group
 _pending = defaultdict(list)
 _scheduled = set()
@@ -1108,31 +1117,43 @@ def webhook():
                   images = [ pdf_to_image(BytesIO(resp.content), dpi=300) ]
 
                 # 逐頁跑 OCR
-                all_results = []
+                full_data = {}
+                tracking_numbers = []
                 for idx, img in enumerate(images, start=1):
-                  try:
-                      res = extract_text_from_images(img, prompt=OCR_SHIPPING_PROMPT)
-                      all_results.append((idx, res))
-                  except Exception as e:
-                      log.error(f"[PDF OCR] page {idx} failed: {e}", exc_info=True)
+                    try:
+                        if idx == 1:
+                            # 第1頁：抽全部欄位
+                            full_data = extract_text_from_images(img, prompt=OCR_SHIPPING_PROMPT)
+                        else:
+                            # 後續頁：只抽 tracking_number
+                            res = extract_text_from_images(img, prompt=TRACKING_PROMPT)
+                            tn = res.get("tracking_number")
+                            if tn:
+                                tracking_numbers.append(tn)
+                    except Exception as e:
+                        log.error(f"[PDF OCR] page {idx} failed: {e}", exc_info=True)
+
+                # 合併並去重所有 tracking numbers
+                full_data["all_tracking_numbers"] = sorted(dict.fromkeys(tracking_numbers))
+                log.info(f"[PDF OCR] final data → {full_data}")                        
 
                 # 取第一頁（或依需求過濾最完整的結果）
                 page, result = all_results[0]
                 log.info(f"[PDF OCR] took page {page} → {result}")
 
-                # 3) 指定提取內容用的 prompt
-                prompt = OCR_SHIPPING_PROMPT
+                # 4) 合併結果
+                full_data["all_tracking_numbers"] = sorted(dict.fromkeys(tracking_numbers))
 
-                # 4) OCR + LLM 擷取文字
-                result = extract_text_from_images(images[0], prompt=prompt)
-
-                # 5) 回傳到同一個群組
+                # 5) 回傳同群組
                 requests.post(
                     "https://api.line.me/v2/bot/message/push",
                     headers=LINE_HEADERS,
                     json={
-                        "to": "C1f77f5ef1fe48f4782574df449eac0cf",
-                        "messages": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]
+                        "to": src["groupId"],
+                        "messages": [{
+                            "type": "text",
+                            "text": json.dumps(full_data, ensure_ascii=False)
+                        }]
                     }
                 )
                 log.info(f"[PDF OCR] extracted → {result}")
