@@ -992,6 +992,7 @@ def pdf_to_image(pdf_input, dpi=300):
         doc = fitz.open(stream=pdf_input, filetype="pdf")
     else:
         doc = fitz.open(pdf_input)
+        
     images = []
     # Calculate zoom factor to achieve desired DPI (default is 72)
     zoom = dpi / 72
@@ -1004,7 +1005,7 @@ def pdf_to_image(pdf_input, dpi=300):
             [pix.width, pix.height],
             pix.samples
         )
-        return img
+        return images
 
 # Extract text from images using the OpenAI API
 def extract_text_from_images(image, prompt="Please extract text from this image."):
@@ -1113,8 +1114,8 @@ def webhook():
                 # 先試 pdf2image，若回傳空，就用 fallback
                 images = convert_from_bytes(resp.content, dpi=300)
                 if not images:
-                  log.warning("[PDF OCR] convert_from_bytes returned empty, fallback to PyMuPDF")
-                  images = [ pdf_to_image(BytesIO(resp.content), dpi=300) ]
+                    log.warning("[PDF OCR] convert_from_bytes returned empty, fallback to PyMuPDF")
+                    images = pdf_to_image(BytesIO(resp.content), dpi=300)
 
                 # 逐頁跑 OCR
                 full_data = {}
