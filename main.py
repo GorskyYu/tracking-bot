@@ -1209,14 +1209,28 @@ def webhook():
             # ─── Create parent / subitems in Monday from PDF data ─────────────
             def adjust_caps(s: str) -> str:
                 if s.isupper():
-                    return " ".join(w.capitalize() for w in s.split())
+                    parts = []
+                    for w in s.split():
+                        # handle hyphenated words: split & capitalize each piece
+                        sub = "-".join(p.capitalize() for p in w.split("-"))
+                        parts.append(sub)
+                    return " ".join(parts)
                 return s
 
             # ─── 1) Prepare & override parent_name for early-purchase proxies ────────────
             today      = datetime.now().strftime("%Y%m%d")
             # normalize original
+            # strip only "(YUMI)" or "(VICKY)" (case‐insensitive), and collapse extra spaces
+            temp = re.sub(
+                r"\s*\((?:YUMI|VICKY)\)\s*",  # remove the parentheses plus any surrounding spaces
+                " ",
+                name,
+                flags=re.IGNORECASE
+            )
+            raw_name = re.sub(r"\s+", " ", temp).strip()  # collapse multiple spaces into one
+            
             adj_client = adjust_caps(client_id)
-            adj_name   = adjust_caps(name)
+            adj_name   = adjust_caps(raw_name)
             # override ONLY for parent creation
             if (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name):
                 adj_name   = "Shu-Yen Liu"
@@ -1313,11 +1327,11 @@ def webhook():
             # 4) set 客人種類 to “早期代購” if name matches Yumi/Liu or Vicky/Ku
             is_early = (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) \
                     or (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name)
-            log.info(f"[PDF→Monday] early-purchase test: adj_name={adj_name!r}, is_early={is_early}")
+            log.info(f"[PDF→Monday] early-purchase test: adj_name={adj_name!r}, is_early={is_early}")            
             if is_early:
                 set_type_q = f'''
                 mutation {{
-                  change_simple_column_value(
+                  change_column_value(
                     item_id: {parent_id},
                     board_id: {os.getenv("AIR_PARENT_BOARD_ID")},
                     column_id: "status_11__1",
@@ -1334,7 +1348,6 @@ def webhook():
                     log.info(f"[PDF→Monday] 客人種類 set to 早期代購 on item {parent_id}")
                 else:
                     log.error(f"[PDF→Monday] Failed to set 客人種類: {type_resp.status_code} {type_resp.text}")
-
             # ─── Done parent/subitem creation ───────────────────────────────────
  
             # 中止後續處理這個 event
