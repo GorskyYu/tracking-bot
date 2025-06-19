@@ -1895,9 +1895,9 @@ sched = BackgroundScheduler(timezone="America/Vancouver")
 
 # ——— Vicky reminders (Wed & Fri at 17:30) ——————————————————————
 sched.add_job(lambda: remind_vicky("星期四"),
-              trigger="cron", day_of_week="wed", hour=17, minute=30)
+              trigger="cron", day_of_week="wed", hour=17, minute=50)
 sched.add_job(lambda: remind_vicky("週末"),
-              trigger="cron", day_of_week="fri", hour=17, minute=30)
+              trigger="cron", day_of_week="fri", hour=17, minute=50)
 
 sched.start()
 log.info("Scheduler started")
