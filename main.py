@@ -1152,7 +1152,10 @@ def webhook():
                 log.info(f"[PDF OCR] extracted → {full_data}")
                 
                 # ─── 6) Sheet 更新：以 reference_number 當作 Timestamp 搜尋，寫入追蹤碼 & 檢查 ABB ID
-                ref_str = full_data.get("reference_number", "").strip()
+                name                    = full_data["sender"]["name"].strip()
+                client_id               = full_data["sender"]["client_id"].strip()
+                all_tracking_numbers    = full_data.get("all_tracking_numbers", [])
+                ref_str                 = full_data.get("reference_number", "").strip()
                 try:
                     # 確認是合法 timestamp
                     ts = parse_date(ref_str)
@@ -1184,7 +1187,7 @@ def webhook():
                             )                            
                         # 檢查 ABB會員帳號 (F=6)
                         sheet_abb = (ws.cell(row_idx,6).value or "").strip().lower()
-                        client_id = full_data.get("client_id","").strip().lower()
+                        # client_id = full_data.get("client_id","").strip().lower()
                         # 只高亮 F<row_idx> 這個儲存格
                         cell = f"F{row_idx}"
                         fmt = {
