@@ -1314,15 +1314,77 @@ def webhook():
 
             # 3) create one subitem per tracking number
             for tn in full_data["all_tracking_numbers"]:
+                # 3.1) create the subitem and grab its ID
                 create_sub_m = f'''
                 mutation {{
                   create_subitem(
                     parent_item_id: {parent_id},
                     item_name: "{tn}"
                   ) {{ id }}
-                }}
-                '''
-                requests.post("https://api.monday.com/v2", headers=headers, json={"query": create_sub_m})
+                }}'''
+                resp_sub = requests.post(
+                    MONDAY_API_URL,
+                    headers=headers,
+                    json={"query": create_sub_m}
+                )
+                sub_id = resp_sub.json()["data"]["create_subitem"]["id"]
+                log.info(f"[PDF→Monday] Created subitem {sub_id} for tracking {tn}")
+                # 3.2) set Status to “收包裹”
+                mut_status = f'''
+                mutation {{
+                  change_column_value(
+                    item_id: {sub_id},
+                    board_id: {os.getenv("AIR_BOARD_ID")},
+                    column_id: "status__1",
+                    value: "{{\\"label\\":\\"收包裹\\"}}"
+                  ) {{ id }}
+                }}'''
+                status_resp = requests.post(
+                    MONDAY_API_URL,
+                    headers=headers,
+                    json={"query": mut_status}
+                )
+                if status_resp.status_code == 200:
+                    log.info(f"[PDF→Monday] Subitem {sub_id} status set to 收包裹")
+                else:
+                    log.error(f"[PDF→Monday] Failed to set status on {sub_id}: {status_resp.text}")
+                # 3.3) set logistics columns based on postal_code
+                postal = full_data["receiver"].get("postal_code", "")
+                if postal.startswith("V6X1Z7"):
+                    # 國際物流 → Ace
+                    mut_intl = f'''
+                    mutation {{
+                      change_column_value(
+                        item_id: {sub_id},
+                        board_id: {os.getenv("AIR_BOARD_ID")},
+                        column_id: "status_18__1",
+                        value: "{{\\"label\\":\\"Ace\\"}}"
+                      ) {{ id }}
+                    }}'''
+                    requests.post(MONDAY_API_URL, headers=headers, json={"query": mut_intl})
+                    # 台灣物流 → ACE大嘴鳥
+                    mut_tai = f'''
+                    mutation {{
+                      change_column_value(
+                        item_id: {sub_id},
+                        board_id: {os.getenv("AIR_BOARD_ID")},
+                        column_id: "status_19__1",
+                        value: "{{\\"label\\":\\"ACE大嘴鳥\\"}}"
+                      ) {{ id }}
+                    }}'''
+                    requests.post(MONDAY_API_URL, headers=headers, json={"query": mut_tai})
+                elif postal.startswith("V6X0B9"):
+                    # 國際物流 → SoQuick
+                    mut_intl = f'''
+                    mutation {{
+                      change_column_value(
+                        item_id: {sub_id},
+                        board_id: {os.getenv("AIR_BOARD_ID")},
+                        column_id: "status_18__1",
+                        value: "{{\\"label\\":\\"SoQuick\\"}}"
+                      ) {{ id }}
+                    }}'''
+                    requests.post(MONDAY_API_URL, headers=headers, json={"query": mut_intl})
 
             # 4) set 客人種類 to “早期代購” if name matches Yumi/Liu or Vicky/Ku
             is_early = (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) \
