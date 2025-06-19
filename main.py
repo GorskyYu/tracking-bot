@@ -1,5 +1,4 @@
 import os
-import time
 import hmac
 import hashlib
 import requests
@@ -30,7 +29,6 @@ from pdf2image import convert_from_bytes  # 新增：將 PDF 頁面轉為影像�
 from PyPDF2 import PdfReader  # 新增：解析 PDF 文字內容
 import fitz  # PyMuPDF
 
-from datetime import datetime
 import pytz
 
 # Requires:
@@ -137,14 +135,11 @@ YVES_NAMES = {
     "詹欣陵",
     "陳志賢",
     "曾惠玲",
-    "詹士逸",
     "李白秀",
     "陳聖玄",
     "柯雅甄",
     "游玉慧",
     "游繼堯",
-    "鄭詠渝",
-    "鄭芸婷",
     "游承哲",
     "游傳杰",
     "陳秀華",
@@ -241,7 +236,7 @@ def generate_sign(params: dict, secret: str) -> str:
 
 # ─── TripleEagle API Caller ───────────────────────────────────────────────────
 def call_api(action: str, payload: dict = None) -> dict:
-    ts = str(int(time.time()))
+    ts = str(int(datetime.now().timestamp()))
     params = {"id": APP_ID, "timestamp": ts, "format": "json", "action": action}
     params["sign"] = generate_sign(params, APP_SECRET)
     url = "https://eship.tripleeaglelogistics.com/api?" + "&".join(
@@ -346,10 +341,9 @@ def vicky_has_active_orders() -> list[str]:
     if not to_remind:
       return
 
-
     # 3) Fetch raw tracking info for exactly those TE IDs
     resp_tr = call_api("shipment/tracking", {
-        "keyword": ",".join(vicky_ids),
+        "keyword": ",".join(to_remind),
         "rsync":   0,
         "timezone": TIMEZONE
     }).get("response", [])
@@ -806,37 +800,6 @@ def remind_vicky(day_name: str):
             log.error(f"Failed to send Vicky reminder: {resp.status_code} {resp.text}")
     except Exception as e:
         log.error(f"Error sending Vicky reminder: {e}")
-        
-    # ── 4) Build and send the reminder with a mention ────────────────────────
-    placeholder = "{user1}"
-    header = (
-        f"{placeholder} 您好，溫哥華倉庫預計{day_name}出貨，"
-        "請麻煩填寫以下包裹的内容物清單。謝謝！"
-    )
-    body   = "\n".join(to_remind)
-    footer = os.getenv("VICKY_SHEET_URL")
-
-    payload = {
-        "to": VICKY_GROUP_ID,
-        "messages": [{
-            "type":        "textV2",
-            "text":        "\n\n".join([header, body, footer]),
-            "substitution": {
-                "user1": {
-                    "type": "mention",
-                    "mentionee": {
-                        "type":   "user",
-                        "userId": VICKY_USER_ID
-                    }
-                }
-            }
-        }]
-    }
-    try:
-        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Sent Vicky reminder for {day_name}: {len(to_remind)} packages (status {resp.status_code})")
-    except Exception as e:
-        log.error(f"Error sending Vicky reminder: {e}")
 
 
 # ─── Ace schedule handler ─────────────────────────────────────────────────────
@@ -1238,11 +1201,76 @@ def webhook():
                     }
                 )
 
+            # ─── Create parent / subitems in Monday from PDF data ─────────────
+            def adjust_caps(s: str) -> str:
+                if s.isupper():
+                    return " ".join(w.capitalize() for w in s.split())
+                return s
+
+            today       = datetime.now().strftime("%Y%m%d")
+            adj_client  = adjust_caps(client_id)
+            adj_name    = adjust_caps(name)
+            parent_name = f"{today} {adj_client} - {adj_name}"
+
+            headers = {"Authorization": MONDAY_API_TOKEN,"Content-Type":  "application/json"}
+
+            # 1) lookup or create parent
+            find_parent_q = f'''
+            query {{
+            items_by_column_values(
+             board_id: {os.getenv("AIR_PARENT_BOARD_ID")},
+             column_id: "name",
+             column_value: "{parent_name}"
+            ) {{ id }}
+            }}
+            '''
+            resp = requests.post("https://api.monday.com/v2", headers=headers, json={"query": find_parent_q})
+            items = resp.json().get("data", {}).get("items_by_column_values", [])
+            if items:
+                parent_id = items[0]["id"]
+            else:
+                create_parent_m = f'''
+                mutation {{
+                  create_item(
+                    board_id: {os.getenv("AIR_PARENT_BOARD_ID")},
+                    item_name: "{parent_name}"
+                  ) {{ id }}
+                }}
+                '''
+                resp = requests.post("https://api.monday.com/v2", headers=headers, json={"query": create_parent_m})
+                parent_id = resp.json()["data"]["create_item"]["id"]
+
+            # 2) create one subitem per tracking number
+            for tn in full_data["all_tracking_numbers"]:
+                create_sub_m = f'''
+                mutation {{
+                  create_subitem(
+                    parent_item_id: {parent_id},
+                    item_name: "{tn}"
+                  ) {{ id }}
+                }}
+                '''
+                requests.post("https://api.monday.com/v2", headers=headers, json={"query": create_sub_m})
+
+            # 3) set 客人種類 to “早期代購” if name matches your Yumi/Liu or Vicky/Ku patterns
+            if (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) or (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
+                set_type_m = f'''
+                mutation {{
+                  change_simple_column_value(
+                    item_id: {parent_id},
+                    board_id: {os.getenv("AIR_PARENT_BOARD_ID")},
+                    column_id: "status_11__1",
+                    value: "{{\\"label\\":\\"早期代購\\"}}"
+                  ) {{ id }}
+                }}
+                '''
+                requests.post("https://api.monday.com/v2", headers=headers, json={"query": set_type_m})
+
+            # ─── Done parent/subitem creation ───────────────────────────────────
+ 
             # 中止後續處理這個 event
             return jsonify({}), 200
-
-        # ←── 到這結束
-        
+ 
         # ─── If image, run ONLY the barcode logic and then continue ──────────
         if mtype == "image":
             is_from_me      = src.get("type") == "user"  and src.get("userId")  == YVES_USER_ID
@@ -1849,7 +1877,7 @@ def monday_webhook():
     log.info(f"Monday→LINE push status={push.status_code}, body={push.text}")
 
     return "OK", 200
-    
+ 
 # ─── Poller State Helpers & Job ───────────────────────────────────────────────
 # ─── Helpers for parsing batch lines ─────────────────────────────────────────
 def extract_order_key(line: str) -> str:
@@ -1893,11 +1921,11 @@ def check_te_updates():
 # ─── Poller + Scheduler Bootstrap ────────────────────────────────────────────
 sched = BackgroundScheduler(timezone="America/Vancouver")
 
-# ——— Vicky reminders (Wed & Fri at 17:30) ——————————————————————
+# ——— Vicky reminders (Wed & Fri at 18:00) ——————————————————————
 sched.add_job(lambda: remind_vicky("星期四"),
-              trigger="cron", day_of_week="wed", hour=17, minute=50)
+              trigger="cron", day_of_week="wed", hour=18, minute=00)
 sched.add_job(lambda: remind_vicky("週末"),
-              trigger="cron", day_of_week="fri", hour=17, minute=50)
+              trigger="cron", day_of_week="fri", hour=18, minute=00)
 
 sched.start()
 log.info("Scheduler started")
