@@ -35,14 +35,16 @@ import pytz
 # Requires:
 # pip install pymupdf pillow openai
 
+# ─── Google Sheets 認證 ─────────────────────────
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
-
-# load your Google service account credentials from the env var
-GA_SVC_INFO = json.loads(os.environ["GOOGLE_SVCKEY_JSON"])
-# build a fully-authorized client
-GC = gspread.service_account_from_dict(GA_SVC_INFO)
+GA_SVC_INFO = json.loads(os.environ["GOOGLE_SVCKEY_JSON"])  # load your Google service account credentials from the env var
+GC = gspread.service_account_from_dict(GA_SVC_INFO) # build a fully-authorized client
 creds = ServiceAccountCredentials.from_json_keyfile_dict(GA_SVC_INFO, SCOPES)
 gs = gspread.authorize(creds)
+# 打開 Tracking 工作表
+ws_tracking = gs.open_by_key("1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q") \
+                .worksheet("Tracking")
+
 
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -86,7 +88,7 @@ APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
 APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
 LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
 
-# ─── Ace schedule config ──────────────────────────────────────────────────────
+# ─── LINE & ACE/SQ 設定 ──────────────────────────────────────────────────────
 ACE_GROUP_ID     = os.getenv("LINE_GROUP_ID_ACE")
 SOQUICK_GROUP_ID = os.getenv("LINE_GROUP_ID_SQ")
 VICKY_GROUP_ID   = os.getenv("LINE_GROUP_ID_VICKY")
@@ -155,12 +157,6 @@ REDIS_URL = os.getenv("REDIS_URL")
 if not REDIS_URL:
     raise RuntimeError("REDIS_URL environment variable is required for state persistence")
 r = redis.from_url(REDIS_URL, decode_responses=True)
-
-# — set up Google sheets client once:
-SCOPES = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
-creds_dict = json.loads(os.environ["GOOGLE_SVCKEY_JSON"])
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPES)
-gs = gspread.authorize(creds)
 
 # pull your sheet URL / ID from env
 VICKY_SHEET_URL = os.getenv("VICKY_SHEET_URL")
@@ -1056,6 +1052,24 @@ def extract_text_from_images(image, prompt="Please extract text from this image.
     result["tracking number"] = tracking_number
     return result
 
+# ─── lookup_full_tracking 定義 ───────────────────
+def lookup_full_tracking(ups_last4: str) -> Optional[str]:
+    """
+    在 Tracking 工作表的 S/T/U 欄找唯一尾號匹配，回傳完整追蹤碼或 None。
+    """
+    cols = [19, 20, 21]  # S=19, T=20, U=21
+    matches = []
+    for col_idx in cols:
+        vals = ws_tracking.col_values(col_idx)
+        for v in vals[1:]:
+            v = v.strip()
+            if len(v) >= 4 and v[-4:] == ups_last4:
+                matches.append(v)
+    if len(matches) != 1:
+        log.warn(f"UPS尾號 {ups_last4} 找到 {len(matches)} 筆，不唯一，跳過")
+        return None
+    return matches[0]
+
 # CLI entrypoint
 def main():
     pdf_path = "U110252577.pdf"
@@ -1459,11 +1473,118 @@ def webhook():
             # now that images are handled, skip text logic
             continue
     
-        # Only handle text messages
+        # 0) 只處理文字
         if mtype != "text":
             continue
+        
+        # 1) 多筆 UPS 末四碼＋重量＋尺寸 一次處理
+        # 同時支援「*」「×」「x」或「空白」分隔
+        multi_pat = re.compile(
+            r'(\d{4})\s+'             # 4位UPS尾號
+            r'([\d.]+)kg\s+'          # 重量 (kg)
+            r'(\d+)'                  # 寬
+            r'(?:[×x*\s]+)'           # 允許 × x * 或空白 作為分隔
+            r'(\d+)'                  # 高
+            r'(?:[×x*\s]+)'           # 再次允許各種分隔
+            r'(\d+)'                  # 深
+            r'(?:cm)?',               # 可選的「cm」
+            re.IGNORECASE
+        )
+        matches = multi_pat.findall(text)  # 找出所有符合格式的 tuple 列表
 
-        # <<<< INSERT: size/weight parser for pending subitem >>>>>>
+        if matches:
+            for ups4, wt_str, w, h, d in matches:
+                # —(1) 從 Google Sheets 找回完整追蹤碼
+                full_no = lookup_full_tracking(ups4)
+                if not full_no:
+                    # 如果找不到或不唯一，跳過本筆
+                    continue
+
+                # —(2) 解析重量與尺寸
+                weight_kg = float(wt_str)      # 將字串轉為 float
+                dims_norm = f"{w}*{h}*{d}"    # 組成 "長*寬*高" 字串
+
+                # —(3) 用完整追蹤碼到 Monday 查 subitem (Name 欄)
+                find_q = f'''
+                query {{
+                  items_by_column_values(
+                    board_id: {os.getenv("AIR_BOARD_ID")},
+                    column_id: "name",
+                    column_value: "{full_no}"
+                  ) {{ id }}
+                }}'''
+                resp = requests.post(
+                    "https://api.monday.com/v2",
+                    headers={ "Authorization": MONDAY_API_TOKEN,
+                              "Content-Type":  "application/json" },
+                    json={ "query": find_q }
+                )
+                items = resp.json().get("data", {}) \
+                                 .get("items_by_column_values", [])
+                if not items:
+                    log.warn(f"Monday: subitem 名稱={full_no} 找不到，跳過")
+                    continue
+
+                sub_id = items[0]["id"]  # 取第一個 match 的 subitem ID
+
+                # —(4) 上傳尺寸 (__1__cm__1 欄)
+                dim_mut = f'''
+                mutation {{
+                  change_simple_column_value(
+                    item_id: {sub_id},
+                    board_id: {os.getenv("AIR_BOARD_ID")},
+                    column_id: "__1__cm__1",
+                    value: "{dims_norm}"
+                  ) {{ id }}
+                }}'''
+                requests.post(
+                    "https://api.monday.com/v2",
+                    headers={ "Authorization": MONDAY_API_TOKEN,
+                              "Content-Type":  "application/json" },
+                    json={ "query": dim_mut }
+                )
+
+                # —(5) 上傳重量 (numeric__1 欄)
+                wt_mut = f'''
+                mutation {{
+                  change_simple_column_value(
+                    item_id: {sub_id},
+                    board_id: {os.getenv("AIR_BOARD_ID")},
+                    column_id: "numeric__1",
+                    value: "{weight_kg:.2f}"
+                  ) {{ id }}
+                }}'''
+                requests.post(
+                    "https://api.monday.com/v2",
+                    headers={ "Authorization": MONDAY_API_TOKEN,
+                              "Content-Type":  "application/json" },
+                    json={ "query": wt_mut }
+                )
+
+                # —(6) 翻轉狀態到「溫哥華收款」(status__1 欄)
+                stat_mut = f'''
+                mutation {{
+                  change_simple_column_value(
+                    item_id: {sub_id},
+                    board_id: {os.getenv("AIR_BOARD_ID")},
+                    column_id: "status__1",
+                    value: "{{\\"label\\":\\"溫哥華收款\\"}}"
+                  ) {{ id }}
+                }}'''
+                requests.post(
+                    "https://api.monday.com/v2",
+                    headers={ "Authorization": MONDAY_API_TOKEN,
+                              "Content-Type":  "application/json" },
+                    json={ "query": stat_mut }
+                )
+
+                # —(7) 日誌：確認更新完畢
+                log.info(f"[UPS→Monday] {full_no} 更新: 重量={weight_kg}kg, 尺寸={dims_norm}")
+
+            # 處理完所有多筆 UPS 後，跳過後續任何 handler
+            continue
+
+        # 2) pending_key 單筆 size/weight parser
         pending_key = f"last_subitem_for_{group_id}"
         sub_id = r.get(pending_key)
         if sub_id:
@@ -1557,12 +1678,12 @@ def webhook():
             log.info(f"Finished size/weight sync for subitem {sub_id}: dims={dims_norm!r}, weight={weight_kg!r}")
             continue
         
-        # ─── ① Ace schedule (週四／週日出貨) ───────────────────────────────
+        # 3) Ace schedule (週四／週日出貨)
         if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
             handle_ace_schedule(event)
             continue
 
-        # ─── ② ACE EZ-Way check (your existing sender-lookup) ─────────────
+        # 4) ACE EZ-Way check
         if group_id == ACE_GROUP_ID:
             handle_ace_ezway_check_and_push(event)
             continue
