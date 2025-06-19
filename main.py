@@ -1212,11 +1212,21 @@ def webhook():
                     return " ".join(w.capitalize() for w in s.split())
                 return s
 
-            today       = datetime.now().strftime("%Y%m%d")
-            adj_client  = adjust_caps(client_id)
-            adj_name    = adjust_caps(name)
-            parent_name = f"{today} {adj_client} - {adj_name}"
+            # ─── 1) Prepare & override parent_name for early-purchase proxies ────────────
+            today      = datetime.now().strftime("%Y%m%d")
+            # normalize original
+            adj_client = adjust_caps(client_id)
+            adj_name   = adjust_caps(name)
+            # override ONLY for parent creation
+            if (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name):
+                adj_name   = "Shu-Yen Liu"
+                adj_client = "Yumi"
+            elif (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
+                adj_name   = "Chia-Chi Ku"
+                adj_client = "Vicky"
 
+            parent_name = f"{today} {adj_client} - {adj_name}"  
+            
             headers = {"Authorization": MONDAY_API_TOKEN,"Content-Type":  "application/json"}
 
             # 1) lookup or create parent
@@ -1243,45 +1253,49 @@ def webhook():
                 }}
                 '''
                 resp = requests.post("https://api.monday.com/v2", headers=headers, json={"query": create_parent_m})
-                parent_id = resp.json()["data"]["create_item"]["id"]
+                parent_id = resp.json()["data"]["create_item"]["id"]             
                 
             # 2) ─── Attach original PDF as an Update on the parent item ──────────────────
             # 2.1) Use the PDF bytes we saved right after download
             #    (pdf_bytes came from resp.content above)
             #    no need to reassign here
 
-            # 2.2) Build the multipart GraphQL payload
-            file_mutation = f'''
-            mutation ($file: File!) {{
-              add_file_to_update(
-                update_id: {parent_id},
-                file: $file
-              ) {{ id }}
+            # 2.2) Create an “Update” on the parent item, then attach the file to that update
+            create_update_q = f'''
+            mutation {{
+              create_update(item_id: {parent_id}, body: "原始 PDF 檔案") {{ id }}
             }}
             '''
-            multipart_payload = {
-                "query": file_mutation,
-                # Map the “file” part to the GraphQL variable “file”
-                "map": json.dumps({ "file": ["variables.file"] })
-            }
-            files = [
-                (
-                  "file",
-                  ("attachment.pdf", pdf_bytes, "application/pdf")
-                )
-            ]
-
-            # 2.3) Send to Monday’s file endpoint
-            resp = requests.post(
-                "https://api.monday.com/v2/file",
-                headers={ "Authorization": MONDAY_API_TOKEN },
-                data=multipart_payload,
-                files=files
+            upd_resp = requests.post(
+                MONDAY_API_URL,
+                headers=headers,
+                json={"query": create_update_q}
             )
-            if resp.status_code == 200:
-                log.info(f"Attached PDF to parent item {parent_id}")
+            update_id = upd_resp.json().get("data", {}) \
+                                   .get("create_update", {}) \
+                                   .get("id")
+            if not update_id:
+                log.error(f"Failed to create update on item {parent_id}: {upd_resp.text}")
             else:
-                log.error(f"Failed to attach PDF: {resp.status_code} {resp.text}")
+                multipart_payload = {
+                    "query": f'''
+                    mutation ($file: File!) {{
+                      add_file_to_update(update_id: {update_id}, file: $file) {{ id }}
+                    }}
+                    ''',
+                    "map": json.dumps({ "file": ["variables.file"] })
+                }
+                files = [("file", ("attachment.pdf", pdf_bytes, "application/pdf"))]
+                file_resp = requests.post(
+                    f"{MONDAY_API_URL}/file",
+                    headers={"Authorization": MONDAY_API_TOKEN},
+                    data=multipart_payload,
+                    files=files
+                )
+                if file_resp.status_code == 200:
+                    log.info(f"Attached PDF to update {update_id} on item {parent_id}")
+                else:
+                    log.error(f"Failed to attach PDF to update {update_id}: {file_resp.status_code} {file_resp.text}")
             # ─── Done attaching PDF ──────────────────────────────────────────────────
 
             # 3) create one subitem per tracking number
@@ -1296,9 +1310,12 @@ def webhook():
                 '''
                 requests.post("https://api.monday.com/v2", headers=headers, json={"query": create_sub_m})
 
-            # 4) set 客人種類 to “早期代購” if name matches your Yumi/Liu or Vicky/Ku patterns
-            if (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) or (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
-                set_type_m = f'''
+            # 4) set 客人種類 to “早期代購” if name matches Yumi/Liu or Vicky/Ku
+            is_early = (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) \
+                    or (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name)
+            log.info(f"[PDF→Monday] early-purchase test: adj_name={adj_name!r}, is_early={is_early}")
+            if is_early:
+                set_type_q = f'''
                 mutation {{
                   change_simple_column_value(
                     item_id: {parent_id},
@@ -1308,7 +1325,15 @@ def webhook():
                   ) {{ id }}
                 }}
                 '''
-                requests.post("https://api.monday.com/v2", headers=headers, json={"query": set_type_m})
+                type_resp = requests.post(
+                    "https://api.monday.com/v2",
+                    headers=headers,
+                    json={"query": set_type_q}
+                )
+                if type_resp.status_code == 200:
+                    log.info(f"[PDF→Monday] 客人種類 set to 早期代購 on item {parent_id}")
+                else:
+                    log.error(f"[PDF→Monday] Failed to set 客人種類: {type_resp.status_code} {type_resp.text}")
 
             # ─── Done parent/subitem creation ───────────────────────────────────
  
