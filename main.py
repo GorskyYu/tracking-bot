@@ -1349,7 +1349,7 @@ def webhook():
                 else:
                     log.error(f"[PDF→Monday] Failed to set status on {sub_id}: {status_resp.text}")
                 # 3.3) set logistics columns based on postal_code
-                postal = full_data["receiver"].get("postal_code", "")
+                postal = full_data["receiver"].get("postal_code", "").replace(" ", "").upper()
                 if postal.startswith("V6X1Z7"):
                     # 國際物流 → Ace
                     mut_intl = f'''
