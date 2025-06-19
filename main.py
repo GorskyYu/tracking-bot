@@ -161,6 +161,7 @@ MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
 TIMEZONE    = "America/Vancouver"
 
 AIR_BOARD_ID = os.getenv("AIR_BOARD_ID")
+AIR_PARENT_BOARD_ID = os.getenv("AIR_PARENT_BOARD_ID")
 
 #STATE_FILE = os.getenv("STATE_FILE", "last_seen.json")
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
