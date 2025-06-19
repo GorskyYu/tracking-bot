@@ -1089,6 +1089,7 @@ def webhook():
                     headers={"Authorization": f"Bearer {LINE_TOKEN}"},
                 )
                 resp.raise_for_status()
+                pdf_bytes = resp.content   # ← capture PDF bytes here
 
                 # 2) PDF 轉圖像，拿到所有頁面
                 from pdf2image import convert_from_bytes
@@ -1240,8 +1241,47 @@ def webhook():
                 '''
                 resp = requests.post("https://api.monday.com/v2", headers=headers, json={"query": create_parent_m})
                 parent_id = resp.json()["data"]["create_item"]["id"]
+                
+            # 2) ─── Attach original PDF as an Update on the parent item ──────────────────
+            # 2.1) Use the PDF bytes we saved right after download
+            #    (pdf_bytes came from resp.content above)
+            #    no need to reassign here
 
-            # 2) create one subitem per tracking number
+            # 2.2) Build the multipart GraphQL payload
+            file_mutation = f'''
+            mutation ($file: File!) {{
+              add_file_to_update(
+                update_id: {parent_id},
+                file: $file
+              ) {{ id }}
+            }}
+            '''
+            multipart_payload = {
+                "query": file_mutation,
+                # Map the “file” part to the GraphQL variable “file”
+                "map": json.dumps({ "file": ["variables.file"] })
+            }
+            files = [
+                (
+                  "file",
+                  ("attachment.pdf", pdf_bytes, "application/pdf")
+                )
+            ]
+
+            # 2.3) Send to Monday’s file endpoint
+            resp = requests.post(
+                "https://api.monday.com/v2/file",
+                headers={ "Authorization": MONDAY_API_TOKEN },
+                data=multipart_payload,
+                files=files
+            )
+            if resp.status_code == 200:
+                log.info(f"Attached PDF to parent item {parent_id}")
+            else:
+                log.error(f"Failed to attach PDF: {resp.status_code} {resp.text}")
+            # ─── Done attaching PDF ──────────────────────────────────────────────────
+
+            # 3) create one subitem per tracking number
             for tn in full_data["all_tracking_numbers"]:
                 create_sub_m = f'''
                 mutation {{
@@ -1253,7 +1293,7 @@ def webhook():
                 '''
                 requests.post("https://api.monday.com/v2", headers=headers, json={"query": create_sub_m})
 
-            # 3) set 客人種類 to “早期代購” if name matches your Yumi/Liu or Vicky/Ku patterns
+            # 4) set 客人種類 to “早期代購” if name matches your Yumi/Liu or Vicky/Ku patterns
             if (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) or (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
                 set_type_m = f'''
                 mutation {{
