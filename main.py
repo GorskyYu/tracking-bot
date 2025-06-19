@@ -20,6 +20,7 @@ from dateutil.parser import parse as parse_date
 import openai
 from collections import defaultdict
 import threading
+from typing import Optional
 
 import io
 from io import BytesIO
