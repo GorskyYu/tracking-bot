@@ -381,7 +381,7 @@ def vicky_sheet_recently_edited():
     age = datetime.now(timezone.utc) - last_edit
     return age.days < 3
   
-def handle_ace_ezway_check_and_push(event):
+def handle_ace_ezway_check_and_push_to_yves(event):
     """
     For any ACE message that contains “麻煩請” + “收到EZ way通知後” + (週四出貨 or 週日出貨),
     we will look up the *sheet* for the row whose date is closest to today, but ONLY
@@ -1850,15 +1850,20 @@ def webhook():
             # whether dims or weight or both, log final
             log.info(f"Finished size/weight sync for subitem {sub_id}: dims={dims_norm!r}, weight={weight_kg!r}")
             continue
-        
-        # 3) Ace schedule (週四／週日出貨)
+ 
+         # 3) Ace schedule (週四／週日出貨)
         if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
             handle_ace_schedule(event)
             continue
 
         # 4) ACE EZ-Way check
         if group_id == ACE_GROUP_ID:
-            handle_ace_ezway_check_and_push(event)
+            handle_ace_ezway_check_and_push_to_yves(event)
+            continue 
+
+        # 5) 處理「申報相符」提醒
+        if "申報相符" in text and CODE_TRIGGER_RE.search(text):
+            handle_missing_confirm(event)
             continue
         
         # ——— New: Richmond-arrival triggers content-request to Vicky —————————
