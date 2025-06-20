@@ -859,30 +859,26 @@ def handle_ace_schedule(event):
            and nm not in YVES_NAMES
     ]    
 
-    def push_to(group, batch, label):
+    def push_to(group, batch):
         if not batch:
             # log.info(f"[ACE_SCHEDULE:{label}] batch empty, skipping")
             return
         
-        # --- TEST MODE: just log the would-be message ---
-        # rebuild the mini-message: header + blank + batch + blank + footer
+        # Build the mini-message: header + blank + batch + blank + footer
         msg_lines = header + [""] + batch + [""] + footer
-        final = "\n".join(msg_lines)
-        # —– LOG instead —–
-        # log.info(f"[ACE_SCHEDULE:{label}] to {group}:\n{final}")
-        
-        # real push to the group here
+        text_msg = "\n".join(msg_lines)
+
+        # Push to the group
         requests.post(
             LINE_PUSH_URL,
             headers=LINE_HEADERS,
-            json={"to": group, "messages":[{"type":"text","text": body }]}
+            json={"to": group, "messages":[{"type":"text","text": text_msg }]}
         )
     
-    # log.info(f"[ACE_SCHEDULE] vicky_batch={vicky_batch!r}, yumi_batch={yumi_batch!r}, others={other_batch!r}")
-    push_to(VICKY_GROUP_ID, vicky_batch, label="VICKY")
-    push_to(YUMI_GROUP_ID, yumi_batch,  label="YUMI")
-    # your personal chat
-    push_to(YVES_USER_ID, other_batch,  label="OTHERS")    
+    push_to(VICKY_GROUP_ID, vicky_batch)
+    push_to(YUMI_GROUP_ID,  yumi_batch)
+    # also push any “other” entries to your personal chat
+    push_to(YVES_USER_ID,  other_batch)    
 
 # ─── Ace shipment-block handler ────────────────────────────────────────────────
 def handle_ace_shipments(event):
