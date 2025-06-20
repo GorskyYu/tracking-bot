@@ -847,7 +847,11 @@ def handle_ace_schedule(event):
     # now split into per-group lists
     vicky_batch = [c for c in cleaned if any(name in c for name in VICKY_NAMES)]
     yumi_batch  = [c for c in cleaned if any(name in c for name in YUMI_NAMES )]
-    # “others” = not in Vicky, not in Yumi, and not an excluded sender
+
+    # extract just the name token (first word) from each cleaned line
+    names_only  = [c.split()[0] for c in cleaned]    
+    
+    # “others” = those whose name token isn’t in any of the three lists
     other_batch = [
         cleaned[i] for i, nm in enumerate(names_only)
         if nm not in VICKY_NAMES
