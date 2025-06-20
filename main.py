@@ -1851,20 +1851,20 @@ def webhook():
             log.info(f"Finished size/weight sync for subitem {sub_id}: dims={dims_norm!r}, weight={weight_kg!r}")
             continue
  
-         # 3) Ace schedule (週四／週日出貨)
+        # 3) Ace schedule (週四／週日出貨)
         if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
             handle_ace_schedule(event)
             continue
 
-        # 4) ACE EZ-Way check
-        if group_id == ACE_GROUP_ID:
-            handle_ace_ezway_check_and_push_to_yves(event)
-            continue 
-
-        # 5) 處理「申報相符」提醒
+        # 4) 處理「申報相符」提醒
         if "申報相符" in text and CODE_TRIGGER_RE.search(text):
             handle_missing_confirm(event)
             continue
+            
+        # 5) ACE EZ-Way check
+        if group_id == ACE_GROUP_ID:
+            handle_ace_ezway_check_and_push_to_yves(event)
+            continue 
         
         # ——— New: Richmond-arrival triggers content-request to Vicky —————————
         if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
