@@ -716,54 +716,20 @@ def handle_missing_confirm(event):
  
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
-    """Send Vicky a one-per-day reminder at 17:30 if there are packages 
-       beyond the two 'just created' statuses."""
-    # ── 0) Idempotency guard: only once per day per day_name ───────────────
-    tz = pytz.timezone(TIMEZONE)
-    today_str = datetime.now(tz).date().isoformat()
-    guard_key = f"vicky_reminder_{day_name}_{today_str}"
-    if r.get(guard_key):
-        return   
-        
-    # ── 1) Gather all Vicky order IDs ────────────────────────────────────
-    resp_list = call_api("shipment/list")
-    all_orders = resp_list.get("response", {}).get("list", []) or []
-    vicky_ids = []
-    for o in all_orders:
-        oid = o.get("id")
-        if not oid:
-            continue
-        det = call_api("shipment/detail", {"id": oid}).get("response", {})
-        if isinstance(det, list): det = det[0]
-        init = det.get("initiation", {})
-        loc  = next(iter(init), None)
-        name = init.get(loc, {}).get("name", "").lower() if loc else ""
-        if any(kw in name for kw in CUSTOMER_FILTERS[VICKY_GROUP_ID]):
-            vicky_ids.append(str(oid))
-    if not vicky_ids:
+    # idempotency guard …
+    # 1) Grab Monday subitems in the statuses you care about
+    to_remind_ids = vicky_has_active_orders()  # returns list of TE IDs from Monday
+    if not to_remind_ids:
         return
 
-    # ── 2) Fetch tracking events and filter by status ───────────────────
+    # 2) Fetch only those from TE
     resp_tr = call_api("shipment/tracking", {
-        "keyword": ",".join(vicky_ids),
-        "rsync":   0,
-        "timezone": TIMEZONE
+        "keyword": ",".join(to_remind_ids),
+        "rsync": 0, "timezone": TIMEZONE
     }).get("response", []) or []
 
-    SKIP_STATUSES = {
-        "order created at triple eagle",
-        "shipper created a label, ups has not received the package yet."
-    }
-    to_remind = []
-    for item in resp_tr:
-        num = item.get("number", "").strip()
-        evs = item.get("list") or []
-        if not num or not evs:
-            continue
-        latest = max(evs, key=lambda e: int(e.get("timestamp", 0)))
-        ctx = latest.get("context", "").strip().lower()
-        if ctx not in SKIP_STATUSES:
-            to_remind.append(num)
+    # 3) Extract UPS numbers
+    to_remind = [ item["number"] for item in resp_tr if item.get("number") ]
 
     if not to_remind:
         return
