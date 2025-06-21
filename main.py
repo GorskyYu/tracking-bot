@@ -2074,7 +2074,7 @@ sched = BackgroundScheduler(timezone="America/Vancouver")
 sched.add_job(lambda: remind_vicky("星期四"),
               trigger="cron", day_of_week="wed", hour=18, minute=00)
 sched.add_job(lambda: remind_vicky("週末"),
-              trigger="cron", day_of_week="fri", hour=18, minute=00)
+              trigger="cron", day_of_week="fri", hour=19, minute=00)
 
 sched.start()
 log.info("Scheduler started")
