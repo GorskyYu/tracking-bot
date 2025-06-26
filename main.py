@@ -1895,7 +1895,7 @@ def webhook():
             continue
                 
         # ——— Soquick “上周六出貨包裹的派件單號” blocks ——————————————
-        if group_id == SOQUICK_GROUP_ID and "上周六出貨包裹的派件單號" in text:
+        if (group_id == SOQUICK_GROUP_ID and "上周六出貨包裹的派件單號" in text) or (group_id == ACE_GROUP_ID and "出貨單號" in text and "宅配單號" in text):
             handle_soquick_and_ace_shipments(event)
             continue
 
