@@ -1844,22 +1844,18 @@ def webhook():
             log.info(f"Finished size/weight sync for subitem {sub_id}: dims={dims_norm!r}, weight={weight_kg!r}")
             continue
  
-        # 3) Ace schedule (週四／週日出貨)
+        # 3) Ace schedule (週四／週日出貨) & ACE EZ-Way check
         if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
             handle_ace_schedule(event)
+            handle_ace_ezway_check_and_push_to_yves(event)
             continue
 
         # 4) 處理「申報相符」提醒
         if "申報相符" in text and CODE_TRIGGER_RE.search(text):
             handle_missing_confirm(event)
             continue
-            
-        # 5) ACE EZ-Way check
-        if group_id == ACE_GROUP_ID:
-            handle_ace_ezway_check_and_push_to_yves(event)
-            continue 
         
-        # ——— New: Richmond-arrival triggers content-request to Vicky —————————
+        # 5) Richmond-arrival triggers content-request to Vicky —————————
         if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
             # extract the tracking ID inside parentheses
             import re
@@ -1894,12 +1890,12 @@ def webhook():
             log.info(f"Requested contents list from Vicky for {tracking_id}")
             continue
                 
-        # ——— Soquick “上周六出貨包裹的派件單號” blocks ——————————————
+        # 6) Soquick “上周六出貨包裹的派件單號” & Ace "出貨單號" blocks ——————————————
         if (group_id == SOQUICK_GROUP_ID and "上周六出貨包裹的派件單號" in text) or (group_id == ACE_GROUP_ID and "出貨單號" in text and "宅配單號" in text):
             handle_soquick_and_ace_shipments(event)
             continue
 
-        # ——— Soquick “請通知…申報相符” messages ——————————————
+        # 7) Soquick “請通知…申報相符” messages ——————————————
         log.info(
             "[SOQ DEBUG] group_id=%r, SOQUICK_GROUP_ID=%r, "
             "has_您好=%r, has_按=%r, has_申報相符=%r",
@@ -1916,7 +1912,7 @@ def webhook():
             handle_soquick_full_notification(event)
             continue          
 
-        # 2) Your existing “追蹤包裹” logic
+        # 8) Your existing “追蹤包裹” logic
         if text == "追蹤包裹":
             keywords = CUSTOMER_FILTERS.get(group_id)
             if not keywords:
