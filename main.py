@@ -94,6 +94,8 @@ VICKY_GROUP_ID   = os.getenv("LINE_GROUP_ID_VICKY")
 VICKY_USER_ID    = os.getenv("VICKY_USER_ID") 
 YVES_USER_ID     = os.getenv("YVES_USER_ID") 
 YUMI_GROUP_ID    = os.getenv("LINE_GROUP_ID_YUMI")
+JOYCE_GROUP_ID   = os.getenv("LINE_GROUP_ID_JOYCE")
+PDF_GROUP_ID     = os.getenv("LINE_GROUP_ID_PDF")
 
 SQ_SHEET_URL     = os.getenv("SQ_SHEET_URL")
 
@@ -1072,12 +1074,17 @@ def webhook():
         text     = msg.get("text", "").strip()
         mtype    = msg.get("type")
     
-        # ─── PDF OCR trigger (only for a specific group) ─────────────────────
+        # ─── PDF OCR trigger (for multiple allowed groups) ─────────────────────
         if (
             msg.get("type") == "file"
             and msg.get("fileName", "").lower().endswith(".pdf")
             and src.get("type") == "group"
-            and src.get("groupId") == "C1f77f5ef1fe48f4782574df449eac0cf"  # ← your group ID
+            and src.get("groupId") in {
+                VICKY_GROUP_ID,
+                YUMI_GROUP_ID,
+                JOYCE_GROUP_ID,
+                PDF_GROUP_ID,
+            }
         ):
             file_id = msg["id"]
             try:
