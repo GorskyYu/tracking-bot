@@ -548,14 +548,18 @@ def handle_soquick_and_ace_shipments(event):
     # — Ace flow —
     else:
         # split into blocks on blank lines
-        blocks = [b.strip() for b in raw.split("\n\n") if b.strip()]
-        for block in blocks:
-            if "出貨單號" not in block:
+        raw_blocks = [b for b in raw.split("\n\n") if b.strip()]
+        for blk in raw_blocks:
+            # strip whitespace and any wrapping quotes
+            block = blk.strip().strip('"')
+            if not block:
+                continue
+            # must contain both 出貨單號 and 宅配單號
+            if "出貨單號" not in block or "宅配單號" not in block:
                 continue
             lines = block.splitlines()
             if len(lines) < 3:
                 continue
-            # name is the first token of the third line
             recipient = lines[2].split()[0]
             if recipient in VICKY_NAMES:
                 vicky.append(block)
