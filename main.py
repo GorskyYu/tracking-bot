@@ -547,8 +547,9 @@ def handle_soquick_and_ace_shipments(event):
 
     # — Ace flow —
     else:
-        # split into blocks on blank lines
-        raw_blocks = [b for b in raw.split("\n\n") if b.strip()]
+        # split into one block per “出貨單號:” line
+        blocks = [b.strip().strip('"') for b in re.split(r'(?=出貨單號:)', raw) if b.strip()]
+        
         for blk in raw_blocks:
             # strip whitespace and any wrapping quotes
             block = blk.strip().strip('"')
