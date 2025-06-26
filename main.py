@@ -513,45 +513,72 @@ def handle_ace_ezway_check_and_push_to_yves(event):
     else:
         print("DEBUG: No matching senders found for any declarer in the ACE message.")
 
-# ─── Soquick shipment-block handler ────────────────────────────────────────────
-def handle_soquick_shipments(event):
+# ─── Soquick & Ace shipment-block handler ────────────────────────────────────────────
+def handle_soquick_and_ace_shipments(event):
     """
-    Parse Soquick text containing "上周六出貨包裹的派件單號",
+    Parse Soquick & Ace text containing "上周六出貨包裹的派件單號", "出貨單號", "宅配單號"
     split out lines of tracking+code+recipient, then push
     only the matching Vicky/Yumi lines + footer.
     """
     raw = event["message"]["text"]
-    if "上周六出貨包裹的派件單號" not in raw:
+    if "上周六出貨包裹的派件單號" not in raw and not ("出貨單號" in raw and "宅配單號" in raw):
         return
 
-    # Split into non-empty lines
-    lines = [l.strip() for l in raw.splitlines() if l.strip()]
-    # Locate footer (starts with “您好”)
-    footer_idx = next((i for i,l in enumerate(lines) if l.startswith("您好")), len(lines))
-    header = lines[:footer_idx]
-    footer = "\n".join(lines[footer_idx:])
-
     vicky, yumi = [], []
-    for line in header:
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        recipient = parts[-1]
-        if recipient in VICKY_NAMES:
-            vicky.append(line)
-        elif recipient in YUMI_NAMES:
-            yumi.append(line)
+
+    # — Soquick flow —
+    if "上周六出貨包裹的派件單號" in raw:
+        # Split into non-empty lines
+        lines = [l.strip() for l in raw.splitlines() if l.strip()]
+        # Locate footer (starts with “您好”)
+        footer_idx = next((i for i,l in enumerate(lines) if l.startswith("您好")), len(lines))
+        header = lines[:footer_idx]
+        footer = "\n".join(lines[footer_idx:])
+
+        for line in header:
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            recipient = parts[-1]
+            if recipient in VICKY_NAMES:
+                vicky.append(line)
+            elif recipient in YUMI_NAMES:
+                yumi.append(line)
+
+    # — Ace flow —
+    else:
+        # split into blocks on blank lines
+        blocks = [b.strip() for b in raw.split("\n\n") if b.strip()]
+        for block in blocks:
+            if "出貨單號" not in block:
+                continue
+            lines = block.splitlines()
+            if len(lines) < 3:
+                continue
+            # name is the first token of the third line
+            recipient = lines[2].split()[0]
+            if recipient in VICKY_NAMES:
+                vicky.append(block)
+            elif recipient in YUMI_NAMES:
+                yumi.append(block)
 
     def push(group, msgs):
         if not msgs:
             return
-        text = "\n".join(msgs) + "\n\n" + footer
+        
+        # choose formatting per flow
+        if "上周六出貨包裹的派件單號" in raw:
+            text = "\n".join(msgs) + "\n\n" + footer
+        else:
+            text = "\n\n".join(msgs)
         payload = {"to": group, "messages":[{"type":"text","text": text}]}
         resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
         log.info(f"Sent {len(msgs)} Soquick blocks to {group}: {resp.status_code}")
 
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID,  yumi)
+
+
 
 def handle_soquick_full_notification(event):
     log.info(f"[SOQ FULL] invoked on text={event['message']['text']!r}")
@@ -1869,7 +1896,7 @@ def webhook():
                 
         # ——— Soquick “上周六出貨包裹的派件單號” blocks ——————————————
         if group_id == SOQUICK_GROUP_ID and "上周六出貨包裹的派件單號" in text:
-            handle_soquick_shipments(event)
+            handle_soquick_and_ace_shipments(event)
             continue
 
         # ——— Soquick “請通知…申報相符” messages ——————————————
