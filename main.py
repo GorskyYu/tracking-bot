@@ -550,7 +550,7 @@ def handle_soquick_and_ace_shipments(event):
         # split into one block per “出貨單號:” line
         blocks = [b.strip().strip('"') for b in re.split(r'(?=出貨單號:)', raw) if b.strip()]
         
-        for blk in raw_blocks:
+        for blk in blocks:
             # strip whitespace and any wrapping quotes
             block = blk.strip().strip('"')
             if not block:
