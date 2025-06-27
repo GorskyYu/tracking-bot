@@ -327,20 +327,26 @@ def vicky_has_active_orders() -> list[str]:
       }
     }
     '''
-    variables = {
-      "boardId": VICKY_SUBITEM_BOARD_ID,
-      "columnId": VICKY_STATUS_COLUMN_ID,
-      "value": "溫哥華收款"
-    }
-    resp = requests.post(
-      MONDAY_API_URL,
-      headers={ "Authorization": MONDAY_TOKEN, "Content-Type": "application/json" },
-      json={ "query": query, "variables": variables }
-    )
-    data = resp.json().get("data", {}) \
-                   .get("items_page_by_column_values", {}) \
-                   .get("items", [])
-    to_remind = [ item["name"].strip() for item in data if item.get("name") ]
+    # 查詢多種需提醒的狀態
+    statuses = ["收包裹", "測量", "重新包裝", "提供資料", "溫哥華收款"]
+    to_remind = []
+    for status in statuses:
+        vars2 = {
+          "boardId": VICKY_SUBITEM_BOARD_ID,
+          "columnId": VICKY_STATUS_COLUMN_ID,
+          "value": status
+        }
+        resp2 = requests.post(
+          MONDAY_API_URL,
+          headers={ "Authorization": MONDAY_TOKEN, "Content-Type": "application/json" },
+          json={ "query": query, "variables": vars2 }
+        )
+        items2 = resp2.json().get("data", {}) \
+                          .get("items_page_by_column_values", {}) \
+                          .get("items", [])
+        to_remind.extend(item["name"].strip() for item in items2 if item.get("name"))
+    # 去重排序
+    to_remind = sorted(set(to_remind))
     if not to_remind:
       return
 
@@ -2075,7 +2081,7 @@ sched = BackgroundScheduler(timezone="America/Vancouver")
 sched.add_job(lambda: remind_vicky("星期四"),
               trigger="cron", day_of_week="wed", hour=18, minute=00)
 sched.add_job(lambda: remind_vicky("週末"),
-              trigger="cron", day_of_week="fri", hour=19, minute=00)
+              trigger="cron", day_of_week="fri", hour=17, minute=00)
 
 sched.start()
 log.info("Scheduler started")
