@@ -330,6 +330,7 @@ def vicky_has_active_orders() -> list[str]:
     statuses = ["收包裹", "測量", "重新包裝", "提供資料", "溫哥華收款"]
     to_remind = []
     for status in statuses:
+        log.info(f"[vicky_has_active_orders] querying status {status!r}")
         vars2 = {
           "boardId": VICKY_SUBITEM_BOARD_ID,
           "columnId": VICKY_STATUS_COLUMN_ID,
@@ -343,11 +344,13 @@ def vicky_has_active_orders() -> list[str]:
         items2 = resp2.json().get("data", {}) \
                           .get("items_page_by_column_values", {}) \
                           .get("items", [])
+        log.info(f"[vicky_has_active_orders] got {len(items2)} items for {status!r}")
         to_remind.extend(item["name"].strip() for item in items2 if item.get("name"))
+    
     # 去重排序
     to_remind = sorted(set(to_remind))
     if not to_remind:
-      return
+      return []
 
     # 3) Fetch raw tracking info for exactly those TE IDs
     resp_tr = call_api("shipment/tracking", {
@@ -362,6 +365,7 @@ def vicky_has_active_orders() -> list[str]:
         for item in resp_tr
         if item.get("number")
     ]
+    log.info(f"[vicky_has_active_orders] returning {len(tracking_numbers)} UPS numbers")
     return tracking_numbers
 
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
