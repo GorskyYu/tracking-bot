@@ -366,10 +366,20 @@ def vicky_has_active_orders() -> list[str]:
 
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
-    # idempotency guard …
+    log.info(f"[remind_vicky] Called for {day_name}")
+     tz = pytz.timezone(TIMEZONE)
+     today_str = datetime.now(tz).date().isoformat()
+     guard_key = f"vicky_reminder_{day_name}_{today_str}"
+    log.info(f"[remind_vicky] guard_key={guard_key!r}, existing={r.get(guard_key)!r}")
+     if r.get(guard_key):
+        log.info("[remind_vicky] Skipping because guard is set")
+         return  
+         
     # 1) Grab Monday subitems in the statuses you care about
     to_remind_ids = vicky_has_active_orders()  # returns list of TE IDs from Monday
+    log.info(f"[remind_vicky] vicky_has_active_orders → {to_remind_ids!r}")
     if not to_remind_ids:
+        log.info("[remind_vicky] No subitems in statuses to remind, exiting")
         return
 
     # 2) Fetch only those from TE
@@ -377,11 +387,14 @@ def remind_vicky(day_name: str):
         "keyword": ",".join(to_remind_ids),
         "rsync": 0, "timezone": TIMEZONE
     }).get("response", []) or []
+    log.info(f"[remind_vicky] shipment/tracking → {resp_tr!r}")
 
     # 3) Extract UPS numbers
     to_remind = [ item["number"] for item in resp_tr if item.get("number") ]
+    log.info(f"[remind_vicky] numbers to push → {to_remind!r}")
 
     if not to_remind:
+        log.info("[remind_vicky] No tracking numbers found, exiting")
         return
 
     # ── 3) Assemble and send reminder (no sheet link) ──────────────────
