@@ -22,12 +22,12 @@ ID_RE = re.compile(r"^([^ ]+)")
 
 def schedule_jobs():
     sched = BlockingScheduler(timezone="America/Vancouver")
-    # 週三 18:00 提醒週四出貨
+    # 週三 17:30 提醒週四出貨
     sched.add_job(lambda: remind_vicky("星期四"),
-                  trigger="cron", day_of_week="wed", hour=18, minute=0)
-    # 週五 17:00 提醒週末出貨
+                  trigger="cron", day_of_week="wed", hour=17, minute=30)
+    # 週五 18:00 提醒週末出貨
     sched.add_job(lambda: remind_vicky("週末"),
-                  trigger="cron", day_of_week="fri", hour=20, minute=37)
+                  trigger="cron", day_of_week="fri", hour=18, minute=0)
     sched.start()
 
 if __name__ == "__main__":

@@ -314,7 +314,7 @@ def vicky_has_active_orders() -> list[str]:
     """
     Return a list of Vicky’s active UPS tracking numbers (the 1Z… codes).
     """
-    # ── 1.1) 從 Monday 拿所有「狀態＝溫哥華收款」的 Subitem 名稱當 Tracking IDs ────────────────
+    # include parent_item.name so we can filter only Vicky’s
     query = '''
     query ($boardId: ID!, $columnId: String!, $value: String!) {
       items_page_by_column_values(
@@ -322,51 +322,50 @@ def vicky_has_active_orders() -> list[str]:
         limit: 100,
         columns: [{ column_id: $columnId, column_values: [$value] }]
       ) {
-        items { name }
+        items {
+          name
+          parent_item { name }
+        }
       }
     }
     '''
     # 查詢多種需提醒的狀態
     statuses = ["收包裹", "測量", "重新包裝", "提供資料", "溫哥華收款"]
     to_remind = []
+    
     for status in statuses:
         log.info(f"[vicky_has_active_orders] querying status {status!r}")
-        vars2 = {
-          "boardId": VICKY_SUBITEM_BOARD_ID,
-          "columnId": VICKY_STATUS_COLUMN_ID,
-          "value": status
-        }
-        resp2 = requests.post(
-          MONDAY_API_URL,
-          headers={ "Authorization": MONDAY_TOKEN, "Content-Type": "application/json" },
-          json={ "query": query, "variables": vars2 }
+        resp = requests.post(
+            MONDAY_API_URL,
+            headers={ "Authorization": f"Bearer {MONDAY_TOKEN}", "Content-Type": "application/json" },
+            json={ "query": query, "variables": {
+                "boardId": VICKY_SUBITEM_BOARD_ID,
+                "columnId": VICKY_STATUS_COLUMN_ID,
+                "value": status
+            }}
         )
-        items2 = resp2.json().get("data", {}) \
-                          .get("items_page_by_column_values", {}) \
-                          .get("items", [])
-        log.info(f"[vicky_has_active_orders] got {len(items2)} items for {status!r}")
-        to_remind.extend(item["name"].strip() for item in items2 if item.get("name"))
+        items = resp.json()\
+                   .get("data", {})\
+                   .get("items_page_by_column_values", {})\
+                   .get("items", [])
+
+        # keep only Vicky’s
+        filtered = [
+            itm["name"].strip()
+            for itm in items
+            if itm.get("parent_item", {}).get("name", "").find("Vicky") != -1
+        ]
+        log.info(f"[vicky_has_active_orders] {len(filtered)} of {len(items)} are Vicky’s for {status!r}")
+        to_remind.extend(filtered)
     
     # 去重排序
     to_remind = sorted(set(to_remind))
+    
     if not to_remind:
       return []
 
-    # 3) Fetch raw tracking info for exactly those TE IDs
-    resp_tr = call_api("shipment/tracking", {
-        "keyword": ",".join(to_remind),
-        "rsync":   0,
-        "timezone": TIMEZONE
-    }).get("response", [])
-
-    # 4) Extract the UPS “number” field
-    tracking_numbers = [
-        item.get("number", "").strip()
-        for item in resp_tr
-        if item.get("number")
-    ]
-    log.info(f"[vicky_has_active_orders] returning {len(tracking_numbers)} UPS numbers")
-    return tracking_numbers
+    # 3) We already have the subitem names (tracking IDs) in to_remind:
+    return to_remind
 
 # ─── Wednesday/Friday reminder callback ───────────────────────────────────────
 def remind_vicky(day_name: str):
@@ -386,16 +385,8 @@ def remind_vicky(day_name: str):
         log.info("[remind_vicky] No subitems in statuses to remind, exiting")
         return
 
-    # 2) Fetch only those from TE
-    resp_tr = call_api("shipment/tracking", {
-        "keyword": ",".join(to_remind_ids),
-        "rsync": 0, "timezone": TIMEZONE
-    }).get("response", []) or []
-    log.info(f"[remind_vicky] shipment/tracking → {resp_tr!r}")
-
-    # 3) Extract UPS numbers
-    to_remind = [ item["number"] for item in resp_tr if item.get("number") ]
-    log.info(f"[remind_vicky] numbers to push → {to_remind!r}")
+    # 2) Use the subitem names directly as the list to remind
+    to_remind = to_remind_ids
 
     if not to_remind:
         log.info("[remind_vicky] No tracking numbers found, exiting")
