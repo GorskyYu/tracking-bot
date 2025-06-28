@@ -9,7 +9,6 @@ import logging
 import re
 from urllib.parse import quote
 from flask import Flask, request, jsonify
-from apscheduler.schedulers.background import BackgroundScheduler
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import timedelta, datetime, timezone
@@ -365,29 +364,82 @@ def vicky_has_active_orders() -> list[str]:
     ]
     return tracking_numbers
 
+# ─── Wednesday/Friday reminder callback ───────────────────────────────────────
+def remind_vicky(day_name: str):
+    # idempotency guard …
+    # 1) Grab Monday subitems in the statuses you care about
+    to_remind_ids = vicky_has_active_orders()  # returns list of TE IDs from Monday
+    if not to_remind_ids:
+        return
 
-def vicky_sheet_recently_edited():
-    # 1) build a credentials object from your SERVICE_ACCOUNT JSON
-    creds = Credentials.from_service_account_info(
-        json.loads(os.environ["GOOGLE_SVCKEY_JSON"]),
-        scopes=SCOPES
+    # 2) Fetch only those from TE
+    resp_tr = call_api("shipment/tracking", {
+        "keyword": ",".join(to_remind_ids),
+        "rsync": 0, "timezone": TIMEZONE
+    }).get("response", []) or []
+
+    # 3) Extract UPS numbers
+    to_remind = [ item["number"] for item in resp_tr if item.get("number") ]
+
+    if not to_remind:
+        return
+
+    # ── 3) Assemble and send reminder (no sheet link) ──────────────────
+    placeholder = "{user1}"
+    header = (
+        f"{placeholder} 您好，溫哥華倉庫預計{day_name}出貨，"
+        "請麻煩填寫以下包裹的内容物清單。謝謝！"
     )
+    body = "\n".join(to_remind)
+    payload = {
+        "to": VICKY_GROUP_ID,
+        "messages": [{
+            "type":        "textV2",
+            "text":        "\n\n".join([header, body]),
+            "substitution": {
+                "user1": {
+                    "type": "mention",
+                    "mentionee": {
+                        "type":   "user",
+                        "userId": VICKY_USER_ID
+                    }
+                }
+            }
+        }]
+    }
+    try:
+        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        if resp.status_code == 200:
+            # mark as sent for today
+            r.set(guard_key, "1", ex=24*3600)
+            log.info(f"Sent Vicky reminder for {day_name}: {len(to_remind)} packages")
+        else:
+            log.error(f"Failed to send Vicky reminder: {resp.status_code} {resp.text}")
+    except Exception as e:
+        log.error(f"Error sending Vicky reminder: {e}")
 
-    # 2) fetch the spreadsheet’s Drive metadata
-    drive = build("drive", "v3", credentials=creds)
-    sheet_url = os.environ["VICKY_SHEET_URL"]
-    file_id = sheet_url.split("/")[5]            # extract the ID from the URL
-    meta = drive.files().get(
-        fileId=file_id,
-        fields="modifiedTime"
-    ).execute()
+# def vicky_sheet_recently_edited():
+    ##1) build a credentials object from your SERVICE_ACCOUNT JSON
+    # creds = Credentials.from_service_account_info(
+        # json.loads(os.environ["GOOGLE_SVCKEY_JSON"]),
+        # scopes=SCOPES
+    # )
 
-    # 3) parse the ISO timestamp into a datetime
-    last_edit = datetime.fromisoformat(meta["modifiedTime"].replace("Z","+00:00"))
+    ##2) fetch the spreadsheet’s Drive metadata
+    # drive = build("drive", "v3", credentials=creds)
+    # sheet_url = os.environ["VICKY_SHEET_URL"]
+    # file_id = sheet_url.split("/")[5]            # extract the ID from the URL
+    # meta = drive.files().get(
+        # fileId=file_id,
+        # fields="modifiedTime"
+    # ).execute()
 
-    # 4) compare against now (UTC)
-    age = datetime.now(timezone.utc) - last_edit
-    return age.days < 3
+    ##3) parse the ISO timestamp into a datetime
+    # last_edit = datetime.fromisoformat(meta["modifiedTime"].replace("Z","+00:00"))
+
+    ##4) compare against now (UTC)
+    # age = datetime.now(timezone.utc) - last_edit
+    # return age.days < 3
   
 def handle_ace_ezway_check_and_push_to_yves(event):
     """
@@ -753,61 +805,6 @@ def handle_missing_confirm(event):
                 headers=LINE_HEADERS,
                 json={"to": target, "messages":[{"type":"text","text": f"{name} 尚未按申報相符"}]}
             )
- 
-# ─── Wednesday/Friday reminder callback ───────────────────────────────────────
-def remind_vicky(day_name: str):
-    # idempotency guard …
-    # 1) Grab Monday subitems in the statuses you care about
-    to_remind_ids = vicky_has_active_orders()  # returns list of TE IDs from Monday
-    if not to_remind_ids:
-        return
-
-    # 2) Fetch only those from TE
-    resp_tr = call_api("shipment/tracking", {
-        "keyword": ",".join(to_remind_ids),
-        "rsync": 0, "timezone": TIMEZONE
-    }).get("response", []) or []
-
-    # 3) Extract UPS numbers
-    to_remind = [ item["number"] for item in resp_tr if item.get("number") ]
-
-    if not to_remind:
-        return
-
-    # ── 3) Assemble and send reminder (no sheet link) ──────────────────
-    placeholder = "{user1}"
-    header = (
-        f"{placeholder} 您好，溫哥華倉庫預計{day_name}出貨，"
-        "請麻煩填寫以下包裹的内容物清單。謝謝！"
-    )
-    body = "\n".join(to_remind)
-    payload = {
-        "to": VICKY_GROUP_ID,
-        "messages": [{
-            "type":        "textV2",
-            "text":        "\n\n".join([header, body]),
-            "substitution": {
-                "user1": {
-                    "type": "mention",
-                    "mentionee": {
-                        "type":   "user",
-                        "userId": VICKY_USER_ID
-                    }
-                }
-            }
-        }]
-    }
-    try:
-        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        if resp.status_code == 200:
-            # mark as sent for today
-            r.set(guard_key, "1", ex=24*3600)
-            log.info(f"Sent Vicky reminder for {day_name}: {len(to_remind)} packages")
-        else:
-            log.error(f"Failed to send Vicky reminder: {resp.status_code} {resp.text}")
-    except Exception as e:
-        log.error(f"Error sending Vicky reminder: {e}")
-
 
 # ─── Ace schedule handler ─────────────────────────────────────────────────────
 def handle_ace_schedule(event):
@@ -2073,9 +2070,6 @@ def check_te_updates():
             }
             requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
     save_state(state)   
-
-# ─── Poller + Scheduler Bootstrap ────────────────────────────────────────────
-sched = BackgroundScheduler(timezone="America/Vancouver")
 
 # ——— Vicky reminders (Wed & Fri at 18:00) ——————————————————————
 sched.add_job(lambda: remind_vicky("星期四"),
