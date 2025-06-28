@@ -2071,14 +2071,14 @@ def check_te_updates():
             requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
     save_state(state)   
 
-# ——— Vicky reminders (Wed & Fri at 18:00) ——————————————————————
-sched.add_job(lambda: remind_vicky("星期四"),
-              trigger="cron", day_of_week="wed", hour=18, minute=00)
-sched.add_job(lambda: remind_vicky("週末"),
-              trigger="cron", day_of_week="fri", hour=17, minute=00)
+##——— Vicky reminders (Wed & Fri at 18:00) ——————————————————————
+# sched.add_job(lambda: remind_vicky("星期四"),
+              # trigger="cron", day_of_week="wed", hour=18, minute=00)
+# sched.add_job(lambda: remind_vicky("週末"),
+              # trigger="cron", day_of_week="fri", hour=17, minute=00)
 
-sched.start()
-log.info("Scheduler started")
+# sched.start()
+# log.info("Scheduler started")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
