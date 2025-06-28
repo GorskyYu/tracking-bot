@@ -306,10 +306,10 @@ def get_statuses_for(keywords: list[str]) -> list[str]:
 
 MONDAY_API_URL    = "https://api.monday.com/v2"
 MONDAY_TOKEN      = os.getenv("MONDAY_TOKEN")
-VICKY_SUBITEM_BOARD_ID = 9359342766    # 請填你 Vicky 子任務所在的 Board ID
+VICKY_SUBITEM_BOARD_ID = 4815120249    # 請填你 Vicky 子任務所在的 Board ID
 VICKY_STATUS_COLUMN_ID = "status__1"   # 請填溫哥華收款那個欄位的 column_id
 
-# ─── Vicky-reminder helpers ───────────────────────────────────────────────────    
+# ─── Vicky-reminder helpers ───────────────────────────────────────────────────(under construction)    
 def vicky_has_active_orders() -> list[str]:
     """
     Return a list of Vicky’s active UPS tracking numbers (the 1Z… codes).
