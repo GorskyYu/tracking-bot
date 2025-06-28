@@ -27,7 +27,7 @@ def schedule_jobs():
                   trigger="cron", day_of_week="wed", hour=18, minute=0)
     # 週五 17:00 提醒週末出貨
     sched.add_job(lambda: remind_vicky("週末"),
-                  trigger="cron", day_of_week="fri", hour=20, minute=21)
+                  trigger="cron", day_of_week="fri", hour=20, minute=23)
     sched.start()
 
 if __name__ == "__main__":
