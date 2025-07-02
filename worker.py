@@ -10,6 +10,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import redis
+from apscheduler.schedulers.blocking import BlockingScheduler
 
 # connect to your Redis® Cloud instance
 # Heroku sets REDIS_URL (or REDISCLOUD_URL) for this add-on
@@ -67,8 +68,13 @@ def within_business_hours() -> bool:
         return False
     return 7 <= now.hour < 18
 
-# ─── Main Polling Logic ───────────────────────────────────────────────────────
-def main():
+def push_line(group_id, text):
+    payload = {"to": group_id, "messages":[{"type":"text","text":text}]}
+    headers = {"Content-Type":"application/json","Authorization":f"Bearer {LINE_TOKEN}"}
+    requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload)
+
+# ─── 1) Yumi’s 30-min poll ────────────────────────────────────────────────────
+def poll_tripleeagle_for_yumi():
     if not within_business_hours():
         print("Outside Mon–Sat 07:00–18:00 PST, skipping.")
         return
@@ -134,5 +140,22 @@ def main():
 
     save_cache(cache)
 
+# ─── 2) Vicky’s Wed/Fri reminders ─────────────────────────────────────────────
+from main import vicky_has_active_orders, remind_vicky  # import your existing functions
+
+def schedule_vicky_reminders(sched: BlockingScheduler):
+    # Wed 18:00 → remind for Thursday
+    sched.add_job(lambda: remind_vicky("星期四"),
+                  trigger="cron", day_of_week="wed", hour=18, minute=0)
+    # Fri 17:00 → remind for weekend
+    sched.add_job(lambda: remind_vicky("週末"),
+                  trigger="cron", day_of_week="fri", hour=17, minute=0)
+
+# ─── STARTUP ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    main()
+    sched = BlockingScheduler(timezone=TIMEZONE)
+    # every 30 min
+    sched.add_job(poll_tripleeagle_for_yumi, trigger="interval", minutes=30)
+    schedule_vicky_reminders(sched)
+    print("▶︎ Worker scheduler started")
+    sched.start()

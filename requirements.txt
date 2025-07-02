@@ -61,3 +61,5 @@ pyzbar
 PyMuPDF
 pdf2image
 PyPDF2
+redis
+rq
