@@ -1098,6 +1098,7 @@ def webhook():
             }
         ):
             file_id = msg["id"]
+            original_filename = msg.get("fileName", "uploaded.pdf") # fallback 檔名
             try:
                 # 1) 下載 PDF 檔案
                 resp = requests.get(
@@ -1315,7 +1316,7 @@ def webhook():
                     ''',
                     "map": json.dumps({ "file": ["variables.file"] })
                 }
-                files = [("file", ("attachment.pdf", pdf_bytes, "application/pdf"))]
+                files = [("file", (original_filename, pdf_bytes, "application/pdf"))]
                 file_resp = requests.post(
                     f"{MONDAY_API_URL}/file",
                     headers={"Authorization": MONDAY_API_TOKEN},
