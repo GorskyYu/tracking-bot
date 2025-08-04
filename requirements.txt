@@ -63,3 +63,6 @@ pdf2image
 PyPDF2
 redis
 rq
+requests
+python-dotenv
+holidays
