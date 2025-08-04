@@ -105,8 +105,8 @@ CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|250N)\d+[A-Z0-9]*\b")
 MISSING_CONFIRM = "這幾位還沒有按申報相符"
 
 # Names to look for in each group’s list
-VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲"}
-YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑"}
+VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲","高懿欣","崔書鳳"}
+YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑","陳卉怡","洪瑜駿"}
 YVES_NAMES = {
     "梁穎琦",
     "張詠凱",
@@ -1098,6 +1098,7 @@ def webhook():
             }
         ):
             file_id = msg["id"]
+            original_filename = msg.get("fileName", "uploaded.pdf") # fallback 檔名
             try:
                 # 1) 下載 PDF 檔案
                 resp = requests.get(
@@ -1315,7 +1316,7 @@ def webhook():
                     ''',
                     "map": json.dumps({ "file": ["variables.file"] })
                 }
-                files = [("file", ("attachment.pdf", pdf_bytes, "application/pdf"))]
+                files = [("file", (original_filename, pdf_bytes, "application/pdf"))]
                 file_resp = requests.post(
                     f"{MONDAY_API_URL}/file",
                     headers={"Authorization": MONDAY_API_TOKEN},
