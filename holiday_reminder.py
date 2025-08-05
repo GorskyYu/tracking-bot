@@ -11,8 +11,8 @@ def send_canada_holiday_reminder():
     # print("✅ 測試中，強制執行假日檢查")
 
     # 查詢「下週」的國定假日
-    # today = datetime.date.today()
-    today = datetime.date(2025, 7, 28)  # 任意週一，測試下週一是否為假日
+    today = datetime.date.today()
+    # today = datetime.date(2025, 7, 28)  # 任意週一，測試下週一是否為假日
     start = today + datetime.timedelta(days=1)
     end = today + datetime.timedelta(days=7)
 
