@@ -20,8 +20,6 @@ from collections import defaultdict
 import threading
 from typing import Optional
 
-from holiday_reminder import send_canada_holiday_reminder
-
 import io
 from io import BytesIO
 from PIL import Image, ImageFilter
@@ -1972,8 +1970,8 @@ def webhook():
 
         # 9) Your existing “下個國定假日” logic
         if text == "下個國定假日":
-            from holiday_reminder import get_next_holiday_message
-            msg = get_next_holiday_message()
+            from holiday_reminder import get_next_holiday
+            msg = get_next_holiday()
             reply_token = event["replyToken"]
             requests.post(
                 "https://api.line.me/v2/bot/message/reply",
