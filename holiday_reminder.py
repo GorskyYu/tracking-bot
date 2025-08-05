@@ -41,6 +41,25 @@ def send_canada_holiday_reminder():
 
     push_line_notify(msg)
 
+def get_next_holiday():
+    today = datetime.date.today()
+
+    # 整合 Federal + Ontario 假期
+    year = today.year
+    ca_federal = holidays.CA(years=year)
+    ca_provincial = holidays.CA(prov='ON', years=year)
+
+    all_holidays = dict(ca_federal.items())
+    all_holidays.update(ca_provincial.items())
+
+    next_holidays = [(dt, name) for dt, name in sorted(all_holidays.items()) if dt > today]
+
+    if not next_holidays:
+        return "🥳 今年內沒有剩下的加拿大國定假日！"
+
+    dt, name = next_holidays[0]
+    return f"🇨🇦 下個加拿大國定假日是：\n📌 {dt.strftime('%Y-%m-%d')}：{name}"
+
 def push_line_notify(msg):
     token = os.getenv("LINE_TOKEN")  # Messaging API Token
     target = os.getenv("LINE_GROUP_ID_YUMI")  # 群組 ID

@@ -20,6 +20,8 @@ from collections import defaultdict
 import threading
 from typing import Optional
 
+from holiday_reminder import send_canada_holiday_reminder
+
 import io
 from io import BytesIO
 from PIL import Image, ImageFilter
@@ -1967,6 +1969,11 @@ def webhook():
             )
             print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
             log.info(f"LINE reply status={resp.status_code}, body={resp.text}")
+
+        # 9) Your existing “下個國定假日” logic
+        if "下個國定假日" in text:
+            send_canada_holiday_reminder()
+            return
 
     return "OK", 200
     
