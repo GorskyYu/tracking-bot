@@ -33,16 +33,44 @@ import pytz
 # Requires:
 # pip install pymupdf pillow openai
 
-# ─── Google Sheets 認證 ─────────────────────────
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
-GA_SVC_INFO = json.loads(os.environ["GOOGLE_SVCKEY_JSON"])  # load your Google service account credentials from the env var
-GC = gspread.service_account_from_dict(GA_SVC_INFO) # build a fully-authorized client
-creds = ServiceAccountCredentials.from_json_keyfile_dict(GA_SVC_INFO, SCOPES)
-gs = gspread.authorize(creds)
-# 打開 Tracking 工作表
-ws_tracking = gs.open_by_key("1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q") \
-                .worksheet("Tracking")
+# ─── Google Sheets 認證（環境變數 + lazy init）─────────────────────────
+import os, json, base64, gspread
+from google.oauth2.service_account import Credentials
 
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+_gs = None  # lazy singleton, avoid authenticating at import time
+
+def get_gspread_client():
+    """Authorize gspread using env vars. Prefers GCP_SA_JSON_BASE64; falls back to GOOGLE_SVCKEY_JSON."""
+    global _gs
+    if _gs is not None:
+        return _gs
+
+    # Prefer the base64 var you added on Heroku
+    b64 = os.getenv("GCP_SA_JSON_BASE64", "")
+    json_inline = os.getenv("GOOGLE_SVCKEY_JSON", "")
+
+    if b64:
+        info = json.loads(base64.b64decode(b64))
+    elif json_inline:
+        # Back-compat: if you're still providing raw JSON text in GOOGLE_SVCKEY_JSON
+        info = json.loads(json_inline)
+    else:
+        raise RuntimeError("Missing credentials: set GCP_SA_JSON_BASE64 (preferred) or GOOGLE_SVCKEY_JSON")
+
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+
+    # Only if you intentionally use Workspace domain-wide delegation:
+    delegate = os.getenv("GSUITE_DELEGATE")
+    if delegate:
+        creds = creds.with_subject(delegate)
+
+    _gs = gspread.authorize(creds)
+    return _gs
 
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -504,6 +532,7 @@ def handle_ace_ezway_check_and_push_to_yves(event):
 
     # ── 2) Open the ACE sheet and find the “closest‐date” row ─────────────
     ACE_SHEET_URL = os.getenv("ACE_SHEET_URL")
+    gs = get_gspread_client()
     sheet = gs.open_by_url(ACE_SHEET_URL).sheet1
     data = sheet.get_all_values()  # raw rows as lists of strings
 
@@ -654,6 +683,9 @@ def handle_soquick_and_ace_shipments(event):
 
 
 def handle_soquick_full_notification(event):
+
+
+
     log.info(f"[SOQ FULL] invoked on text={event['message']['text']!r}")
     text = event["message"]["text"]
     """
@@ -740,6 +772,14 @@ def handle_soquick_full_notification(event):
         base = dt.date()
         candidates = [(base + datetime.timedelta(days=d)).strftime("%y%m%d")
                       for d in range(-3, 3)]
+
+        #guard to ensure the sheet exist and don't crash
+        SQ_SHEET_URL = os.getenv("SQ_SHEET_URL")
+        if not SQ_SHEET_URL:
+            log.error("[SOQ FULL] SQ_SHEET_URL not set")
+            return        
+        
+        gs = get_gspread_client()
         ss = gs.open_by_url(SQ_SHEET_URL)
         found = [ws.title for ws in ss.worksheets() if ws.title in candidates]
         if len(found) == 1:
@@ -990,10 +1030,10 @@ def extract_text_from_images(image, prompt="Please extract text from this image.
     """
     agent = LLMAgent()
     
-    # Crop second bar code for tracking number (guarded)
+    # Barcode (second box): safe crop + decode
+    W, H = image.size
+    x, y, w, h = 120, 995, 750, 260
     try:
-        x, y, w, h = 120, 995, 750, 260
-        W, H = image.size
         x1 = max(0, min(x, W))
         y1 = max(0, min(y, H))
         x2 = max(x1, min(x + w, W))
@@ -1004,7 +1044,7 @@ def extract_text_from_images(image, prompt="Please extract text from this image.
             objs = decode(cropped_img)
             if objs:
                 try:
-                    tracking_number = objs[0].data.decode('utf-8')
+                    tracking_number = objs[0].data.decode("utf-8")
                 except Exception:
                     tracking_number = ""
     except Exception as _e:
@@ -1057,16 +1097,22 @@ def lookup_full_tracking(ups_last4: str) -> Optional[str]:
     """
     在 Tracking 工作表的 S/T/U 欄找唯一尾號匹配，回傳完整追蹤碼或 None。
     """
+    SHEET_ID = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
+    gs = get_gspread_client()
+    ss = gs.open_by_key(SHEET_ID)
+    ws = ss.worksheet("Tracking")
+
     cols = [19, 20, 21]  # S=19, T=20, U=21
     matches = []
     for col_idx in cols:
-        vals = ws_tracking.col_values(col_idx)
+        vals = ws.col_values(col_idx)
         for v in vals[1:]:
-            v = v.strip()
+            v = (v or "").strip()
             if len(v) >= 4 and v[-4:] == ups_last4:
                 matches.append(v)
+
     if len(matches) != 1:
-        log.warn(f"UPS尾號 {ups_last4} 找到 {len(matches)} 筆，不唯一，跳過")
+        log.warning(f"UPS尾號 {ups_last4} 找到 {len(matches)} 筆，不唯一，跳過")
         return None
     return matches[0]
 
@@ -1111,6 +1157,7 @@ app = Flask(__name__)
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
+
     import re
     # Log incoming methods
     # print(f"[Webhook] Received {request.method} to /webhook")
@@ -1191,10 +1238,9 @@ def webhook():
                             if "reference number" in full_data:
                                 full_data["reference_number"] = full_data.pop("reference number")
 
-                            # 5B fallback: if still no tracking_number but we have raw text, regex it (same as later pages)
-                            if not full_data.get("tracking_number") and isinstance(full_data_raw, dict) and "_raw" in full_data_raw:
-                                raw = full_data_raw["_raw"]
-                                m = re.search(r"(1Z[\sA-Za-z0-9]+)", raw)
+                            # ✅ Fallback: if first-page returned JSON-ish string with spaces inside 1Z code
+                            if "_raw" in full_data and not full_data.get("tracking_number"):
+                                m = re.search(r"(1Z[ A-Za-z0-9]+)", full_data["_raw"])
                                 if m:
                                     full_data["tracking_number"] = m.group(1).replace(" ", "")
 
@@ -1242,6 +1288,7 @@ def webhook():
                 # 開啟試算表與 Tracking 試算表頁籤
                 SHEET_ID = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
                 WS_TITLE = "Tracking"
+                gs = get_gspread_client()
                 ss = gs.open_by_key(SHEET_ID)
                 ws = ss.worksheet(WS_TITLE)
 
@@ -1794,7 +1841,7 @@ def webhook():
                 items = resp.json().get("data", {}) \
                                  .get("items_by_column_values", [])
                 if not items:
-                    log.warn(f"Monday: subitem 名稱={full_no} 找不到，跳過")
+                    log.warning(f"Monday: subitem 名稱={full_no} 找不到，跳過")
                     continue
 
                 sub_id = items[0]["id"]  # 取第一個 match 的 subitem ID
