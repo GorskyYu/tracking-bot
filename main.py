@@ -280,6 +280,19 @@ def call_api(action: str, payload: dict = None) -> dict:
     r.raise_for_status()
     return r.json()
 
+# Helper for sending single final LINE message for uploading PDF
+def _line_push(to: str, text: str):
+    try:
+        requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers=LINE_HEADERS,
+            json={"to": to, "messages": [{"type": "text", "text": text}]},
+            timeout=10,
+        )
+    except Exception as e:
+        log.error(f"[LINE PUSH] failed: {e}")
+
+
 # ─── Business Logic ───────────────────────────────────────────────────────────
 def get_statuses_for(keywords: list[str]) -> list[str]:
     # 1) list all active orders
@@ -1255,11 +1268,26 @@ def webhook():
                             if "reference number" in full_data:
                                 full_data["reference_number"] = full_data.pop("reference number")
 
-                            # Fallback: if first-page returned JSON-ish string with spaces inside 1Z code
-                            if "_raw" in full_data and not full_data.get("tracking_number"):
-                                m = re.search(r"(1Z[ A-Za-z0-9]+)", full_data["_raw"])
-                                if m:
-                                    full_data["tracking_number"] = m.group(1).replace(" ", "")
+                            # Fallbacks: recover UPS from raw JSON-ish text (with spaces) if missing
+                            if not full_data.get("tracking_number"):
+                                # 1) if your parsed dict still carries _raw
+                                if "_raw" in full_data:
+                                    m = re.search(r"(1Z[\sA-Za-z0-9]+)", full_data["_raw"])
+                                    if m:
+                                        full_data["tracking_number"] = m.group(1).replace(" ", "")
+                                # 2) also try the original first-page return (string or dict-with-_raw)
+                                if not full_data.get("tracking_number"):
+                                    raw_candidates = []
+                                    if isinstance(full_data_raw, str):
+                                        raw_candidates.append(full_data_raw)
+                                    elif isinstance(full_data_raw, dict) and "_raw" in full_data_raw:
+                                        raw_candidates.append(full_data_raw["_raw"])
+                                    for raw in raw_candidates:
+                                        m = re.search(r"(1Z[\sA-Za-z0-9]+)", raw)
+                                        if m:
+                                            full_data["tracking_number"] = m.group(1).replace(" ", "")
+                                            break
+
 
                             # 將第一頁的 tracking 也加入列表
                             tn = full_data.get("tracking_number")
@@ -1352,6 +1380,10 @@ def webhook():
                             },
                             timeout=10,
                         )
+                        _line_push(
+                            "C1f77f5ef1fe48f4782574df449eac0cf",
+                            "已同步到Tracking Tab"
+                        )                        
                     except Exception as _e:
                         log.warning(f"[PDF OCR] LINE push failed: {_e}")
 
@@ -1570,9 +1602,11 @@ def webhook():
                         post_with_backoff(MONDAY_GQL, {"query": set_type_q}, HEADERS)
 
                     log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
+                     _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"INFO [PDF→Monday] Monday sync completed for {parent_name}")
 
                 except Exception as e:
                     log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
+                    _line_push("C1f77f5ef1fe48f4782574df449eac0cf",f"ERROR [PDF→Monday] {e}")
 
             # Kick off Monday sync in the background to avoid H12 timeout
             import threading
@@ -1589,7 +1623,6 @@ def webhook():
                     headers=LINE_HEADERS,
                     json={
                         "to": src.get("groupId") or PDF_GROUP_ID,
-                        "messages": [{"type": "text", "text": "📄 已收到 PDF，正在同步到 Monday…"}],
                     },
                     timeout=3,
                 )
