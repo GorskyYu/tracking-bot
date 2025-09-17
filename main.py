@@ -1207,15 +1207,32 @@ def webhook():
                 # 2) PDF 轉圖像，拿到所有頁面
                 from pdf2image import convert_from_bytes
                 from io import BytesIO
-                # 先試 pdf2image，若回傳空，就用 fallback
-                images = convert_from_bytes(resp.content, dpi=300)
-                if not images:
+
+                try:
+                    images = convert_from_bytes(pdf_bytes, dpi=200)
+                    if not images:
+                        raise ValueError("no images from pdf2image")
+                    log.info(f"[PDF OCR] pdf2image rendered {len(images)} pages")
+                except Exception:
                     log.warning("[PDF OCR] convert_from_bytes returned empty, fallback to PyMuPDF")
-                    images = pdf_to_image(BytesIO(resp.content), dpi=300)
+                    import fitz
+                    images = []
+                    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                    for p in range(doc.page_count):
+                        page = doc.load_page(p)
+                        # scale ~2x for better OCR (≈300 dpi effective)
+                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                        mode = "RGBA" if pix.alpha else "RGB"
+                        img = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
+                        images.append(img)
+                    log.info(f"[PDF OCR] PyMuPDF fallback rendered {len(images)} pages")
+
+                log.info(f"[PDF OCR] going to OCR {len(images)} page(s)")
 
                 # 逐頁跑 OCR
                 full_data = {}
                 tracking_numbers = []
+
                 for idx, img in enumerate(images, start=1):
                     try:
                         if idx == 1:
@@ -1238,7 +1255,7 @@ def webhook():
                             if "reference number" in full_data:
                                 full_data["reference_number"] = full_data.pop("reference number")
 
-                            # ✅ Fallback: if first-page returned JSON-ish string with spaces inside 1Z code
+                            # Fallback: if first-page returned JSON-ish string with spaces inside 1Z code
                             if "_raw" in full_data and not full_data.get("tracking_number"):
                                 m = re.search(r"(1Z[ A-Za-z0-9]+)", full_data["_raw"])
                                 if m:
@@ -1248,18 +1265,39 @@ def webhook():
                             tn = full_data.get("tracking_number")
                             if tn:
                                 tracking_numbers.append(tn)
+                        else:
+                            # 後續頁：只抽 tracking_number
+                            res = extract_text_from_images(img, prompt=TRACKING_PROMPT)
+                            tn = res.get("tracking_number")
+                            if not tn and "_raw" in res:
+                                # e.g. res["_raw"] == '```json\n{"tracking_number": "1Z HF0 ..."}\n```'
+                                raw = res["_raw"]
+                                m = re.search(r"(1Z[\sA-Za-z0-9]+)", raw)
+                                if m:
+                                    tn = m.group(1).replace(" ", "")
+                            if tn:
+                                tracking_numbers.append(tn)
                     except Exception as e:
                         log.error(f"[PDF OCR] page {idx} failed: {e}", exc_info=True)
 
-                # 合併、標準化、去重所有 tracking numbers
-                normalized = []
-                seen = set()
+                # 規範化 + 去重後，設定 all_tracking_numbers
+                def normalize_ups(trk: str) -> str:
+                    s = re.sub(r'[^A-Za-z0-9]', '', trk or '').upper()
+                    if s.startswith('1Z'):
+                        head, tail = s[:2], s[2:]
+                        tail = tail.replace('O', '0')  # OCR fix: O→0 after 1Z
+                        s = head + tail
+                    return s
+
+                normalized, seen = [], set()
                 for t in tracking_numbers:
                     n = normalize_ups(t)
                     if n and n.startswith('1Z') and len(n) >= 16 and n not in seen:
-                        seen.add(n); normalized.append(n)
+                        seen.add(n)
+                        normalized.append(n)
+
                 full_data["all_tracking_numbers"] = sorted(normalized)
-                log.info(f"[PDF OCR] final data → {full_data}")                        
+                log.info(f"[PDF OCR] all_tracking_numbers → {full_data.get('all_tracking_numbers')}")                    
 
                 ##5) 回傳同群組
                 # requests.post(
