@@ -990,11 +990,26 @@ def extract_text_from_images(image, prompt="Please extract text from this image.
     """
     agent = LLMAgent()
     
-    # Corp second bar code for tracking number
-    x, y, w, h = 120, 995, 750, 260
-    cropped_img = image.crop((x, y, x + w, y + h))        
-    decoded_objects = decode(cropped_img)
-    tracking_number = decoded_objects[0].data.decode('utf-8')
+    # Crop second bar code for tracking number (guarded)
+    try:
+        x, y, w, h = 120, 995, 750, 260
+        W, H = image.size
+        x1 = max(0, min(x, W))
+        y1 = max(0, min(y, H))
+        x2 = max(x1, min(x + w, W))
+        y2 = max(y1, min(y + h, H))
+        tracking_number = ""
+        if x2 - x1 > 5 and y2 - y1 > 5:
+            cropped_img = image.crop((x1, y1, x2, y2))
+            objs = decode(cropped_img)
+            if objs:
+                try:
+                    tracking_number = objs[0].data.decode('utf-8')
+                except Exception:
+                    tracking_number = ""
+    except Exception as _e:
+        log.warning(f"[BARCODE] crop/decode failed: {_e}")
+        tracking_number = ""
 
     # Serialize image to JPEG bytes
     buf = BytesIO()
@@ -1018,7 +1033,7 @@ def extract_text_from_images(image, prompt="Please extract text from this image.
     ]
 
     # Inference
-    text = agent.inference(messages)
+    text = agent.inference(messages) or "{}"  # ensure non-None
     try:
         result = json.loads(text)
     except json.JSONDecodeError:
@@ -1027,6 +1042,15 @@ def extract_text_from_images(image, prompt="Please extract text from this image.
         return {"_raw": text, "tracking number": tracking_number}
     result["tracking number"] = tracking_number
     return result
+
+# ─── UPS tracking normalization ───────────────────
+def normalize_ups(trk: str) -> str:
+    s = re.sub(r'[^A-Za-z0-9]', '', trk or '').upper()
+    if s.startswith('1Z'):
+        head, tail = s[:2], s[2:]
+        tail = tail.replace('O', '0')  # OCR fix: O→0 after 1Z
+        s = head + tail
+    return s
 
 # ─── lookup_full_tracking 定義 ───────────────────
 def lookup_full_tracking(ups_last4: str) -> Optional[str]:
@@ -1045,6 +1069,31 @@ def lookup_full_tracking(ups_last4: str) -> Optional[str]:
         log.warn(f"UPS尾號 {ups_last4} 找到 {len(matches)} 筆，不唯一，跳過")
         return None
     return matches[0]
+
+#Add a forgiving JSON parser
+def parse_json_forgiving(s):
+    """
+    Accepts a dict OR a JSON-ish string (may contain ```json fences or stray text).
+    Returns {} on failure.
+    """
+    if isinstance(s, dict):
+        return s
+    if not isinstance(s, str):
+        return {}
+    txt = s.strip()
+    # strip ```json fences if present
+    if txt.startswith("```"):
+        txt = txt.strip("`")
+        # remove possible leading 'json'
+        if txt.lower().startswith("json"):
+            txt = txt[4:]
+    # remove any leading/trailing code fences/newlines
+    txt = txt.strip()
+    try:
+        return json.loads(txt)
+    except Exception:
+        return {}
+
 
 # CLI entrypoint
 def main():
@@ -1124,34 +1173,46 @@ def webhook():
                     try:
                         if idx == 1:
                             # 第1頁：抽全部欄位
-                            full_data = extract_text_from_images(img, prompt=OCR_SHIPPING_PROMPT)
-                            # 如果回傳 key 是 "tracking number"，改成下劃線
+                            full_data_raw = extract_text_from_images(img, prompt=OCR_SHIPPING_PROMPT)
+
+                            # If the extractor gave us a dict but with "_raw", re-parse; else keep as is
+                            if isinstance(full_data_raw, dict) and "_raw" in full_data_raw:
+                                full_data = parse_json_forgiving(full_data_raw["_raw"])
+                                # carry over tracking captured by barcode step
+                                if "tracking number" in full_data_raw:
+                                    full_data["tracking_number"] = full_data_raw["tracking number"]
+                            else:
+                                # either already a parsed dict or a JSON string
+                                full_data = parse_json_forgiving(full_data_raw)
+
+                            # normalize legacy keys (do this ONCE)
                             if "tracking number" in full_data:
                                 full_data["tracking_number"] = full_data.pop("tracking number")
-                            # 將第一頁的 tracking 也加入列表
-                            tn = full_data.get("tracking_number")
-                            if tn:
-                                tracking_numbers.append(tn)
-                            # 同理處理 reference number
                             if "reference number" in full_data:
                                 full_data["reference_number"] = full_data.pop("reference number")
-                        else:
-                            # 後續頁：只抽 tracking_number
-                            res = extract_text_from_images(img, prompt=TRACKING_PROMPT)
-                            tn = res.get("tracking_number")
-                            if not tn and "_raw" in res:
-                                # e.g. res["_raw"] == '```json\n{"tracking_number": "1Z HF0 ..."}\n```'
-                                raw = res["_raw"]
+
+                            # 5B fallback: if still no tracking_number but we have raw text, regex it (same as later pages)
+                            if not full_data.get("tracking_number") and isinstance(full_data_raw, dict) and "_raw" in full_data_raw:
+                                raw = full_data_raw["_raw"]
                                 m = re.search(r"(1Z[\sA-Za-z0-9]+)", raw)
                                 if m:
-                                    tn = m.group(1).replace(" ", "")
+                                    full_data["tracking_number"] = m.group(1).replace(" ", "")
+
+                            # 將第一頁的 tracking 也加入列表
+                            tn = full_data.get("tracking_number")
                             if tn:
                                 tracking_numbers.append(tn)
                     except Exception as e:
                         log.error(f"[PDF OCR] page {idx} failed: {e}", exc_info=True)
 
-                # 合併並去重所有 tracking numbers
-                full_data["all_tracking_numbers"] = sorted(dict.fromkeys(tracking_numbers))
+                # 合併、標準化、去重所有 tracking numbers
+                normalized = []
+                seen = set()
+                for t in tracking_numbers:
+                    n = normalize_ups(t)
+                    if n and n.startswith('1Z') and len(n) >= 16 and n not in seen:
+                        seen.add(n); normalized.append(n)
+                full_data["all_tracking_numbers"] = sorted(normalized)
                 log.info(f"[PDF OCR] final data → {full_data}")                        
 
                 ##5) 回傳同群組
@@ -1168,49 +1229,51 @@ def webhook():
                 # )
                 log.info(f"[PDF OCR] extracted → {full_data}")
                 
-                # ─── 6) Sheet 更新：以 reference_number 當作 Timestamp 搜尋，寫入追蹤碼 & 檢查 ABB ID
-                name                    = full_data["sender"]["name"].strip()
-                client_id               = full_data["sender"]["client_id"].strip()
-                all_tracking_numbers    = full_data.get("all_tracking_numbers", [])
-                ref_str                 = full_data.get("reference_number", "").strip()
-                try:
-                    # 確認是合法 timestamp
-                    ts = parse_date(ref_str)
-                except Exception:
-                    log.error(f"[PDF OCR] reference_number '{ref_str}' is not a valid timestamp, abort sheet update.")
+                # ─── 6) Sheet 更新：用 reference_number 或檔名做鍵，寫入追蹤碼 & 檢查 ABB ID
+                name                 = full_data["sender"]["name"].strip()
+                client_id            = full_data["sender"]["client_id"].strip()
+                all_tracking_numbers = full_data.get("all_tracking_numbers", [])
+
+                # 選擇可用的索引鍵：先用 reference_number，沒有就用檔名（去掉副檔名）
+                ref_str = (full_data.get("reference_number") or "").strip()
+                if not ref_str:
+                    ref_str = (original_filename.rsplit('.', 1)[0] if original_filename else "").strip()
+
+                # 開啟試算表與 Tracking 試算表頁籤
+                SHEET_ID = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
+                WS_TITLE = "Tracking"
+                ss = gs.open_by_key(SHEET_ID)
+                ws = ss.worksheet(WS_TITLE)
+
+                # 在 A 欄尋找 ref_str；找不到就略過寫入（但後續 Monday 流程照跑）
+                values = ws.col_values(1)
+                row_idx = next((i for i, v in enumerate(values, start=1) if (v or "").strip() == ref_str), None)
+
+                if not row_idx:
+                    log.warning(f"[PDF OCR] reference '{ref_str}' not found in A:A; skipping sheet write, continuing Monday sync")
                 else:
-                    # 開啟試算表與 Tracking 試算表頁籤
-                    SHEET_ID = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
-                    WS_TITLE = "Tracking"
-                    ss = gs.open_by_key(SHEET_ID)
-                    ws = ss.worksheet(WS_TITLE)
-                    # 在 A 欄找比對
-                    values = ws.col_values(1)
-                    row_idx = next((i for i,v in enumerate(values, start=1) if v.strip()==ref_str), None)
-                    if not row_idx:
-                        log.error(f"[PDF OCR] timestamp '{ref_str}' not found in sheet, abort sheet update.")
-                    else:
-                        # 填追蹤碼到 S(19), T(20), U(21)
-                        for i, tn in enumerate(full_data.get("all_tracking_numbers", []), start=1):
-                            if i>3: break
-                            ws.update_cell(row_idx, 18+i, tn)
-                            requests.post(
-                                "https://api.line.me/v2/bot/message/push",
-                                headers=LINE_HEADERS,
-                                json={
-                                    "to": "C1f77f5ef1fe48f4782574df449eac0cf",
-                                    "messages": [{"type": "text", "text": "已上傳到Tracking Tab"}]
-                                }
-                            )                            
-                        # 檢查 ABB會員帳號 (F=6)
-                        sheet_abb = (ws.cell(row_idx,6).value or "").strip().lower()
-                        # client_id = full_data.get("client_id","").strip().lower()
-                        # 只高亮 F<row_idx> 這個儲存格
-                        cell = f"F{row_idx}"
-                        fmt = {
-                            "backgroundColor": {"red": 1, "green": 0.8, "blue": 0.8}
-                        }
-                        ws.format(cell, fmt)
+                    # 填追蹤碼到 S(19), T(20), U(21)（最多 3 筆）
+                    for i, tn in enumerate(all_tracking_numbers[:3], start=1):
+                        ws.update_cell(row_idx, 18 + i, tn)
+
+                    # （可選）通知推送
+                    try:
+                        requests.post(
+                            "https://api.line.me/v2/bot/message/push",
+                            headers=LINE_HEADERS,
+                            json={
+                                "to": "C1f77f5ef1fe48f4782574df449eac0cf",
+                                "messages": [{"type": "text", "text": "已上傳到 Tracking 標籤 (S/T/U)"}],
+                            },
+                            timeout=10,
+                        )
+                    except Exception as _e:
+                        log.warning(f"[PDF OCR] LINE push failed: {_e}")
+
+                    # 檢查 ABB 會員帳號 (F=6) 並高亮該儲存格
+                    cell = f"F{row_idx}"
+                    fmt = {"backgroundColor": {"red": 1, "green": 0.8, "blue": 0.8}}
+                    ws.format(cell, fmt)
 
             except Exception as e:
                 log.error(f"[PDF OCR] Failed to process PDF: {e}", exc_info=True)
@@ -1224,213 +1287,232 @@ def webhook():
                 )
 
             # ─── Create parent / subitems in Monday from PDF data ─────────────
-            def adjust_caps(s: str) -> str:
-                if s.isupper():
-                    parts = []
-                    for w in s.split():
-                        # handle hyphenated words: split & capitalize each piece
-                        sub = "-".join(p.capitalize() for p in w.split("-"))
-                        parts.append(sub)
-                    return " ".join(parts)
-                return s
+            def run_monday_sync(full_data, pdf_bytes, original_filename):
+                """
+                Run all Monday.com work off the request thread:
+                - find/create parent item
+                - attach the original PDF
+                - create subitems for each tracking number
+                - set initial statuses / logistics columns
+                """
+                try:
+                    import os, json, re, time, random, requests
+                    from datetime import datetime
 
-            # ─── 1) Prepare & override parent_name for early-purchase proxies ────────────
-            today      = datetime.now().strftime("%Y%m%d")
-            # normalize original
-            # strip only "(YUMI)" or "(VICKY)" (case‐insensitive), and collapse extra spaces
-            temp = re.sub(
-                r"\s*\((?:YUMI|VICKY)\)\s*",  # remove the parentheses plus any surrounding spaces
-                " ",
-                name,
-                flags=re.IGNORECASE
-            )
-            raw_name = re.sub(r"\s+", " ", temp).strip()  # collapse multiple spaces into one
-            
-            adj_client = adjust_caps(client_id)
-            adj_name   = adjust_caps(raw_name)
-            # override ONLY for parent creation
-            if (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name):
-                adj_name   = "Shu-Yen Liu"
-                adj_client = "Yumi"
-            elif (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
-                adj_name   = "Chia-Chi Ku"
-                adj_client = "Vicky"
+                    MONDAY_GQL = MONDAY_API_URL  # e.g. "https://api.monday.com/v2"
+                    HEADERS = {"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"}
 
-            parent_name = f"{today} {adj_client} - {adj_name}"  
-            
-            headers = {"Authorization": MONDAY_API_TOKEN,"Content-Type":  "application/json"}
+                    def post_with_backoff(url, payload=None, headers=None, files=None, max_tries=5, timeout=12):
+                        t = 0.8
+                        last_exc = None
+                        for _ in range(max_tries):
+                            try:
+                                if files is not None:
+                                    return requests.post(url, headers=headers, data=payload, files=files, timeout=timeout)
+                                else:
+                                    return requests.post(url, headers=headers, json=payload, timeout=timeout)
+                            except requests.RequestException as e:
+                                last_exc = e
+                                time.sleep(t + random.uniform(0, 0.5))
+                                t = min(t * 2, 8)
+                        if last_exc:
+                            raise last_exc
 
-            # 1) lookup or create parent
-            find_parent_q = f'''
-            query {{
-            items_by_column_values(
-             board_id: {os.getenv("AIR_PARENT_BOARD_ID")},
-             column_id: "name",
-             column_value: "{parent_name}"
-            ) {{ id }}
-            }}
-            '''
-            resp = requests.post("https://api.monday.com/v2", headers=headers, json={"query": find_parent_q})
-            items = resp.json().get("data", {}).get("items_by_column_values", [])
-            if items:
-                parent_id = items[0]["id"]
-            else:
-                create_parent_m = f'''
-                mutation {{
-                  create_item(
-                    board_id: {os.getenv("AIR_PARENT_BOARD_ID")},
-                    item_name: "{parent_name}"
-                  ) {{ id }}
-                }}
-                '''
-                resp = requests.post("https://api.monday.com/v2", headers=headers, json={"query": create_parent_m})
-                parent_id = resp.json()["data"]["create_item"]["id"]             
-                
-            # 2) ─── Attach original PDF as an Update on the parent item ──────────────────
-            # 2.1) Use the PDF bytes we saved right after download
-            #    (pdf_bytes came from resp.content above)
-            #    no need to reassign here
+                    def adjust_caps(s: str) -> str:
+                        if not isinstance(s, str):
+                            return ""
+                        if s.isupper():
+                            parts = []
+                            for w in s.split():
+                                parts.append("-".join(p.capitalize() for p in w.split("-")))
+                            return " ".join(parts)
+                        return s
 
-            # 2.2) Create an “Update” on the parent item, then attach the file to that update
-            create_update_q = f'''
-            mutation {{
-              create_update(item_id: {parent_id}, body: "原始 PDF 檔案") {{ id }}
-            }}
-            '''
-            upd_resp = requests.post(
-                MONDAY_API_URL,
-                headers=headers,
-                json={"query": create_update_q}
-            )
-            update_id = upd_resp.json().get("data", {}) \
-                                   .get("create_update", {}) \
-                                   .get("id")
-            if not update_id:
-                log.error(f"Failed to create update on item {parent_id}: {upd_resp.text}")
-            else:
-                multipart_payload = {
-                    "query": f'''
-                    mutation ($file: File!) {{
-                      add_file_to_update(update_id: {update_id}, file: $file) {{ id }}
+                    # Pull sender/receiver safely from full_data
+                    sender   = full_data.get("sender", {}) or {}
+                    receiver = full_data.get("receiver", {}) or {}
+                    name      = (sender.get("name") or "").strip()
+                    client_id = (sender.get("client_id") or "").strip()
+                    today     = datetime.now().strftime("%Y%m%d")
+
+                    # Normalize/override parent display for early-purchase proxies
+                    temp      = re.sub(r"\s*\((?:YUMI|VICKY)\)\s*", " ", name, flags=re.IGNORECASE)
+                    raw_name  = re.sub(r"\s+", " ", temp).strip()
+                    adj_name   = adjust_caps(raw_name)
+                    adj_client = adjust_caps(client_id)
+
+                    # If name looks like Yumi/Shu-Yen Liu → Yumi, or Vicky/Chia-Chi Ku → Vicky
+                    if (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name):
+                        adj_name, adj_client = "Shu-Yen Liu", "Yumi"
+                    elif (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
+                        adj_name, adj_client = "Chia-Chi Ku", "Vicky"
+
+                    parent_name = f"{today} {adj_client} - {adj_name}"
+
+                    # 1) Find or create parent item
+                    find_parent_q = f"""
+                    query {{
+                      items_by_column_values(
+                        board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                        column_id: "name",
+                        column_value: "{parent_name}"
+                      ) {{ id }}
                     }}
-                    ''',
-                    "map": json.dumps({ "file": ["variables.file"] })
-                }
-                files = [("file", (original_filename, pdf_bytes, "application/pdf"))]
-                file_resp = requests.post(
-                    f"{MONDAY_API_URL}/file",
-                    headers={"Authorization": MONDAY_API_TOKEN},
-                    data=multipart_payload,
-                    files=files
-                )
-                if file_resp.status_code == 200:
-                    log.info(f"Attached PDF to update {update_id} on item {parent_id}")
-                else:
-                    log.error(f"Failed to attach PDF to update {update_id}: {file_resp.status_code} {file_resp.text}")
-            # ─── Done attaching PDF ──────────────────────────────────────────────────
+                    """
+                    r = post_with_backoff(MONDAY_GQL, {"query": find_parent_q}, HEADERS)
+                    items = (r.json().get("data", {}) or {}).get("items_by_column_values", []) or []
+                    if items:
+                        parent_id = items[0]["id"]
+                    else:
+                        create_parent_m = f"""
+                        mutation {{
+                          create_item(
+                            board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                            item_name: "{parent_name}"
+                          ) {{ id }}
+                        }}
+                        """
+                        r2 = post_with_backoff(MONDAY_GQL, {"query": create_parent_m}, HEADERS)
+                        parent_id = r2.json()["data"]["create_item"]["id"]
 
-            # 3) create one subitem per tracking number
-            for tn in full_data["all_tracking_numbers"]:
-                # 3.1) create the subitem and grab its ID
-                create_sub_m = f'''
-                mutation {{
-                  create_subitem(
-                    parent_item_id: {parent_id},
-                    item_name: "{tn}"
-                  ) {{ id }}
-                }}'''
-                resp_sub = requests.post(
-                    MONDAY_API_URL,
-                    headers=headers,
-                    json={"query": create_sub_m}
-                )
-                sub_id = resp_sub.json()["data"]["create_subitem"]["id"]
-                log.info(f"[PDF→Monday] Created subitem {sub_id} for tracking {tn}")
-                # 3.2) set Status to “收包裹”
-                mut_status = f'''
-                mutation {{
-                  change_column_value(
-                    item_id: {sub_id},
-                    board_id: {os.getenv("AIR_BOARD_ID")},
-                    column_id: "status__1",
-                    value: "{{\\"label\\":\\"收包裹\\"}}"
-                  ) {{ id }}
-                }}'''
-                status_resp = requests.post(
-                    MONDAY_API_URL,
-                    headers=headers,
-                    json={"query": mut_status}
-                )
-                if status_resp.status_code == 200:
-                    log.info(f"[PDF→Monday] Subitem {sub_id} status set to 收包裹")
-                else:
-                    log.error(f"[PDF→Monday] Failed to set status on {sub_id}: {status_resp.text}")
-                # 3.3) set logistics columns based on postal_code
-                postal = full_data["receiver"].get("postal_code", "").replace(" ", "").upper()
-                if postal.startswith("V6X1Z7"):
-                    # 國際物流 → Ace
-                    mut_intl = f'''
+                    # 2) Create update and attach original PDF
+                    create_update_q = f"""
                     mutation {{
-                      change_column_value(
-                        item_id: {sub_id},
-                        board_id: {os.getenv("AIR_BOARD_ID")},
-                        column_id: "status_18__1",
-                        value: "{{\\"label\\":\\"Ace\\"}}"
-                      ) {{ id }}
-                    }}'''
-                    requests.post(MONDAY_API_URL, headers=headers, json={"query": mut_intl})
-                    # 台灣物流 → ACE大嘴鳥
-                    mut_tai = f'''
-                    mutation {{
-                      change_column_value(
-                        item_id: {sub_id},
-                        board_id: {os.getenv("AIR_BOARD_ID")},
-                        column_id: "status_19__1",
-                        value: "{{\\"label\\":\\"ACE大嘴鳥\\"}}"
-                      ) {{ id }}
-                    }}'''
-                    requests.post(MONDAY_API_URL, headers=headers, json={"query": mut_tai})
-                elif postal.startswith("V6X0B9"):
-                    # 國際物流 → SoQuick
-                    mut_intl = f'''
-                    mutation {{
-                      change_column_value(
-                        item_id: {sub_id},
-                        board_id: {os.getenv("AIR_BOARD_ID")},
-                        column_id: "status_18__1",
-                        value: "{{\\"label\\":\\"SoQuick\\"}}"
-                      ) {{ id }}
-                    }}'''
-                    requests.post(MONDAY_API_URL, headers=headers, json={"query": mut_intl})
+                      create_update(item_id: {parent_id}, body: "原始 PDF 檔案") {{ id }}
+                    }}
+                    """
+                    upd_resp = post_with_backoff(MONDAY_GQL, {"query": create_update_q}, HEADERS)
+                    update_id = (upd_resp.json().get("data", {}) or {}).get("create_update", {}) or {}
+                    update_id = update_id.get("id")
 
-            # 4) set 客人種類 to “早期代購” if name matches Yumi/Liu or Vicky/Ku
-            is_early = (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) \
-                    or (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name)
-            log.info(f"[PDF→Monday] early-purchase test: adj_name={adj_name!r}, is_early={is_early}")            
-            if is_early:
-                set_type_q = f'''
-                mutation {{
-                  change_column_value(
-                    item_id: {parent_id},
-                    board_id: {os.getenv("AIR_PARENT_BOARD_ID")},
-                    column_id: "status_11__1",
-                    value: "{{\\"label\\":\\"早期代購\\"}}"
-                  ) {{ id }}
-                }}
-                '''
-                type_resp = requests.post(
-                    "https://api.monday.com/v2",
-                    headers=headers,
-                    json={"query": set_type_q}
+                    if update_id:
+                        # File upload uses the /file endpoint with multipart form
+                        multipart_payload = {
+                            "query": f'''
+                                mutation ($file: File!) {{
+                                  add_file_to_update(update_id: {update_id}, file: $file) {{ id }}
+                                }}
+                            ''',
+                            "map": json.dumps({"file": ["variables.file"]})
+                        }
+                        files = [("file", (original_filename, pdf_bytes, "application/pdf"))]
+                        file_resp = post_with_backoff(f"{MONDAY_GQL}/file", payload=multipart_payload,
+                                                      headers={"Authorization": MONDAY_API_TOKEN},
+                                                      files=files)
+                        if file_resp.status_code != 200:
+                            log.error(f"[PDF→Monday] attach PDF failed: {file_resp.status_code} {file_resp.text}")
+
+                    # 3) Create subitems for each tracking number
+                    all_tn = full_data.get("all_tracking_numbers", []) or []
+                    for tn in all_tn:
+                        create_sub_m = f"""
+                        mutation {{
+                          create_subitem(parent_item_id: {parent_id}, item_name: "{tn}") {{ id }}
+                        }}
+                        """
+                        resp_sub = post_with_backoff(MONDAY_GQL, {"query": create_sub_m}, HEADERS)
+                        sub_id = resp_sub.json()["data"]["create_subitem"]["id"]
+                        log.info(f"[PDF→Monday] Created subitem {sub_id} for tracking {tn}")
+
+                        # Set Status to 收包裹
+                        mut_status = f"""
+                        mutation {{
+                          change_column_value(
+                            item_id: {sub_id},
+                            board_id: {os.getenv('AIR_BOARD_ID')},
+                            column_id: "status__1",
+                            value: "{{\\"label\\":\\"收包裹\\"}}"
+                          ) {{ id }}
+                        }}
+                        """
+                        post_with_backoff(MONDAY_GQL, {"query": mut_status}, HEADERS)
+
+                        # Optional: set logistics columns based on postal code
+                        postal = (receiver.get("postal_code") or "").replace(" ", "").upper()
+                        if postal.startswith("V6X1Z7"):
+                            # 國際物流 → Ace
+                            mut_intl = f"""
+                            mutation {{
+                              change_column_value(
+                                item_id: {sub_id},
+                                board_id: {os.getenv('AIR_BOARD_ID')},
+                                column_id: "status_18__1",
+                                value: "{{\\"label\\":\\"Ace\\"}}"
+                              ) {{ id }}
+                            }}
+                            """
+                            post_with_backoff(MONDAY_GQL, {"query": mut_intl}, HEADERS)
+                            # 台灣物流 → ACE大嘴鳥
+                            mut_tai = f"""
+                            mutation {{
+                              change_column_value(
+                                item_id: {sub_id},
+                                board_id: {os.getenv('AIR_BOARD_ID')},
+                                column_id: "status_19__1",
+                                value: "{{\\"label\\":\\"ACE大嘴鳥\\"}}"
+                              ) {{ id }}
+                            }}
+                            """
+                            post_with_backoff(MONDAY_GQL, {"query": mut_tai}, HEADERS)
+                        elif postal.startswith("V6X0B9"):
+                            # 國際物流 → SoQuick
+                            mut_intl = f"""
+                            mutation {{
+                              change_column_value(
+                                item_id: {sub_id},
+                                board_id: {os.getenv('AIR_BOARD_ID')},
+                                column_id: "status_18__1",
+                                value: "{{\\"label\\":\\"SoQuick\\"}}"
+                              ) {{ id }}
+                            }}
+                            """
+                            post_with_backoff(MONDAY_GQL, {"query": mut_intl}, HEADERS)
+
+                    # 4) Mark parent 客人種類 = 早期代購 if proxy names matched
+                    is_early = (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) \
+                            or (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name)
+                    if is_early:
+                        set_type_q = f"""
+                        mutation {{
+                          change_column_value(
+                            item_id: {parent_id},
+                            board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                            column_id: "status_11__1",
+                            value: "{{\\"label\\":\\"早期代購\\"}}"
+                          ) {{ id }}
+                        }}
+                        """
+                        post_with_backoff(MONDAY_GQL, {"query": set_type_q}, HEADERS)
+
+                    log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
+
+                except Exception as e:
+                    log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
+
+            # Kick off Monday sync in the background to avoid H12 timeout
+            import threading
+            threading.Thread(
+                target=run_monday_sync,
+                args=(full_data, pdf_bytes, original_filename),
+                daemon=True
+            ).start()
+
+            # Quick ACK to LINE and immediate HTTP 200 to avoid router timeout
+            try:
+                requests.post(
+                    LINE_PUSH_URL,
+                    headers=LINE_HEADERS,
+                    json={
+                        "to": src.get("groupId") or PDF_GROUP_ID,
+                        "messages": [{"type": "text", "text": "📄 已收到 PDF，正在同步到 Monday…"}],
+                    },
+                    timeout=3,
                 )
-                if type_resp.status_code == 200:
-                    log.info(f"[PDF→Monday] 客人種類 set to 早期代購 on item {parent_id}")
-                else:
-                    log.error(f"[PDF→Monday] Failed to set 客人種類: {type_resp.status_code} {type_resp.text}")
-            # ─── Done parent/subitem creation ───────────────────────────────────
- 
-            # 中止後續處理這個 event
+            except Exception as _e:
+                log.warning(f"[PDF OCR] ack push failed: {_e}")
+
             return jsonify({}), 200
+
  
         # ─── If image, run ONLY the barcode logic and then continue ──────────
         if mtype == "image":
@@ -2059,6 +2141,7 @@ def monday_webhook():
  
 # ─── Poller State Helpers & Job ───────────────────────────────────────────────
 # ─── Helpers for parsing batch lines ─────────────────────────────────────────
+
 def extract_order_key(line: str) -> str:
     return line.rsplit("@",1)[0].strip()
 
