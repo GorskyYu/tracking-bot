@@ -1602,7 +1602,7 @@ def webhook():
                         post_with_backoff(MONDAY_GQL, {"query": set_type_q}, HEADERS)
 
                     log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
-                     _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"INFO [PDF→Monday] Monday sync completed for {parent_name}")
+                    _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"INFO [PDF→Monday] Monday sync completed for {parent_name}")
 
                 except Exception as e:
                     log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
