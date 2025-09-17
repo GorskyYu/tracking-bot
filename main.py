@@ -1288,6 +1288,18 @@ def webhook():
                                             full_data["tracking_number"] = m.group(1).replace(" ", "")
                                             break
 
+                            # Final fallback for page 1: run the tracking-only prompt on page 1 too
+                            if not full_data.get("tracking_number"):
+                                res1 = extract_text_from_images(img, prompt=TRACKING_PROMPT)
+                                tn1 = (res1 or {}).get("tracking_number")
+                                if not tn1 and isinstance(res1, dict) and "_raw" in res1:
+                                    raw1 = res1["_raw"]
+                                    m1 = re.search(r"(1Z[\sA-Za-z0-9]+)", raw1)
+                                    if m1:
+                                        tn1 = m1.group(1).replace(" ", "")
+                                if tn1:
+                                    full_data["tracking_number"] = tn1
+                                    log.info(f"[PDF OCR] page1 fallback found tracking_number → {tn1}")
 
                             # 將第一頁的 tracking 也加入列表
                             tn = full_data.get("tracking_number")
@@ -1602,7 +1614,7 @@ def webhook():
                         post_with_backoff(MONDAY_GQL, {"query": set_type_q}, HEADERS)
 
                     log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
-                    _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"INFO [PDF→Monday] Monday sync completed for {parent_name}")
+                    _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"[PDF→Monday] Monday sync completed for {parent_name}")
 
                 except Exception as e:
                     log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
