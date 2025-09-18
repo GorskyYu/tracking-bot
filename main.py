@@ -1388,7 +1388,7 @@ def webhook():
                             headers=LINE_HEADERS,
                             json={
                                 "to": "C1f77f5ef1fe48f4782574df449eac0cf",
-                                "messages": [{"type": "text", "text": "已同步到Tracking Tab"}],
+                                "messages": [{"type": "text", "text": "[PDF→空運表單]已同步到Tracking Tab"}],
                             },
                             timeout=10,
                         )                       
