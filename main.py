@@ -1388,14 +1388,10 @@ def webhook():
                             headers=LINE_HEADERS,
                             json={
                                 "to": "C1f77f5ef1fe48f4782574df449eac0cf",
-                                "messages": [{"type": "text", "text": "已上傳到 Tracking 標籤 (S/T/U)"}],
+                                "messages": [{"type": "text", "text": "已同步到Tracking Tab"}],
                             },
                             timeout=10,
-                        )
-                        _line_push(
-                            "C1f77f5ef1fe48f4782574df449eac0cf",
-                            "已同步到Tracking Tab"
-                        )                        
+                        )                       
                     except Exception as _e:
                         log.warning(f"[PDF OCR] LINE push failed: {_e}")
 
