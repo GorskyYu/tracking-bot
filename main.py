@@ -226,6 +226,22 @@ def get_gspread_client():
     _gs = gspread.authorize(creds)
     return _gs
 
+# --- Debug: print SA client_email once on startup (safe) ---
+try:
+    import os, json, base64
+    sa_json = None
+    if os.getenv("GCP_SA_JSON_BASE64"):
+        sa_json = base64.b64decode(os.getenv("GCP_SA_JSON_BASE64")).decode("utf-8", "ignore")
+    elif os.getenv("GOOGLE_SVCKEY_JSON"):
+        sa_json = os.getenv("GOOGLE_SVCKEY_JSON")
+    if sa_json:
+        client_email = json.loads(sa_json).get("client_email")
+        if client_email:
+            print(f"[GSHEET] service account email = {client_email}")
+except Exception as _e:
+    print("[GSHEET] could not print service account email:", _e)
+
+
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
