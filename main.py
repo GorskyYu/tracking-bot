@@ -44,6 +44,81 @@ SCOPES = [
 
 _gs = None  # lazy singleton, avoid authenticating at import time
 
+# ─── Client → LINE Group Mapping ───────────────────────────────────────────────
+CLIENT_TO_GROUP = {
+    "yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
+    "vicky": os.getenv("LINE_GROUP_ID_VICKY"),
+}
+
+# ─── Environment Variables ────────────────────────────────────────────────────
+APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
+APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
+LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
+
+# ─── LINE & ACE/SQ 設定 ──────────────────────────────────────────────────────
+ACE_GROUP_ID     = os.getenv("LINE_GROUP_ID_ACE")
+SOQUICK_GROUP_ID = os.getenv("LINE_GROUP_ID_SQ")
+VICKY_GROUP_ID   = os.getenv("LINE_GROUP_ID_VICKY")
+VICKY_USER_ID    = os.getenv("VICKY_USER_ID") 
+YVES_USER_ID     = os.getenv("YVES_USER_ID") 
+YUMI_GROUP_ID    = os.getenv("LINE_GROUP_ID_YUMI")
+JOYCE_GROUP_ID   = os.getenv("LINE_GROUP_ID_JOYCE")
+PDF_GROUP_ID     = os.getenv("LINE_GROUP_ID_PDF")
+
+SQ_SHEET_URL     = os.getenv("SQ_SHEET_URL")
+ACE_SHEET_URL = os.getenv("ACE_SHEET_URL")
+
+
+# Trigger when you see “週四出貨”/“週日出貨” + “麻煩請” + an ACE or 250N code,
+# or when you see the exact phrase “這幾位還沒有按申報相符”
+CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|250N)\d+[A-Z0-9]*\b")
+MISSING_CONFIRM = "這幾位還沒有按申報相符"
+
+# Names to look for in each group’s list
+VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲","高懿欣","崔書鳳"}
+YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑","陳卉怡","洪瑜駿"}
+YVES_NAMES = {
+    "梁穎琦",
+    "張詠凱",
+    "劉育伶",
+    "羅唯英",
+    "陳品茹",
+    "張碧蓮",
+    "吳政融",
+    "解瑋庭",
+    "洪君豪",
+    "洪芷翎",
+    "羅木癸",
+    "洪金珠",
+    "林憶慧",
+    "葉怡秀",
+    "葉詹明",
+    "廖聰毅",
+    "蔡英豪",
+    "魏媴蓁",
+    "黃淑芬",
+    "解佩頴",
+    "曹芷茜",
+    "王詠皓",
+    "曹亦芳",
+    "李慧芝",
+    "李錦祥",
+    "詹欣陵",
+    "陳志賢",
+    "曾惠玲",
+    "李白秀",
+    "陳聖玄",
+    "柯雅甄",
+    "游玉慧",
+    "游繼堯",
+    "游承哲",
+    "游傳杰",
+    "陳秀華",
+    "陳秀玲",
+    "陳恒楷"
+}
+EXCLUDED_SENDERS = {"Yves Lai", "Yves KT Lai", "Yves MM Lai", "Yumi Liu", "Vicky Ku"}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # ACE「今日出貨」：排程 + 手動觸發
 # - 來源：ACE_SHEET_URL 指向的 Google Sheet
@@ -197,6 +272,165 @@ def push_ace_today_shipments(*, force: bool = False, reply_token: str | None = N
     except Exception as e:
         log.error(f"[ACE Today] Error: {e}", exc_info=True)
 
+def _sq_collect_today_box_ids_by_tab(sheet_url: str) -> list[str]:
+    """
+    開 SQ 試算表，依今天日期（America/Vancouver），找同名分頁（YYMMDD），
+    掃描該分頁：若「欄 C 不為空」，收集「欄 A」作為 Box ID。回傳去重後清單。
+    """
+    gs = get_gspread_client()
+    ss = gs.open_by_url(sheet_url)
+
+    # 今天 → 轉 tab 名稱（YYMMDD），例如 2025-10-10 → 251010
+    tz = pytz.timezone(TIMEZONE)
+    today_local = datetime.now(tz).date()
+    tab_name = today_local.strftime("%y%m%d")
+
+    try:
+        ws = ss.worksheet(tab_name)
+    except Exception:
+        # 找不到今天分頁就回空
+        return []
+
+    rows = ws.get_all_values()  # 2D array（含表頭）
+    box_ids = []
+    # 若第一列是表頭可從第二列開始；無表頭可從第一列開始
+    for row in rows[1:]:
+        # 欄位保護
+        col_a = (row[0] if len(row) > 0 else "").strip()  # A: Box ID
+        col_c = (row[2] if len(row) > 2 else "").strip()  # C: 不為空才算
+        if col_a and col_c:
+            box_ids.append(col_a)
+
+    # 去重（保留順序）
+    seen = set()
+    uniq = []
+    for x in box_ids:
+        if x not in seen:
+            seen.add(x)
+            uniq.append(x)
+    return uniq
+
+def push_sq_weekly_shipments(*, force: bool = False, reply_token: str | None = None):
+    """
+    推播 SQ「本週出貨」訊息到 SQ 群組。
+    - 來源：SQ_SHEET_URL 指向之 Google Sheet，找今天日期的 tab（YYMMDD）
+    - 邏輯：讀取 tab 內 欄A（Box ID），同行欄C不為空者，收集欄A
+    - 時間：每週六 09:00 America/Vancouver（排程會以 force=False 呼叫）
+    - force=True：不寫 guard，可用 reply_token 提供回覆；無資料也會回「（測試）」字樣
+    - force=False：寫 guard（48h 過期），無資料時不吵群組
+    """
+    tz = pytz.timezone(TIMEZONE)
+    today_str = datetime.now(tz).strftime("%Y-%m-%d")
+    guard_key = f"sq_weekly_shipments_pushed_{today_str}"
+
+    # 手動測試：先秒回（體驗較即時）
+    if reply_token:
+        try:
+            requests.post(
+                LINE_REPLY_URL,
+                headers=LINE_HEADERS,
+                json={"replyToken": reply_token, "messages": [{"type": "text", "text": "已接收，正在檢查 SQ 今日出貨…"}]},
+                timeout=10,
+            )
+        except Exception as e:
+            log.warning(f"[SQ Weekly] reply (pre-ack) failed: {e}")
+
+    # 排程模式避免重複
+    if not force and r.get(guard_key):
+        log.info("[SQ Weekly] Already pushed for today; skipping.")
+        return
+
+    try:
+        if not SQ_SHEET_URL:
+            log.error("[SQ Weekly] SQ_SHEET_URL not set")
+            return
+
+        ids = _sq_collect_today_box_ids_by_tab(SQ_SHEET_URL)
+
+        # 訊息內容
+        if ids:
+            base_text = "今日出貨：" + ", ".join(ids)
+            text = base_text if not force else (base_text + "（測試）")
+        else:
+            # 無資料：force 時回測試訊息；非 force 僅寫 guard
+            if force:
+                try:
+                    if reply_token:
+                        requests.post(
+                            LINE_REPLY_URL,
+                            headers=LINE_HEADERS,
+                            json={"replyToken": reply_token, "messages": [{"type": "text", "text": "今日出貨：目前無資料（測試）"}]},
+                            timeout=10,
+                        )
+                    else:
+                        requests.post(
+                            LINE_PUSH_URL,
+                            headers=LINE_HEADERS,
+                            json={"to": SOQUICK_GROUP_ID, "messages": [{"type": "text", "text": "今日出貨：目前無資料（測試）"}]},
+                            timeout=10,
+                        )
+                except Exception as e:
+                    log.error(f"[SQ Weekly] Manual test (no data) notify failed: {e}")
+                return
+            else:
+                log.info("[SQ Weekly] No box IDs for today; nothing to push.")
+                r.set(guard_key, "1", ex=48 * 3600)
+                return
+
+        # 送出推播（SQ 群）
+        payload = {"to": SOQUICK_GROUP_ID, "messages": [{"type": "text", "text": text}]}
+        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload, timeout=10)
+
+        if resp.status_code == 200:
+            log.info(f"[SQ Weekly] Pushed {len(ids)} box IDs to SQ group. force={force}")
+            if not force:
+                r.set(guard_key, "1", ex=48 * 3600)
+        else:
+            log.error(f"[SQ Weekly] Push failed: {resp.status_code} {resp.text}")
+
+    except Exception as e:
+        log.error(f"[SQ Weekly] Error: {e}", exc_info=True)
+
+
+# ── APScheduler 註冊：每週六 09:00 America/Vancouver 觸發 ────────────────
+_sq_scheduler = None
+def _ensure_scheduler_for_sq_weekly():
+    """
+    以背景排程方式，固定每週六 09:00（America/Vancouver）執行
+    push_sq_weekly_shipments(force=False)。
+    """
+    global _sq_scheduler
+    if _sq_scheduler is not None:
+        return _sq_scheduler
+
+    tz = pytz.timezone(TIMEZONE)
+    sched = BackgroundScheduler(timezone=tz)
+    sched.add_job(
+        push_sq_weekly_shipments,
+        trigger="cron",
+        day_of_week="sat",
+        hour=9,
+        minute=0,
+        kwargs={"force": False},
+        id="sq_weekly_shipments_sat_9am",
+        replace_existing=True,
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+    sched.start()
+    atexit.register(lambda: sched.shutdown(wait=False))
+    log.info("[SQ Weekly] Scheduler started (Sat 09:00 America/Vancouver).")
+
+    _sq_scheduler = sched
+    return _sq_scheduler
+
+# 模組載入時就確保 SQ 排程啟動（與 ACE 的 _ensure_scheduler_for_ace_today 並存）
+try:
+    _ensure_scheduler_for_sq_weekly()
+except Exception as _e:
+    log.error(f"[SQ Weekly] Scheduler init failed: {_e}")
+
 
 def get_gspread_client():
     """Authorize gspread using env vars. Prefers GCP_SA_JSON_BASE64; falls back to GOOGLE_SVCKEY_JSON."""
@@ -272,81 +506,6 @@ TRANSLATIONS = {
                                       "已建立運單，UPS 尚未收件",
     "delivered":                      "已送達",
 }
-
-# ─── Client → LINE Group Mapping ───────────────────────────────────────────────
-CLIENT_TO_GROUP = {
-    "yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
-    "vicky": os.getenv("LINE_GROUP_ID_VICKY"),
-}
-
-# ─── Environment Variables ────────────────────────────────────────────────────
-APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
-APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
-LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
-
-# ─── LINE & ACE/SQ 設定 ──────────────────────────────────────────────────────
-ACE_GROUP_ID     = os.getenv("LINE_GROUP_ID_ACE")
-SOQUICK_GROUP_ID = os.getenv("LINE_GROUP_ID_SQ")
-VICKY_GROUP_ID   = os.getenv("LINE_GROUP_ID_VICKY")
-VICKY_USER_ID    = os.getenv("VICKY_USER_ID") 
-YVES_USER_ID     = os.getenv("YVES_USER_ID") 
-YUMI_GROUP_ID    = os.getenv("LINE_GROUP_ID_YUMI")
-JOYCE_GROUP_ID   = os.getenv("LINE_GROUP_ID_JOYCE")
-PDF_GROUP_ID     = os.getenv("LINE_GROUP_ID_PDF")
-
-SQ_SHEET_URL     = os.getenv("SQ_SHEET_URL")
-ACE_SHEET_URL = os.getenv("ACE_SHEET_URL")
-
-
-# Trigger when you see “週四出貨”/“週日出貨” + “麻煩請” + an ACE or 250N code,
-# or when you see the exact phrase “這幾位還沒有按申報相符”
-CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|250N)\d+[A-Z0-9]*\b")
-MISSING_CONFIRM = "這幾位還沒有按申報相符"
-
-# Names to look for in each group’s list
-VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲","高懿欣","崔書鳳"}
-YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑","陳卉怡","洪瑜駿"}
-YVES_NAMES = {
-    "梁穎琦",
-    "張詠凱",
-    "劉育伶",
-    "羅唯英",
-    "陳品茹",
-    "張碧蓮",
-    "吳政融",
-    "解瑋庭",
-    "洪君豪",
-    "洪芷翎",
-    "羅木癸",
-    "洪金珠",
-    "林憶慧",
-    "葉怡秀",
-    "葉詹明",
-    "廖聰毅",
-    "蔡英豪",
-    "魏媴蓁",
-    "黃淑芬",
-    "解佩頴",
-    "曹芷茜",
-    "王詠皓",
-    "曹亦芳",
-    "李慧芝",
-    "李錦祥",
-    "詹欣陵",
-    "陳志賢",
-    "曾惠玲",
-    "李白秀",
-    "陳聖玄",
-    "柯雅甄",
-    "游玉慧",
-    "游繼堯",
-    "游承哲",
-    "游傳杰",
-    "陳秀華",
-    "陳秀玲",
-    "陳恒楷"
-}
-EXCLUDED_SENDERS = {"Yves Lai", "Yves KT Lai", "Yves MM Lai", "Yumi Liu", "Vicky Ku"}
 
 # ─── Redis for state persistence ───────────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL")
