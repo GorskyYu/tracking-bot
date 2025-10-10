@@ -198,48 +198,6 @@ def push_ace_today_shipments(*, force: bool = False, reply_token: str | None = N
         log.error(f"[ACE Today] Error: {e}", exc_info=True)
 
 
-# ── APScheduler 註冊：每週四＆週日 16:00 America/Vancouver 觸發 ────────────────
-_scheduler = None
-def _ensure_scheduler_for_ace_today():
-    """
-    以背景排程方式，固定在每週四與週日的 16:00（America/Vancouver）執行
-    push_ace_today_shipments(force=False)。
-    - 使用 coalesce / max_instances 來避免重啟造成的堆疊觸發
-    - 使用 misfire_grace_time 允許短暫喚醒延遲
-    """
-    global _scheduler
-    if _scheduler is not None:
-        return _scheduler
-
-    tz = pytz.timezone(TIMEZONE)
-    sched = BackgroundScheduler(timezone=tz)
-    sched.add_job(
-        push_ace_today_shipments,
-        trigger="cron",
-        day_of_week="thu,sun",
-        hour=16,
-        minute=0,
-        kwargs={"force": False},  # 排程呼叫，一律非 force
-        id="ace_today_shipments_thu_sun_4pm",
-        replace_existing=True,
-        misfire_grace_time=600,
-        coalesce=True,
-        max_instances=1,
-    )
-    sched.start()
-    atexit.register(lambda: sched.shutdown(wait=False))
-    log.info("[ACE Today] Scheduler started (Thu/Sun 16:00 America/Vancouver).")
-
-    _scheduler = sched
-    return _scheduler
-
-# 模組匯入時就確保排程啟動（多次匯入也安全）
-try:
-    _ensure_scheduler_for_ace_today()
-except Exception as _e:
-    log.error(f"[ACE Today] Scheduler init failed: {_e}")
-
-
 def get_gspread_client():
     """Authorize gspread using env vars. Prefers GCP_SA_JSON_BASE64; falls back to GOOGLE_SVCKEY_JSON."""
     global _gs
@@ -394,6 +352,48 @@ LINE_HEADERS = {
     "Content-Type":  "application/json",
     "Authorization": f"Bearer {LINE_TOKEN}"
 }
+LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+
+# ── APScheduler 註冊：每週四＆週日 16:00 America/Vancouver 觸發 ────────────────
+_scheduler = None
+def _ensure_scheduler_for_ace_today():
+    """
+    以背景排程方式，固定在每週四與週日的 16:00（America/Vancouver）執行
+    push_ace_today_shipments(force=False)。
+    - 使用 coalesce / max_instances 來避免重啟造成的堆疊觸發
+    - 使用 misfire_grace_time 允許短暫喚醒延遲
+    """
+    global _scheduler
+    if _scheduler is not None:
+        return _scheduler
+
+    tz = pytz.timezone(TIMEZONE)
+    sched = BackgroundScheduler(timezone=tz)
+    sched.add_job(
+        push_ace_today_shipments,
+        trigger="cron",
+        day_of_week="thu,sun",
+        hour=16,
+        minute=0,
+        kwargs={"force": False},  # 排程呼叫，一律非 force
+        id="ace_today_shipments_thu_sun_4pm",
+        replace_existing=True,
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+    sched.start()
+    atexit.register(lambda: sched.shutdown(wait=False))
+    log.info("[ACE Today] Scheduler started (Thu/Sun 16:00 America/Vancouver).")
+
+    _scheduler = sched
+    return _scheduler
+
+# 模組匯入時就確保排程啟動（多次匯入也安全）
+try:
+    _ensure_scheduler_for_ace_today()
+except Exception as _e:
+    log.error(f"[ACE Today] Scheduler init failed: {_e}")
 
 # ─── ADDED: Configure OpenAI API key ───────────────────────────────────────────
 openai.api_key = os.getenv("OPENAI_API_KEY")
