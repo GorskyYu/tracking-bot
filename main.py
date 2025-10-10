@@ -68,6 +68,8 @@ PDF_GROUP_ID     = os.getenv("LINE_GROUP_ID_PDF")
 SQ_SHEET_URL     = os.getenv("SQ_SHEET_URL")
 ACE_SHEET_URL = os.getenv("ACE_SHEET_URL")
 
+# --- Timezone (used by schedulers) ---
+TIMEZONE = os.getenv("TIMEZONE", "America/Vancouver")
 
 # Trigger when you see “週四出貨”/“週日出貨” + “麻煩請” + an ACE or 250N code,
 # or when you see the exact phrase “這幾位還沒有按申報相符”
@@ -126,6 +128,29 @@ EXCLUDED_SENDERS = {"Yves Lai", "Yves KT Lai", "Yves MM Lai", "Yumi Liu", "Vicky
 # - 時間：每週四、週日下午 4:00（America/Vancouver）
 # - 手動：在 ACE 群組輸入「已上傳資料可出貨」立即觸發（不受每日防重複限制）
 # ──────────────────────────────────────────────────────────────────────────────
+
+# ─── Redis for state persistence ───────────────────────────────────────────────
+REDIS_URL = os.getenv("REDIS_URL")
+if not REDIS_URL:
+    raise RuntimeError("REDIS_URL environment variable is required for state persistence")
+r = redis.from_url(REDIS_URL, decode_responses=True)
+
+# pull your sheet URL / ID from env
+VICKY_SHEET_URL = os.getenv("VICKY_SHEET_URL")
+
+MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
+
+AIR_BOARD_ID = os.getenv("AIR_BOARD_ID")
+AIR_PARENT_BOARD_ID = os.getenv("AIR_PARENT_BOARD_ID")
+
+#STATE_FILE = os.getenv("STATE_FILE", "last_seen.json")
+LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
+LINE_HEADERS = {
+    "Content-Type":  "application/json",
+    "Authorization": f"Bearer {LINE_TOKEN}"
+}
+LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+
 
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -425,13 +450,6 @@ def _ensure_scheduler_for_sq_weekly():
     _sq_scheduler = sched
     return _sq_scheduler
 
-# 模組載入時就確保 SQ 排程啟動（與 ACE 的 _ensure_scheduler_for_ace_today 並存）
-try:
-    _ensure_scheduler_for_sq_weekly()
-except Exception as _e:
-    log.error(f"[SQ Weekly] Scheduler init failed: {_e}")
-
-
 def get_gspread_client():
     """Authorize gspread using env vars. Prefers GCP_SA_JSON_BASE64; falls back to GOOGLE_SVCKEY_JSON."""
     global _gs
@@ -475,7 +493,6 @@ try:
 except Exception as _e:
     print("[GSHEET] could not print service account email:", _e)
 
-
 # ─── Structured Logging Setup ─────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -507,28 +524,11 @@ TRANSLATIONS = {
     "delivered":                      "已送達",
 }
 
-# ─── Redis for state persistence ───────────────────────────────────────────────
-REDIS_URL = os.getenv("REDIS_URL")
-if not REDIS_URL:
-    raise RuntimeError("REDIS_URL environment variable is required for state persistence")
-r = redis.from_url(REDIS_URL, decode_responses=True)
-
-# pull your sheet URL / ID from env
-VICKY_SHEET_URL = os.getenv("VICKY_SHEET_URL")
-
-MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
-TIMEZONE    = "America/Vancouver"
-
-AIR_BOARD_ID = os.getenv("AIR_BOARD_ID")
-AIR_PARENT_BOARD_ID = os.getenv("AIR_PARENT_BOARD_ID")
-
-#STATE_FILE = os.getenv("STATE_FILE", "last_seen.json")
-LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
-LINE_HEADERS = {
-    "Content-Type":  "application/json",
-    "Authorization": f"Bearer {LINE_TOKEN}"
-}
-LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+# 模組載入時就確保 SQ 排程啟動（與 ACE 的 _ensure_scheduler_for_ace_today 並存）
+try:
+    _ensure_scheduler_for_sq_weekly()
+except Exception as _e:
+    log.error(f"[SQ Weekly] Scheduler init failed: {_e}")
 
 # ── APScheduler 註冊：每週四＆週日 16:00 America/Vancouver 觸發 ────────────────
 _scheduler = None
