@@ -279,6 +279,7 @@ JOYCE_GROUP_ID   = os.getenv("LINE_GROUP_ID_JOYCE")
 PDF_GROUP_ID     = os.getenv("LINE_GROUP_ID_PDF")
 
 SQ_SHEET_URL     = os.getenv("SQ_SHEET_URL")
+ACE_SHEET_URL = os.getenv("ACE_SHEET_URL")
 
 
 # Trigger when you see “週四出貨”/“週日出貨” + “麻煩請” + an ACE or 250N code,
