@@ -297,6 +297,27 @@ def push_ace_today_shipments(*, force: bool = False, reply_token: str | None = N
     except Exception as e:
         log.error(f"[ACE Today] Error: {e}", exc_info=True)
 
+# ─── Heroku Scheduler hourly tick for ACE (stat-holiday style) ───────────────
+def ace_today_cron_tick():
+    """
+    被 Heroku Scheduler【每小時】呼叫一次。
+    只有在『週四或週日』且『16:00（America/Vancouver）』時，才真正呼叫
+    push_ace_today_shipments(force=False)。去重交給函式內建的 Redis guard。
+    """
+    tz = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz)
+
+    # 週四=3、週日=6；僅在當地 16:00 時觸發
+    if now.weekday() not in (3, 6) or now.hour != 16:
+        log.info(f"[ACE Today TICK] skip at {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        return
+
+    log.info("[ACE Today TICK] due window hit; calling push_ace_today_shipments(force=False)")
+    try:
+        push_ace_today_shipments(force=False)
+    except Exception as e:
+        log.error(f"[ACE Today TICK] invoke failed: {e}", exc_info=True)
+
 def _sq_collect_today_box_ids_by_tab(sheet_url: str) -> list[str]:
     """
     開 SQ 試算表，依今天日期（America/Vancouver），找同名分頁（YYMMDD），
@@ -415,6 +436,28 @@ def push_sq_weekly_shipments(*, force: bool = False, reply_token: str | None = N
 
     except Exception as e:
         log.error(f"[SQ Weekly] Error: {e}", exc_info=True)
+
+# ─── Heroku Scheduler hourly tick for SQ (stat-holiday style) ────────────────
+def sq_weekly_cron_tick():
+    """
+    被 Heroku Scheduler【每小時】呼叫一次。
+    僅在「週六 09:00（America/Vancouver）」時，才真正呼叫 push_sq_weekly_shipments(force=False)。
+    借助 push_sq_weekly_shipments 內建的 48h guard，確保只發一次、不重複。
+    """
+    tz = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz)
+
+    # 只在『週六』且『09:00』這一小時內做事；其他時間直接略過
+    if now.weekday() != 5 or now.hour != 9:
+        log.info(f"[SQ Weekly TICK] skip at {now.isoformat()}")
+        return
+
+    # 這裡不直接操作 guard，統一交給 push_sq_weekly_shipments() 內部處理
+    log.info("[SQ Weekly TICK] due window hit; calling push_sq_weekly_shipments(force=False)")
+    try:
+        push_sq_weekly_shipments(force=False)
+    except Exception as e:
+        log.error(f"[SQ Weekly TICK] invoke failed: {e}", exc_info=True)
 
 
 # ── APScheduler 註冊：每週六 09:00 America/Vancouver 觸發 ────────────────
