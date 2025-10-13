@@ -1,6 +1,6 @@
 import os
 import redis
-from .log import log
+from log import log
 
 REDIS_URL = os.getenv("REDIS_URL")
 

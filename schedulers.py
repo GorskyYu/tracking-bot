@@ -1,10 +1,10 @@
 import atexit
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
-from .config import TIMEZONE
-from .log import log
-from .ace import push_ace_today_shipments
-from .sq  import push_sq_weekly_shipments
+from config import TIMEZONE
+from log import log
+from ace import push_ace_today_shipments
+from sq  import push_sq_weekly_shipments
 
 _ace_sched = None
 _sq_sched  = None

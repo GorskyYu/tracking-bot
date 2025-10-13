@@ -1,10 +1,10 @@
 from flask import Flask, request
 import json
-from .log import log
-from .config import VICKY_GROUP_ID, YUMI_GROUP_ID, JOYCE_GROUP_ID, PDF_GROUP_ID
-from .line_api import line_push, line_reply
-from .schedulers import ensure_ace_scheduler, ensure_sq_scheduler
-from . import handlers  # import 你在 handlers.py 暴露的函式
+from log import log
+from config import VICKY_GROUP_ID, YUMI_GROUP_ID, JOYCE_GROUP_ID, PDF_GROUP_ID
+from line_api import line_push, line_reply
+from schedulers import ensure_ace_scheduler, ensure_sq_scheduler
+import handlers  # import 你在 handlers.py 暴露的函式
 
 app = Flask(__name__)
 

@@ -1,6 +1,6 @@
 import requests
-from .config import LINE_PUSH_URL, LINE_REPLY_URL, LINE_HEADERS
-from .log import log
+from config import LINE_PUSH_URL, LINE_REPLY_URL, LINE_HEADERS
+from log import log
 
 def line_push(to: str, text: str):
     payload = {"to": to, "messages": [{"type": "text", "text": text}]}

@@ -1,6 +1,6 @@
 import os, json, base64, gspread
 from google.oauth2.service_account import Credentials
-from .log import log
+from log import log
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive"]

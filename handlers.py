@@ -9,9 +9,9 @@ import pytz
 from datetime import datetime, timedelta, timezone
 from dateutil.parser import parse as parse_date
 
-from .log import log
-from .sheets import get_gspread_client
-from .config import (
+from log import log
+from sheets import get_gspread_client
+from config import (
     # LINE & group ids
     ACE_GROUP_ID,
     SOQUICK_GROUP_ID,
