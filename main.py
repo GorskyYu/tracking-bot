@@ -1,1 +1,1 @@
-from tracking_bot.app import app
+from app import app
