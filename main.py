@@ -706,7 +706,7 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
                 ]
             }]
             raw = agent.inference(messages) or "{}"
-            data = parse_json_safely(raw)  # tolerant to ```json fences
+            data = parse_json_forgiving(raw)  # tolerant to ```json fences
             tn = (data.get("tracking_number") or "").strip()
             if tn:
                 all_tracking_numbers.append(tn)
@@ -715,11 +715,25 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
 
         # 3) Normalize & dedupe (UPS: strip spaces, keep only leading 1Z… body)
         def normalize_ups(s: str) -> str:
-            if not isinstance(s, str): return ""
+            """
+            規則：
+            - 去空白、轉大寫
+            - 若符合 UPS 格式，保留 '1Z' 前綴；其後「所有字母 O → 數字 0」
+              （UPS 不使用字母 O；常見 OCR/人工誤判）
+            - 若不符合，仍做 O→0 處理避免錯碼
+            """
+            if not isinstance(s, str):
+                return ""
             s2 = re.sub(r"\s+", "", s).upper()
-            # Keep contiguous UPS token starting with 1Z
-            m = re.search(r"(1Z[0-9A-Z]+)", s2)
-            return m.group(1) if m else s2
+            m = re.match(r"^(1Z)([0-9A-Z]+)$", s2)
+            if m:
+                head, body = m.groups()
+                body = body.replace("O", "0")
+                return head + body
+            # 非標準 1Z 開頭，也做一次 O→0 的保險處理
+            return s2.replace("O", "0")
+
+
 
         all_tracking_numbers = [normalize_ups(t) for t in all_tracking_numbers if t]
         uniq = []
@@ -727,6 +741,30 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
         for t in all_tracking_numbers:
             if t and t not in seen:
                 seen.add(t); uniq.append(t)
+
+        # === 構建 full_data（給 Sheets / Monday 用）===
+        # 你目前的 worker 裡沒有 sender/receiver 來源，就先給空值；之後若你上游有 full_data，可直接覆蓋這段。
+        full_data = {
+            "sender": {
+                "name": "",
+                "phone": "",
+                "client_id": "",
+                "address": "",
+            },
+            "receiver": {
+                "postal_code": "",
+            },
+            "reference_number": "",            # 若你之後能抽到就填進來
+            "all_tracking_numbers": uniq,      # 用正規化後的唯一清單
+        }
+
+        log.info(f"[PDF→Worker] Prepared full_data: "
+                 f"client_id={full_data['sender']['client_id']!r}, "
+                 f"name={full_data['sender']['name']!r}, "
+                 f"postal={full_data['receiver']['postal_code']!r}, "
+                 f"ref={full_data['reference_number']!r}, "
+                 f"tn_count={len(full_data['all_tracking_numbers'])}")
+
 
         # 4) If you also write to Google Sheets, keep doing it here (OFF thread).
         #    Example (adapt to your sheet & columns):
@@ -750,11 +788,17 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
                 log.error(f"[PDF→Monday] failed: {e}", exc_info=True)
                 _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"[PDF→Monday] ERROR: {e}")
 
-        threading.Thread(
-            target=run_monday_sync,
-            args=({}, pdf_bytes, original_filename),
-            daemon=True
-        ).start()
+        # ✅ 呼叫 Monday 同步（在 worker 內）
+        try:
+            log.info("[PDF→Worker] Scheduling Monday sync…")
+            threading.Thread(
+                target=run_monday_sync,
+                args=(full_data, pdf_bytes, original_filename),
+                daemon=True
+            ).start()
+        except Exception as e:
+            log.error(f"[PDF→Worker] run_monday_sync failed to start: {e}", exc_info=True)
+
 
         # 6) Optional: a short status back to the group
         if uniq:
@@ -1689,11 +1733,14 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
             crop = image.crop((x1, y1, x2, y2))
 
             # Try barcode first
+            # Try barcode（灰階+try，避免 zbar 數學錯誤）
             try:
-                codes = decode(crop, symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.QRCODE])
+                crop_g = crop.convert("L")
+                codes = decode(crop_g, symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.QRCODE])
             except Exception as _e:
                 log.warning(f"[PDF OCR] page{idx} zbar decode error: {_e}")
                 codes = []
+
 
             if codes:
                 for c in codes:
@@ -1747,6 +1794,13 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
             "all_tracking_numbers": uniq,
         }
 
+        log.info(f"[PDF→Worker] Prepared full_data for Monday/Sheets: "
+                 f"client_id={full_data['sender']['client_id']!r}, "
+                 f"name={full_data['sender']['name']!r}, "
+                 f"postal={full_data['receiver']['postal_code']!r}, "
+                 f"ref={full_data['reference_number']!r}, "
+                 f"tn_count={len(full_data['all_tracking_numbers'])}")
+
         # 4) Google Sheet write: use reference_number or filename stem as key
         try:
             # Choose key: prefer reference_number, else filename (no extension)
@@ -1797,18 +1851,48 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
             log.warning(f"[PDF→Sheet] skipped or failed: {e}")
 
         # 5) Monday sync in its OWN background thread (so worker itself stays light)
+        # === Kick Monday sync（在 worker 內執行，不回到 webhook）===
         def run_monday_sync(full_data: dict, pdf_bytes: bytes, original_filename: str):
             try:
-                # Build parent item name from client/name heuristics like your original code
-                today = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
+                MONDAY_GQL = "https://api.monday.com/v2"
+                token = os.getenv("MONDAY_API_TOKEN")
+                parent_board_id = os.getenv("AIR_PARENT_BOARD_ID")
+                child_board_id = os.getenv("AIR_BOARD_ID")
+
+                if not token:
+                    log.error("[PDF→Monday] MONDAY_API_TOKEN is missing — skip Monday sync.")
+                    return
+                if not parent_board_id or not child_board_id:
+                    log.error(f"[PDF→Monday] Board IDs missing — AIR_PARENT_BOARD_ID={parent_board_id!r}, "
+                              f"AIR_BOARD_ID={child_board_id!r}")
+                    return
+
+                HEADERS = {"Authorization": token, "Content-Type": "application/json"}
+
+                def post_with_backoff(url, payload=None, headers=None, files=None, max_tries=3):
+                    for attempt in range(1, max_tries + 1):
+                        try:
+                            if files is not None:
+                                resp = requests.post(url, data=payload, headers=headers, files=files, timeout=30)
+                            else:
+                                resp = requests.post(url, json=payload, headers=headers, timeout=30)
+                            if resp.status_code == 200:
+                                return resp
+                            log.warning(f"[Monday] try {attempt} status={resp.status_code} body={resp.text[:400]}")
+                        except Exception as e:
+                            log.warning(f"[Monday] try {attempt} error: {e}")
+                        time.sleep(2 * attempt)
+                    raise RuntimeError("Monday API failed after backoff")
+
+                # === 組父項名稱 ===
+                tz = pytz.timezone(TIMEZONE) if "TIMEZONE" in globals() else pytz.timezone("America/Vancouver")
+                today = datetime.now(tz).strftime("%Y-%m-%d")
                 raw_name = re.sub(r"\s+", " ", (full_data["sender"]["name"] or "")).strip()
                 client_id = (full_data["sender"]["client_id"] or "").strip()
 
                 def adjust_caps(s: str) -> str:
                     s = (s or "").strip()
-                    if not s:
-                        return s
-                    # Title-case-ish but keep all-caps tokens intact
+                    if not s: return s
                     parts = re.split(r"(\s+)", s)
                     out = []
                     for p in parts:
@@ -1823,37 +1907,20 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
                 adj_name = adjust_caps(raw_name)
                 adj_client = adjust_caps(client_id)
 
-                # Proxy-name mapping (Yumi/Shu-Yen Liu → Yumi ; Vicky/Chia-Chi Ku → Vicky)
+                # 代理名處理（Yumi/Vicky）
                 if (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name):
                     adj_name, adj_client = "Shu-Yen Liu", "Yumi"
                 elif (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
                     adj_name, adj_client = "Chia-Chi Ku", "Vicky"
 
                 parent_name = f"{today} {adj_client} - {adj_name}"
+                log.info(f"[PDF→Monday] parent_name={parent_name!r}, tn={len(full_data.get('all_tracking_numbers') or [])}")
 
-                MONDAY_GQL = "https://api.monday.com/v2"
-                HEADERS = {"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"}
-
-                def post_with_backoff(url, payload=None, headers=None, files=None, max_tries=3):
-                    for attempt in range(1, max_tries + 1):
-                        try:
-                            if files is not None:
-                                resp = requests.post(url, data=payload, headers=headers, files=files, timeout=30)
-                            else:
-                                resp = requests.post(url, json=payload, headers=headers, timeout=30)
-                            if resp.status_code == 200:
-                                return resp
-                            log.warning(f"[Monday] try {attempt} status={resp.status_code} body={resp.text}")
-                        except Exception as e:
-                            log.warning(f"[Monday] try {attempt} error: {e}")
-                        time.sleep(2 * attempt)
-                    raise RuntimeError("Monday API failed after backoff")
-
-                # 1) Find or create parent item
+                # === 1) 查或建父項 ===
                 find_parent_q = f"""
                 query {{
                   items_by_column_values(
-                    board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                    board_id: {parent_board_id},
                     column_id: "name",
                     column_value: "{parent_name}"
                   ) {{ id }}
@@ -1863,46 +1930,48 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
                 items = (r.json().get("data", {}) or {}).get("items_by_column_values", []) or []
                 if items:
                     parent_id = items[0]["id"]
+                    log.info(f"[PDF→Monday] Found parent item id={parent_id}")
                 else:
                     create_parent_m = f"""
                     mutation {{
                       create_item(
-                        board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                        board_id: {parent_board_id},
                         item_name: "{parent_name}"
                       ) {{ id }}
                     }}
                     """
                     r2 = post_with_backoff(MONDAY_GQL, {"query": create_parent_m}, HEADERS)
                     parent_id = r2.json()["data"]["create_item"]["id"]
+                    log.info(f"[PDF→Monday] Created parent item id={parent_id}")
 
-                # 2) Create update and attach original PDF
+                # === 2) 建一則 update 並上傳原始 PDF ===
                 create_update_q = f"""
                 mutation {{
                   create_update(item_id: {parent_id}, body: "原始 PDF 檔案") {{ id }}
                 }}
                 """
                 upd_resp = post_with_backoff(MONDAY_GQL, {"query": create_update_q}, HEADERS)
-                update_id = (upd_resp.json().get("data", {}) or {}).get("create_update", {}) or {}
-                update_id = update_id.get("id")
-
+                update_id = ((upd_resp.json().get("data", {}) or {}).get("create_update", {}) or {}).get("id")
                 if update_id:
                     multipart_payload = {
-                        "query": f'''
-                            mutation ($file: File!) {{
-                              add_file_to_update(update_id: {update_id}, file: $file) {{ id }}
-                            }}
-                        ''',
+                        "query": '''
+                            mutation ($file: File!) {
+                              add_file_to_update(update_id: %s, file: $file) { id }
+                            }
+                        ''' % update_id,
                         "map": json.dumps({"file": ["variables.file"]})
                     }
                     files = [("file", (original_filename, pdf_bytes, "application/pdf"))]
                     file_resp = post_with_backoff(f"{MONDAY_GQL}/file",
                                                   payload=multipart_payload,
-                                                  headers={"Authorization": MONDAY_API_TOKEN},
+                                                  headers={"Authorization": token},
                                                   files=files)
-                    if file_resp.status_code != 200:
-                        log.error(f"[PDF→Monday] attach PDF failed: {file_resp.status_code} {file_resp.text}")
+                    if file_resp.status_code == 200:
+                        log.info(f"[PDF→Monday] Attached PDF to update {update_id}")
+                    else:
+                        log.error(f"[PDF→Monday] attach PDF failed: {file_resp.status_code} {file_resp.text[:400]}")
 
-                # 3) Create subitems for each tracking number
+                # === 3) 依每個 tracking 建 subitem 並設初始欄位 ===
                 for tn in (full_data.get("all_tracking_numbers") or []):
                     create_sub_m = f"""
                     mutation {{
@@ -1911,14 +1980,14 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
                     """
                     resp_sub = post_with_backoff(MONDAY_GQL, {"query": create_sub_m}, HEADERS)
                     sub_id = resp_sub.json()["data"]["create_subitem"]["id"]
-                    log.info(f"[PDF→Monday] Created subitem {sub_id} for tracking {tn}")
+                    log.info(f"[PDF→Monday] Created subitem {sub_id} for {tn}")
 
-                    # Set Status to 收包裹
+                    # Status 設為 收包裹
                     mut_status = f"""
                     mutation {{
                       change_column_value(
                         item_id: {sub_id},
-                        board_id: {os.getenv('AIR_BOARD_ID')},
+                        board_id: {child_board_id},
                         column_id: "status__1",
                         value: "{{\\"label\\":\\"收包裹\\"}}"
                       ) {{ id }}
@@ -1926,14 +1995,14 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
                     """
                     post_with_backoff(MONDAY_GQL, {"query": mut_status}, HEADERS)
 
-                    # Optional logistics columns by postal code (receiver may be empty here)
+                    # 依郵遞區號給初值（可維持你的條件）
                     postal = (full_data.get("receiver", {}).get("postal_code") or "").replace(" ", "").upper()
                     if postal.startswith("V6X1Z7"):
                         mut_intl = f"""
                         mutation {{
                           change_column_value(
                             item_id: {sub_id},
-                            board_id: {os.getenv('AIR_BOARD_ID')},
+                            board_id: {child_board_id},
                             column_id: "status_18__1",
                             value: "{{\\"label\\":\\"Ace\\"}}"
                           ) {{ id }}
@@ -1944,48 +2013,19 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
                         mutation {{
                           change_column_value(
                             item_id: {sub_id},
-                            board_id: {os.getenv('AIR_BOARD_ID')},
+                            board_id: {child_board_id},
                             column_id: "status_19__1",
                             value: "{{\\"label\\":\\"ACE大嘴鳥\\"}}"
                           ) {{ id }}
                         }}
                         """
                         post_with_backoff(MONDAY_GQL, {"query": mut_tai}, HEADERS)
-                    elif postal.startswith("V6X0B9"):
-                        mut_intl = f"""
-                        mutation {{
-                          change_column_value(
-                            item_id: {sub_id},
-                            board_id: {os.getenv('AIR_BOARD_ID')},
-                            column_id: "status_18__1",
-                            value: "{{\\"label\\":\\"SoQuick\\"}}"
-                          ) {{ id }}
-                        }}
-                        """
-                        post_with_backoff(MONDAY_GQL, {"query": mut_intl}, HEADERS)
 
-                # 4) Mark parent 客人種類 = 早期代購 if proxy names matched
-                is_early = (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) \
-                        or (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name)
-                if is_early:
-                    set_type_q = f"""
-                    mutation {{
-                      change_column_value(
-                        item_id: {parent_id},
-                        board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
-                        column_id: "status_11__1",
-                        value: "{{\\"label\\":\\"早期代購\\"}}"
-                      ) {{ id }}
-                    }}
-                    """
-                    post_with_backoff(MONDAY_GQL, {"query": set_type_q}, HEADERS)
-
-                log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
-                _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"[PDF→Monday] Monday sync completed for {parent_name}")
+                log.info(f"[PDF→Monday] Completed for parent item {parent_name!r}")
 
             except Exception as e:
-                log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
-                _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"ERROR [PDF→Monday] {e}")
+                log.error(f"[PDF→Monday] failed: {e}", exc_info=True)
+
 
         # 6) Push a short status back to the originating group
         try:
