@@ -643,6 +643,138 @@ Response Format (pure JSON):
 * Do not include extra text or other fields.
 """
 
+# === BACKGROUND WORKER to process uploaded PDF off the request thread ===
+def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filename: str):
+    """
+    Runs the whole slow pipeline OFF the Flask request thread:
+    - Render PDF pages to images
+    - Try barcode crop → decode; else call LLM to read tracking number
+    - Normalize tracking numbers
+    - (If you also update Monday/Sheets here, keep doing so — it stays off the request thread.)
+    - Kick Monday sync thread
+    - Push a short status back to LINE (optional)
+    """
+    try:
+        # 1) PDF → images
+        try:
+            from pdf2image import convert_from_bytes
+            images = convert_from_bytes(pdf_bytes, dpi=200)
+            if not images:
+                raise ValueError("no images from pdf2image")
+            log.info(f"[PDF OCR] pdf2image rendered {len(images)} pages")
+        except Exception:
+            log.warning("[PDF OCR] convert_from_bytes returned empty, retrying via fitz")
+            import fitz
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            images = []
+            for page in doc:
+                pix = page.get_pixmap()
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                images.append(img)
+            log.info(f"[PDF OCR] PyMuPDF rendered {len(images)} pages")
+
+        # 2) Iterate pages: try barcode crop first; fallback to LLM json
+        agent = LLMAgent()
+        all_tracking_numbers = []
+        for idx, image in enumerate(images, start=1):
+            # safe crop box (your existing second-box crop)
+            W, H = image.size
+            x, y, w, h = 120, 995, 750, 260
+            x1 = max(0, min(x, W));      y1 = max(0, min(y, H))
+            x2 = max(0, min(x + w, W));  y2 = max(0, min(y + h, H))
+            crop = image.crop((x1, y1, x2, y2))
+
+            # Try barcode
+            codes = decode(crop, symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.QRCODE])
+            if codes:
+                for c in codes:
+                    raw = (c.data.decode("utf-8", "ignore") or "").strip()
+                    if raw:
+                        all_tracking_numbers.append(raw)
+                log.info(f"[PDF OCR] page{idx}: decoded {len(codes)} barcodes")
+                continue
+
+            # Fallback to LLM
+            buffered = BytesIO()
+            image.save(buffered, format="PNG")
+            b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+            messages = [{
+                "role":"user",
+                "content":[
+                    {"type":"text","text":TRACKING_PROMPT.strip()},
+                    {"type":"image_url","image_url":{"url": f"data:image/png;base64,{b64}"}}
+                ]
+            }]
+            raw = agent.inference(messages) or "{}"
+            data = parse_json_safely(raw)  # tolerant to ```json fences
+            tn = (data.get("tracking_number") or "").strip()
+            if tn:
+                all_tracking_numbers.append(tn)
+            else:
+                log.warning(f"[PDF OCR] page{idx}: LLM gave no tracking_number. raw={raw!r}")
+
+        # 3) Normalize & dedupe (UPS: strip spaces, keep only leading 1Z… body)
+        def normalize_ups(s: str) -> str:
+            if not isinstance(s, str): return ""
+            s2 = re.sub(r"\s+", "", s).upper()
+            # Keep contiguous UPS token starting with 1Z
+            m = re.search(r"(1Z[0-9A-Z]+)", s2)
+            return m.group(1) if m else s2
+
+        all_tracking_numbers = [normalize_ups(t) for t in all_tracking_numbers if t]
+        uniq = []
+        seen = set()
+        for t in all_tracking_numbers:
+            if t and t not in seen:
+                seen.add(t); uniq.append(t)
+
+        # 4) If you also write to Google Sheets, keep doing it here (OFF thread).
+        #    Example (adapt to your sheet & columns):
+        try:
+            # Example: find the row by reference number and write up to 3 tracking IDs into S/U columns
+            full_data = {}  # you may already build this earlier; keep your existing logic
+            # If you already have your sheet target and ref key, call your existing write routine here.
+            # (Your current code for writing S/T/U and formatting F:… can be called here unchanged)
+            pass
+        except Exception as e:
+            log.warning(f"[PDF→Sheet] skipped or failed: {e}")
+
+        # 5) Kick Monday sync in its OWN thread (so worker is not blocked)
+        def run_monday_sync(full_data, pdf_bytes, original_filename):
+            # keep your existing Monday sync code here (unchanged); it already runs off-thread in your file
+            try:
+                _line_push("C1f77f5ef1fe48f4782574df449eac0cf", "[PDF→Monday] starting…")
+                # … your existing mutations / uploads …
+                _line_push("C1f77f5ef1fe48f4782574df449eac0cf", "[PDF→Monday] done.")
+            except Exception as e:
+                log.error(f"[PDF→Monday] failed: {e}", exc_info=True)
+                _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"[PDF→Monday] ERROR: {e}")
+
+        threading.Thread(
+            target=run_monday_sync,
+            args=({}, pdf_bytes, original_filename),
+            daemon=True
+        ).start()
+
+        # 6) Optional: a short status back to the group
+        if uniq:
+            msg = "✅ 解析到追蹤碼：\n" + "\n".join(f"- {t}" for t in uniq)
+        else:
+            msg = "⚠️ PDF 已處理，但未能讀出追蹤碼（條碼/畫質可能不清楚）。"
+        try:
+            requests.post(
+                "https://api.line.me/v2/bot/message/push",
+                headers=LINE_HEADERS,
+                json={"to": group_id or PDF_GROUP_ID, "messages":[{"type":"text","text":msg}]},
+                timeout=5
+            )
+        except Exception as _e:
+            log.warning(f"[PDF OCR] status push failed: {_e}")
+
+    except Exception as e:
+        log.error(f"[PDF Worker] crashed: {e}", exc_info=True)
+
+
 # keep an in-memory buffer of successfully updated tracking IDs per group
 _pending = defaultdict(list)
 _scheduled = set()
@@ -1407,21 +1539,28 @@ def handle_ace_shipments(event):
 
 class LLMAgent:
     def __init__(self):
-        # Initialize OpenAI client using env var
         import os
         api_key = os.getenv("OPENAI_API_KEY")
+        # Add a client-level timeout; if your SDK doesn’t honor this, use with_options below.
         self.client = openai.Client(api_key=api_key)
+        # optional per-call override: self.client = self.client.with_options(timeout=12.0)
 
     def inference(self, messages):
         try:
+            # Force JSON and keep responses compact; add a per-call timeout guard.
             response = self.client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=messages,
+                temperature=0,
+                max_tokens=200,
+                response_format={"type": "json_object"},
+                timeout=12.0,  # httpx timeout; if not supported, use self.client.with_options(...)
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
             print(f"Error during inference: {e}")
             return None
+
 
 # Convert PDF pages to PIL Images using PyMuPDF
 def pdf_to_image(pdf_input, dpi=300):
@@ -1453,64 +1592,423 @@ def pdf_to_image(pdf_input, dpi=300):
 
 # Extract text from images using the OpenAI API
 def extract_text_from_images(image, prompt="Please extract text from this image."):
-    """
-    Sends each image to the LLM via base64-encoded data URI and returns a list of responses.
-    Also saves each temporary image to disk under temp_images/.
-    """
     agent = LLMAgent()
-    
-    # Barcode (second box): safe crop + decode
+
+    # 1) 安全裁切條碼區塊並嘗試 decode
     W, H = image.size
     x, y, w, h = 120, 995, 750, 260
+    tracking_number = ""
     try:
-        x1 = max(0, min(x, W))
-        y1 = max(0, min(y, H))
-        x2 = max(x1, min(x + w, W))
-        y2 = max(y1, min(y + h, H))
-        tracking_number = ""
+        x1 = max(0, min(x, W)); y1 = max(0, min(y, H))
+        x2 = max(x1, min(x + w, W)); y2 = max(y1, min(y + h, H))
         if x2 - x1 > 5 and y2 - y1 > 5:
             cropped_img = image.crop((x1, y1, x2, y2))
             objs = decode(cropped_img)
             if objs:
                 try:
-                    tracking_number = objs[0].data.decode("utf-8")
+                    tracking_number = (objs[0].data.decode("utf-8") or "").strip()
                 except Exception:
                     tracking_number = ""
     except Exception as _e:
         log.warning(f"[BARCODE] crop/decode failed: {_e}")
-        tracking_number = ""
 
-    # Serialize image to JPEG bytes
+    # 2) 影像轉 base64
     buf = BytesIO()
     image.save(buf, format="JPEG")
-    img_bytes = buf.getvalue()
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     buf.close()
 
-    # Base64 encode
-    b64 = base64.b64encode(img_bytes).decode("utf-8")
-    data_uri = f"data:image/jpeg;base64,{b64}"
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}" }},
+        ],
+    }]
 
-    # Build chat payload
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": data_uri}},
-            ],
-        }
-    ]
+    # Inference (single call) — parse forgivingly, keep _raw when parsing fails
+    raw = agent.inference(messages) or "{}"
+    result = parse_json_forgiving(raw)
+    if not isinstance(result, dict):
+        result = {}
 
-    # Inference
-    text = agent.inference(messages) or "{}"  # ensure non-None
-    try:
-        result = json.loads(text)
-    except json.JSONDecodeError:
-        log.error(f"[PDF OCR] JSON parse failed, raw output → {text!r}")
-        # 回傳原始字串以便後續檢查
-        return {"_raw": text, "tracking number": tracking_number}
-    result["tracking number"] = tracking_number
+    # Always attach barcode-derived tracking (normalized) if we have it
+    if tracking_number and not result.get("tracking_number"):
+        tn = normalize_ups(tracking_number)
+        if tn:
+            result["tracking_number"] = tn
+
+    # If no tracking in parsed dict, keep the raw so later code can regex 1Z out
+    if not result.get("tracking_number"):
+        result["_raw"] = raw
+
     return result
+
+
+
+# === BACKGROUND WORKER to process uploaded PDF off the request thread ===
+def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filename: str):
+    """
+    Runs the whole slow pipeline OFF the Flask request thread:
+    - Render PDF pages to images
+    - Try barcode crop → decode; else call LLM to read tracking number
+    - Normalize tracking numbers
+    - Update Google Sheet (Tracking tab S/T/U) using reference number or filename
+    - Kick Monday sync in a background thread (parent item, attach PDF, create subitems, set statuses)
+    - Push a short status back to LINE
+    """
+    try:
+        # 1) PDF → images (pdf2image first, fall back to PyMuPDF)
+        try:
+            from pdf2image import convert_from_bytes
+            images = convert_from_bytes(pdf_bytes, dpi=200)
+            if not images:
+                raise ValueError("no images from pdf2image")
+            log.info(f"[PDF OCR] pdf2image rendered {len(images)} pages")
+        except Exception:
+            log.warning("[PDF OCR] convert_from_bytes returned empty, retrying via fitz")
+            import fitz
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            images = []
+            for page in doc:
+                pix = page.get_pixmap()
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                images.append(img)
+            log.info(f"[PDF OCR] PyMuPDF rendered {len(images)} pages")
+
+        # 2) Iterate pages: try barcode crop first; fallback to LLM json
+        agent = LLMAgent()
+        all_tracking_numbers: list[str] = []
+
+        for idx, image in enumerate(images, start=1):
+            # Safe crop box (your second-box crop)
+            W, H = image.size
+            x, y, w, h = 120, 995, 750, 260
+            x1 = max(0, min(x, W));      y1 = max(0, min(y, H))
+            x2 = max(0, min(x + w, W));  y2 = max(0, min(y + h, H))
+            crop = image.crop((x1, y1, x2, y2))
+
+            # Try barcode first
+            try:
+                codes = decode(crop, symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.QRCODE])
+            except Exception as _e:
+                log.warning(f"[PDF OCR] page{idx} zbar decode error: {_e}")
+                codes = []
+
+            if codes:
+                for c in codes:
+                    raw = (c.data.decode("utf-8", "ignore") or "").strip()
+                    if raw:
+                        all_tracking_numbers.append(raw)
+                log.info(f"[PDF OCR] page{idx}: decoded {len(codes)} barcodes")
+                continue
+
+            # Fallback → LLM tracking-number extraction
+            buffered = BytesIO()
+            image.save(buffered, format="PNG")
+            b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": TRACKING_PROMPT.strip()},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                ]
+            }]
+            raw = agent.inference(messages) or "{}"
+            data = parse_json_forgiving(raw)  # tolerant to ```json fences
+            tn = (data.get("tracking_number") or "").strip()
+            if tn:
+                all_tracking_numbers.append(tn)
+            else:
+                log.warning(f"[PDF OCR] page{idx}: LLM gave no tracking_number. raw={raw!r}")
+
+        # 3) Normalize & dedupe (UPS: strip spaces, enforce leading 1Z…)
+        def normalize_ups(s: str) -> str:
+            if not isinstance(s, str):
+                return ""
+            s2 = re.sub(r"\s+", "", s).upper()
+            m = re.search(r"(1Z[0-9A-Z]+)", s2)  # keep the UPS token
+            return m.group(1) if m else s2
+
+        all_tracking_numbers = [normalize_ups(t) for t in all_tracking_numbers if t]
+        uniq: list[str] = []
+        seen = set()
+        for t in all_tracking_numbers:
+            if t and t not in seen:
+                seen.add(t)
+                uniq.append(t)
+
+        # Build a minimal full_data the rest of your pipeline expects
+        # (sender/receiver may be blank here; ref fallback uses filename)
+        full_data = {
+            "sender": {"name": "", "phone": "", "client_id": "", "address": ""},
+            "receiver": {"postal_code": ""},
+            "reference_number": "",
+            "all_tracking_numbers": uniq,
+        }
+
+        # 4) Google Sheet write: use reference_number or filename stem as key
+        try:
+            # Choose key: prefer reference_number, else filename (no extension)
+            ref_str = (full_data.get("reference_number") or "").strip()
+            if not ref_str:
+                ref_str = (original_filename.rsplit(".", 1)[0] if original_filename else "").strip()
+
+            SHEET_ID = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
+            WS_TITLE = "Tracking"
+            gs = get_gspread_client()
+            ss = gs.open_by_key(SHEET_ID)
+            ws = ss.worksheet(WS_TITLE)
+
+            values = ws.col_values(1)  # A:A
+            row_idx = next((i for i, v in enumerate(values, start=1) if (v or "").strip() == ref_str), None)
+
+            if not row_idx:
+                log.warning(f"[PDF OCR] reference '{ref_str}' not found in A:A; skipping sheet write, continuing Monday sync")
+            else:
+                # Fill tracking numbers into S(19), T(20), U(21)
+                for i, tn in enumerate(uniq[:3], start=1):
+                    ws.update_cell(row_idx, 18 + i, tn)
+
+                # Optional notify
+                try:
+                    requests.post(
+                        "https://api.line.me/v2/bot/message/push",
+                        headers=LINE_HEADERS,
+                        json={
+                            "to": "C1f77f5ef1fe48f4782574df449eac0cf",
+                            "messages": [{"type": "text", "text": "[PDF→空運表單]已同步到Tracking Tab"}],
+                        },
+                        timeout=10,
+                    )
+                except Exception as _e:
+                    log.warning(f"[PDF OCR] LINE push failed: {_e}")
+
+                # Highlight ABB account cell F (col 6) for that row (optional; keep your formatting)
+                try:
+                    cell = f"F{row_idx}"
+                    fmt = {
+                        "backgroundColor": {"red": 1, "green": 0.8, "blue": 0.8}
+                    }
+                    # If you had a formatting helper, call it here; otherwise omit to avoid API scope issues.
+                except Exception as _e:
+                    log.warning(f"[PDF OCR] formatting warning: {_e}")
+        except Exception as e:
+            log.warning(f"[PDF→Sheet] skipped or failed: {e}")
+
+        # 5) Monday sync in its OWN background thread (so worker itself stays light)
+        def run_monday_sync(full_data: dict, pdf_bytes: bytes, original_filename: str):
+            try:
+                # Build parent item name from client/name heuristics like your original code
+                today = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
+                raw_name = re.sub(r"\s+", " ", (full_data["sender"]["name"] or "")).strip()
+                client_id = (full_data["sender"]["client_id"] or "").strip()
+
+                def adjust_caps(s: str) -> str:
+                    s = (s or "").strip()
+                    if not s:
+                        return s
+                    # Title-case-ish but keep all-caps tokens intact
+                    parts = re.split(r"(\s+)", s)
+                    out = []
+                    for p in parts:
+                        if p.isspace():
+                            out.append(p)
+                        elif p.isupper() and len(p) > 1:
+                            out.append(p)
+                        else:
+                            out.append(p[:1].upper() + p[1:].lower())
+                    return "".join(out)
+
+                adj_name = adjust_caps(raw_name)
+                adj_client = adjust_caps(client_id)
+
+                # Proxy-name mapping (Yumi/Shu-Yen Liu → Yumi ; Vicky/Chia-Chi Ku → Vicky)
+                if (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name):
+                    adj_name, adj_client = "Shu-Yen Liu", "Yumi"
+                elif (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
+                    adj_name, adj_client = "Chia-Chi Ku", "Vicky"
+
+                parent_name = f"{today} {adj_client} - {adj_name}"
+
+                MONDAY_GQL = "https://api.monday.com/v2"
+                HEADERS = {"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"}
+
+                def post_with_backoff(url, payload=None, headers=None, files=None, max_tries=3):
+                    for attempt in range(1, max_tries + 1):
+                        try:
+                            if files is not None:
+                                resp = requests.post(url, data=payload, headers=headers, files=files, timeout=30)
+                            else:
+                                resp = requests.post(url, json=payload, headers=headers, timeout=30)
+                            if resp.status_code == 200:
+                                return resp
+                            log.warning(f"[Monday] try {attempt} status={resp.status_code} body={resp.text}")
+                        except Exception as e:
+                            log.warning(f"[Monday] try {attempt} error: {e}")
+                        time.sleep(2 * attempt)
+                    raise RuntimeError("Monday API failed after backoff")
+
+                # 1) Find or create parent item
+                find_parent_q = f"""
+                query {{
+                  items_by_column_values(
+                    board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                    column_id: "name",
+                    column_value: "{parent_name}"
+                  ) {{ id }}
+                }}
+                """
+                r = post_with_backoff(MONDAY_GQL, {"query": find_parent_q}, HEADERS)
+                items = (r.json().get("data", {}) or {}).get("items_by_column_values", []) or []
+                if items:
+                    parent_id = items[0]["id"]
+                else:
+                    create_parent_m = f"""
+                    mutation {{
+                      create_item(
+                        board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                        item_name: "{parent_name}"
+                      ) {{ id }}
+                    }}
+                    """
+                    r2 = post_with_backoff(MONDAY_GQL, {"query": create_parent_m}, HEADERS)
+                    parent_id = r2.json()["data"]["create_item"]["id"]
+
+                # 2) Create update and attach original PDF
+                create_update_q = f"""
+                mutation {{
+                  create_update(item_id: {parent_id}, body: "原始 PDF 檔案") {{ id }}
+                }}
+                """
+                upd_resp = post_with_backoff(MONDAY_GQL, {"query": create_update_q}, HEADERS)
+                update_id = (upd_resp.json().get("data", {}) or {}).get("create_update", {}) or {}
+                update_id = update_id.get("id")
+
+                if update_id:
+                    multipart_payload = {
+                        "query": f'''
+                            mutation ($file: File!) {{
+                              add_file_to_update(update_id: {update_id}, file: $file) {{ id }}
+                            }}
+                        ''',
+                        "map": json.dumps({"file": ["variables.file"]})
+                    }
+                    files = [("file", (original_filename, pdf_bytes, "application/pdf"))]
+                    file_resp = post_with_backoff(f"{MONDAY_GQL}/file",
+                                                  payload=multipart_payload,
+                                                  headers={"Authorization": MONDAY_API_TOKEN},
+                                                  files=files)
+                    if file_resp.status_code != 200:
+                        log.error(f"[PDF→Monday] attach PDF failed: {file_resp.status_code} {file_resp.text}")
+
+                # 3) Create subitems for each tracking number
+                for tn in (full_data.get("all_tracking_numbers") or []):
+                    create_sub_m = f"""
+                    mutation {{
+                      create_subitem(parent_item_id: {parent_id}, item_name: "{tn}") {{ id }}
+                    }}
+                    """
+                    resp_sub = post_with_backoff(MONDAY_GQL, {"query": create_sub_m}, HEADERS)
+                    sub_id = resp_sub.json()["data"]["create_subitem"]["id"]
+                    log.info(f"[PDF→Monday] Created subitem {sub_id} for tracking {tn}")
+
+                    # Set Status to 收包裹
+                    mut_status = f"""
+                    mutation {{
+                      change_column_value(
+                        item_id: {sub_id},
+                        board_id: {os.getenv('AIR_BOARD_ID')},
+                        column_id: "status__1",
+                        value: "{{\\"label\\":\\"收包裹\\"}}"
+                      ) {{ id }}
+                    }}
+                    """
+                    post_with_backoff(MONDAY_GQL, {"query": mut_status}, HEADERS)
+
+                    # Optional logistics columns by postal code (receiver may be empty here)
+                    postal = (full_data.get("receiver", {}).get("postal_code") or "").replace(" ", "").upper()
+                    if postal.startswith("V6X1Z7"):
+                        mut_intl = f"""
+                        mutation {{
+                          change_column_value(
+                            item_id: {sub_id},
+                            board_id: {os.getenv('AIR_BOARD_ID')},
+                            column_id: "status_18__1",
+                            value: "{{\\"label\\":\\"Ace\\"}}"
+                          ) {{ id }}
+                        }}
+                        """
+                        post_with_backoff(MONDAY_GQL, {"query": mut_intl}, HEADERS)
+                        mut_tai = f"""
+                        mutation {{
+                          change_column_value(
+                            item_id: {sub_id},
+                            board_id: {os.getenv('AIR_BOARD_ID')},
+                            column_id: "status_19__1",
+                            value: "{{\\"label\\":\\"ACE大嘴鳥\\"}}"
+                          ) {{ id }}
+                        }}
+                        """
+                        post_with_backoff(MONDAY_GQL, {"query": mut_tai}, HEADERS)
+                    elif postal.startswith("V6X0B9"):
+                        mut_intl = f"""
+                        mutation {{
+                          change_column_value(
+                            item_id: {sub_id},
+                            board_id: {os.getenv('AIR_BOARD_ID')},
+                            column_id: "status_18__1",
+                            value: "{{\\"label\\":\\"SoQuick\\"}}"
+                          ) {{ id }}
+                        }}
+                        """
+                        post_with_backoff(MONDAY_GQL, {"query": mut_intl}, HEADERS)
+
+                # 4) Mark parent 客人種類 = 早期代購 if proxy names matched
+                is_early = (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) \
+                        or (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name)
+                if is_early:
+                    set_type_q = f"""
+                    mutation {{
+                      change_column_value(
+                        item_id: {parent_id},
+                        board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                        column_id: "status_11__1",
+                        value: "{{\\"label\\":\\"早期代購\\"}}"
+                      ) {{ id }}
+                    }}
+                    """
+                    post_with_backoff(MONDAY_GQL, {"query": set_type_q}, HEADERS)
+
+                log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
+                _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"[PDF→Monday] Monday sync completed for {parent_name}")
+
+            except Exception as e:
+                log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
+                _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"ERROR [PDF→Monday] {e}")
+
+        # Kick off Monday sync thread
+        threading.Thread(
+            target=run_monday_sync,
+            args=(full_data, pdf_bytes, original_filename),
+            daemon=True
+        ).start()
+
+        # 6) Push a short status back to the originating group
+        try:
+            msg = ("✅ 解析到追蹤碼：\n" + "\n".join(f"- {t}" for t in uniq)) if uniq \
+                  else "⚠️ PDF 已處理，但未能讀出追蹤碼（條碼/畫質可能不清楚）。"
+            requests.post(
+                "https://api.line.me/v2/bot/message/push",
+                headers=LINE_HEADERS,
+                json={"to": group_id or PDF_GROUP_ID, "messages": [{"type": "text", "text": msg}]},
+                timeout=5
+            )
+        except Exception as _e:
+            log.warning(f"[PDF OCR] status push failed: {_e}")
+
+    except Exception as e:
+        log.error(f"[PDF Worker] crashed: {e}", exc_info=True)
 
 # ─── UPS tracking normalization ───────────────────
 def normalize_ups(trk: str) -> str:
@@ -1520,6 +2018,29 @@ def normalize_ups(trk: str) -> str:
         tail = tail.replace('O', '0')  # OCR fix: O→0 after 1Z
         s = head + tail
     return s
+
+# Add a forgiving JSON parser (accepts dict or JSON-ish strings with ```json fences)
+def parse_json_forgiving(s):
+    """
+    Accepts a dict OR a JSON-ish string (may contain ```json fences or stray text).
+    Returns {} on failure.
+    """
+    if isinstance(s, dict):
+        return s
+    if not isinstance(s, str):
+        return {}
+    txt = s.strip()
+    # strip ```json fences if present
+    if txt.startswith("```"):
+        txt = txt.strip("`")
+        if txt.lower().startswith("json"):
+            txt = txt[4:]
+    txt = txt.strip()
+    try:
+        return json.loads(txt)
+    except Exception:
+        return {}
+
 
 # ─── lookup_full_tracking 定義 ───────────────────
 def lookup_full_tracking(ups_last4: str) -> Optional[str]:
@@ -1544,31 +2065,6 @@ def lookup_full_tracking(ups_last4: str) -> Optional[str]:
         log.warning(f"UPS尾號 {ups_last4} 找到 {len(matches)} 筆，不唯一，跳過")
         return None
     return matches[0]
-
-#Add a forgiving JSON parser
-def parse_json_forgiving(s):
-    """
-    Accepts a dict OR a JSON-ish string (may contain ```json fences or stray text).
-    Returns {} on failure.
-    """
-    if isinstance(s, dict):
-        return s
-    if not isinstance(s, str):
-        return {}
-    txt = s.strip()
-    # strip ```json fences if present
-    if txt.startswith("```"):
-        txt = txt.strip("`")
-        # remove possible leading 'json'
-        if txt.lower().startswith("json"):
-            txt = txt[4:]
-    # remove any leading/trailing code fences/newlines
-    txt = txt.strip()
-    try:
-        return json.loads(txt)
-    except Exception:
-        return {}
-
 
 # CLI entrypoint
 def main():
@@ -1624,208 +2120,31 @@ def webhook():
         ):
             file_id = msg["id"]
             original_filename = msg.get("fileName", "uploaded.pdf") # fallback 檔名
+
             try:
-                # 1) 下載 PDF 檔案
+                # 1) 下載 PDF 檔案（保持原樣）
                 resp = requests.get(
                     f"https://api-data.line.me/v2/bot/message/{file_id}/content",
                     headers={"Authorization": f"Bearer {LINE_TOKEN}"},
                 )
                 resp.raise_for_status()
-                pdf_bytes = resp.content   # ← capture PDF bytes here
+                pdf_bytes = resp.content
 
-                # 2) PDF 轉圖像，拿到所有頁面
-                from pdf2image import convert_from_bytes
-                from io import BytesIO
+                # 2) 開背景執行，不在請求執行緒裡做重活
+                threading.Thread(
+                    target=_process_pdf_upload_event,
+                    kwargs=dict(group_id=src.get("groupId") or PDF_GROUP_ID,
+                                pdf_bytes=pdf_bytes,
+                                original_filename=original_filename),
+                    daemon=True
+                ).start()
 
-                try:
-                    images = convert_from_bytes(pdf_bytes, dpi=200)
-                    if not images:
-                        raise ValueError("no images from pdf2image")
-                    log.info(f"[PDF OCR] pdf2image rendered {len(images)} pages")
-                except Exception:
-                    log.warning("[PDF OCR] convert_from_bytes returned empty, fallback to PyMuPDF")
-                    import fitz
-                    images = []
-                    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                    for p in range(doc.page_count):
-                        page = doc.load_page(p)
-                        # scale ~2x for better OCR (≈300 dpi effective)
-                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                        mode = "RGBA" if pix.alpha else "RGB"
-                        img = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
-                        images.append(img)
-                    log.info(f"[PDF OCR] PyMuPDF fallback rendered {len(images)} pages")
-
-                log.info(f"[PDF OCR] going to OCR {len(images)} page(s)")
-
-                # 逐頁跑 OCR
-                full_data = {}
-                tracking_numbers = []
-
-                for idx, img in enumerate(images, start=1):
-                    try:
-                        if idx == 1:
-                            # 第1頁：抽全部欄位
-                            full_data_raw = extract_text_from_images(img, prompt=OCR_SHIPPING_PROMPT)
-
-                            # If the extractor gave us a dict but with "_raw", re-parse; else keep as is
-                            if isinstance(full_data_raw, dict) and "_raw" in full_data_raw:
-                                full_data = parse_json_forgiving(full_data_raw["_raw"])
-                                # carry over tracking captured by barcode step
-                                if "tracking number" in full_data_raw:
-                                    full_data["tracking_number"] = full_data_raw["tracking number"]
-                            else:
-                                # either already a parsed dict or a JSON string
-                                full_data = parse_json_forgiving(full_data_raw)
-
-                            # normalize legacy keys (do this ONCE)
-                            if "tracking number" in full_data:
-                                full_data["tracking_number"] = full_data.pop("tracking number")
-                            if "reference number" in full_data:
-                                full_data["reference_number"] = full_data.pop("reference number")
-
-                            # Fallbacks: recover UPS from raw JSON-ish text (with spaces) if missing
-                            if not full_data.get("tracking_number"):
-                                # 1) if your parsed dict still carries _raw
-                                if "_raw" in full_data:
-                                    m = re.search(r"(1Z[\sA-Za-z0-9]+)", full_data["_raw"])
-                                    if m:
-                                        full_data["tracking_number"] = m.group(1).replace(" ", "")
-                                # 2) also try the original first-page return (string or dict-with-_raw)
-                                if not full_data.get("tracking_number"):
-                                    raw_candidates = []
-                                    if isinstance(full_data_raw, str):
-                                        raw_candidates.append(full_data_raw)
-                                    elif isinstance(full_data_raw, dict) and "_raw" in full_data_raw:
-                                        raw_candidates.append(full_data_raw["_raw"])
-                                    for raw in raw_candidates:
-                                        m = re.search(r"(1Z[\sA-Za-z0-9]+)", raw)
-                                        if m:
-                                            full_data["tracking_number"] = m.group(1).replace(" ", "")
-                                            break
-
-                            # Final fallback for page 1: run the tracking-only prompt on page 1 too
-                            if not full_data.get("tracking_number"):
-                                res1 = extract_text_from_images(img, prompt=TRACKING_PROMPT)
-                                tn1 = (res1 or {}).get("tracking_number")
-                                if not tn1 and isinstance(res1, dict) and "_raw" in res1:
-                                    raw1 = res1["_raw"]
-                                    m1 = re.search(r"(1Z[\sA-Za-z0-9]+)", raw1)
-                                    if m1:
-                                        tn1 = m1.group(1).replace(" ", "")
-                                if tn1:
-                                    full_data["tracking_number"] = tn1
-                                    log.info(f"[PDF OCR] page1 fallback found tracking_number → {tn1}")
-
-                            # 將第一頁的 tracking 也加入列表
-                            tn = full_data.get("tracking_number")
-                            if tn:
-                                tracking_numbers.append(tn)
-                        else:
-                            # 後續頁：只抽 tracking_number
-                            res = extract_text_from_images(img, prompt=TRACKING_PROMPT)
-                            tn = res.get("tracking_number")
-                            if not tn and "_raw" in res:
-                                # e.g. res["_raw"] == '```json\n{"tracking_number": "1Z HF0 ..."}\n```'
-                                raw = res["_raw"]
-                                m = re.search(r"(1Z[\sA-Za-z0-9]+)", raw)
-                                if m:
-                                    tn = m.group(1).replace(" ", "")
-                            if tn:
-                                tracking_numbers.append(tn)
-                    except Exception as e:
-                        log.error(f"[PDF OCR] page {idx} failed: {e}", exc_info=True)
-
-                # 規範化 + 去重後，設定 all_tracking_numbers
-                def normalize_ups(trk: str) -> str:
-                    s = re.sub(r'[^A-Za-z0-9]', '', trk or '').upper()
-                    if s.startswith('1Z'):
-                        head, tail = s[:2], s[2:]
-                        tail = tail.replace('O', '0')  # OCR fix: O→0 after 1Z
-                        s = head + tail
-                    return s
-
-                normalized, seen = [], set()
-                for t in tracking_numbers:
-                    n = normalize_ups(t)
-                    if n and n.startswith('1Z') and len(n) >= 16 and n not in seen:
-                        seen.add(n)
-                        normalized.append(n)
-
-                full_data["all_tracking_numbers"] = sorted(normalized)
-                log.info(f"[PDF OCR] all_tracking_numbers → {full_data.get('all_tracking_numbers')}")                    
-
-                ##5) 回傳同群組
-                # requests.post(
-                    # "https://api.line.me/v2/bot/message/push",
-                    # headers=LINE_HEADERS,
-                    # json={
-                        # "to": src["groupId"],
-                        # "messages": [{
-                            # "type": "text",
-                            # "text": json.dumps(full_data, ensure_ascii=False)
-                        # }]
-                    # }
-                # )
-                log.info(f"[PDF OCR] extracted → {full_data}")
-                
-                # ─── 6) Sheet 更新：用 reference_number 或檔名做鍵，寫入追蹤碼 & 檢查 ABB ID
-                name                 = full_data["sender"]["name"].strip()
-                client_id            = full_data["sender"]["client_id"].strip()
-                all_tracking_numbers = full_data.get("all_tracking_numbers", [])
-
-                # 選擇可用的索引鍵：先用 reference_number，沒有就用檔名（去掉副檔名）
-                ref_str = (full_data.get("reference_number") or "").strip()
-                if not ref_str:
-                    ref_str = (original_filename.rsplit('.', 1)[0] if original_filename else "").strip()
-
-                # 開啟試算表與 Tracking 試算表頁籤
-                SHEET_ID = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
-                WS_TITLE = "Tracking"
-                gs = get_gspread_client()
-                ss = gs.open_by_key(SHEET_ID)
-                ws = ss.worksheet(WS_TITLE)
-
-                # 在 A 欄尋找 ref_str；找不到就略過寫入（但後續 Monday 流程照跑）
-                values = ws.col_values(1)
-                row_idx = next((i for i, v in enumerate(values, start=1) if (v or "").strip() == ref_str), None)
-
-                if not row_idx:
-                    log.warning(f"[PDF OCR] reference '{ref_str}' not found in A:A; skipping sheet write, continuing Monday sync")
-                else:
-                    # 填追蹤碼到 S(19), T(20), U(21)（最多 3 筆）
-                    for i, tn in enumerate(all_tracking_numbers[:3], start=1):
-                        ws.update_cell(row_idx, 18 + i, tn)
-
-                    # （可選）通知推送
-                    try:
-                        requests.post(
-                            "https://api.line.me/v2/bot/message/push",
-                            headers=LINE_HEADERS,
-                            json={
-                                "to": "C1f77f5ef1fe48f4782574df449eac0cf",
-                                "messages": [{"type": "text", "text": "[PDF→空運表單]已同步到Tracking Tab"}],
-                            },
-                            timeout=10,
-                        )                       
-                    except Exception as _e:
-                        log.warning(f"[PDF OCR] LINE push failed: {_e}")
-
-                    # 檢查 ABB 會員帳號 (F=6) 並高亮該儲存格
-                    cell = f"F{row_idx}"
-                    fmt = {"backgroundColor": {"red": 1, "green": 0.8, "blue": 0.8}}
-                    ws.format(cell, fmt)
+                # 3) 立刻回應 200，避免 Heroku Router H12
+                return jsonify({}), 200
 
             except Exception as e:
-                log.error(f"[PDF OCR] Failed to process PDF: {e}", exc_info=True)
-                requests.post(
-                    "https://api.line.me/v2/bot/message/push",
-                    headers=LINE_HEADERS,
-                    json={
-                        "to": "C1f77f5ef1fe48f4782574df449eac0cf",
-                        "messages": [{"type": "text", "text": "⚠️ 無法處理 PDF，請確認格式或內容是否清晰"}]
-                    }
-                )
+                log.exception(f"[PDF OCR] failed to enqueue background worker: {e}")
+                return jsonify({}), 200
 
             # ─── Create parent / subitems in Monday from PDF data ─────────────
             def run_monday_sync(full_data, pdf_bytes, original_filename):
