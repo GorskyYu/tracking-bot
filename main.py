@@ -643,6 +643,10 @@ try:
 except Exception as _e:
     log.error(f"[ACE Today] Scheduler init failed: {_e}")
 
+# ─── ADDED: Configure OpenAI API key ───────────────────────────────────────────
+openai.api_key = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
 OCR_SHIPPING_PROMPT = """
 Task: Extract the following information from this shipping ticket
 - Information of Sender on the `top-right corner`:
