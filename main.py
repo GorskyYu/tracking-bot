@@ -1987,13 +1987,6 @@ def _process_pdf_upload_event(*, group_id: str, pdf_bytes: bytes, original_filen
                 log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
                 _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"ERROR [PDF→Monday] {e}")
 
-        # Kick off Monday sync thread
-        threading.Thread(
-            target=run_monday_sync,
-            args=(full_data, pdf_bytes, original_filename),
-            daemon=True
-        ).start()
-
         # 6) Push a short status back to the originating group
         try:
             msg = ("✅ 解析到追蹤碼：\n" + "\n".join(f"- {t}" for t in uniq)) if uniq \
@@ -2352,12 +2345,12 @@ def webhook():
                     _line_push("C1f77f5ef1fe48f4782574df449eac0cf",f"ERROR [PDF→Monday] {e}")
 
             # Kick off Monday sync in the background to avoid H12 timeout
-            import threading
-            threading.Thread(
+            t = threading.Thread(
                 target=run_monday_sync,
                 args=(full_data, pdf_bytes, original_filename),
                 daemon=True
-            ).start()
+            )
+            t.start()
 
             # Quick ACK to LINE and immediate HTTP 200 to avoid router timeout
             try:
@@ -2373,6 +2366,7 @@ def webhook():
                 log.warning(f"[PDF OCR] ack push failed: {_e}")
 
             return jsonify({}), 200
+
 
  
         # ─── If image, run ONLY the barcode logic and then continue ──────────
