@@ -21,7 +21,7 @@ class MondaySyncService:
         self.line_push = line_push_func
         self.sheet_id = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
         self.line_status_group = "C1f77f5ef1fe48f4782574df449eac0cf"
-        self.domestic_expense_col = "4814336467" # <-- 請確認父板塊「加境內支出」的實際 ID
+        self.domestic_expense_col = "numeric5__1" # <-- 請確認父板塊「加境內支出」的實際 ID
 
     def _post_with_backoff(self, url, payload=None, headers=None, files=None, max_tries=5, timeout=12):
         """完全復刻原版的指數退避請求邏輯"""
@@ -227,11 +227,20 @@ class MondaySyncService:
         try:
             r = self._post_with_backoff(self.api_url, {"query": query})
             res = r.json().get("data", {}).get("items", [])
-            if not res: return False, "找不到 Monday 項目"
+            
+            # 安全檢查 1: 是否有回傳項目
+            if not res: 
+                return False, "在 Monday 上找不到該父項目 ID"
 
-            current_val = res[0]["column_values"][0].get("text", "")
+            # 安全檢查 2: 檢查欄位是否存在
+            column_values = res[0].get("column_values", [])
+            if not column_values:
+                return False, f"找不到欄位 ID: {self.domestic_expense_col}，請檢查開發者 ID 設定"
+
+            # 檢查是否已有數值
+            current_val = column_values[0].get("text", "")
             if current_val and current_val.strip():
-                return False, f"欄位已有數值 ({current_val})，不自動覆蓋"
+                return False, f"欄位已有數值 ({current_val})，系統不會自動覆蓋"
 
             # 2. 執行更新
             mutation = f'''
@@ -246,4 +255,5 @@ class MondaySyncService:
             self._post_with_backoff(self.api_url, {"query": mutation})
             return True, "登記成功"
         except Exception as e:
-            return False, str(e) #
+            log.error(f"Update expense error: {str(e)}")
+            return False, f"系統錯誤: {str(e)}"
