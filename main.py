@@ -1497,7 +1497,7 @@ def webhook():
                 import threading
                 threading.Thread(
                     target=monday_service.run_sync,
-                    args=(full_data, pdf_bytes, original_filename),
+                    args=(full_data, pdf_bytes, original_filename, r, group_id),
                     daemon=True
                 ).start()
 
@@ -1741,6 +1741,21 @@ def webhook():
         # 0) 只處理文字
         if mtype != "text":
             continue
+
+        # --- 金額自動錄入邏輯開始 ---
+        if group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, PDF_GROUP_ID}:
+            # 檢查是否為純數字或帶小數點的金額 (如 42.12)
+            if re.match(r'^\d+(\.\d{1,2})?$', text):
+                last_pid = r.get(f"last_pdf_parent_{group_id}")
+                if last_pid:
+                    ok, msg = monday_service.update_domestic_expense(last_pid, text, group_id)
+                    if ok:
+                        _line_push(group_id, f"✅ 已自動登記境內支出: ${text}")
+                        r.delete(f"last_pdf_parent_{group_id}") # 成功就清除
+                    else:
+                        _line_push(group_id, f"❌ 登記失敗: {msg}")
+                    continue # 處理完金額，直接跳過後續所有邏輯
+        # --- 金額自動錄入邏輯結束 ---
         
         # 1) 多筆 UPS 末四碼＋重量＋尺寸 一次處理
         # 同時支援「*」「×」「x」或「空白」分隔

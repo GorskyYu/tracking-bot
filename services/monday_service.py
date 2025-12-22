@@ -21,6 +21,7 @@ class MondaySyncService:
         self.line_push = line_push_func
         self.sheet_id = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
         self.line_status_group = "C1f77f5ef1fe48f4782574df449eac0cf"
+        self.domestic_expense_col = "4814336467" # <-- 請確認父板塊「加境內支出」的實際 ID
 
     def _post_with_backoff(self, url, payload=None, headers=None, files=None, max_tries=5, timeout=12):
         """完全復刻原版的指數退避請求邏輯"""
@@ -82,7 +83,7 @@ class MondaySyncService:
             log.error(f"[GSHEET] Sync error: {sheet_err}")
             self.line_push(self.line_status_group, f"⚠️ Sheet 同步失敗: {str(sheet_err)}")
 
-    def run_sync(self, full_data, pdf_bytes, original_filename):
+    def run_sync(self, full_data, pdf_bytes, original_filename, redis_client, group_id):
         """
         整合所有步驟的公開入口方法
         """
@@ -204,8 +205,45 @@ class MondaySyncService:
                 self._post_with_backoff(self.api_url, {"query": set_type_q})
 
             log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
+            redis_client.set(f"last_pdf_parent_{group_id}", parent_id, ex=600) # 將 parent_id 存入 Redis，讓系統記住這 10 分鐘內這個群組最後處理的項目
             self.line_push(self.line_status_group, f"[PDF→Monday] Monday sync completed for {parent_name}")
 
         except Exception as e:
             log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
             self.line_push(self.line_status_group, f"ERROR [PDF→Monday] {e}")
+            
+    # 新增更新境內支出的方法
+    def update_domestic_expense(self, parent_id, amount, group_id):
+        """檢查並錄入境內支出金額"""
+        # 1. 查詢該項目的境內支出是否為空
+        query = f'''
+        query {{
+          items (ids: [{parent_id}]) {{
+            column_values(ids: ["{self.domestic_expense_col}"]) {{
+              text
+            }}
+          }}
+        }}'''
+        try:
+            r = self._post_with_backoff(self.api_url, {"query": query})
+            res = r.json().get("data", {}).get("items", [])
+            if not res: return False, "找不到 Monday 項目"
+
+            current_val = res[0]["column_values"][0].get("text", "")
+            if current_val and current_val.strip():
+                return False, f"欄位已有數值 ({current_val})，不自動覆蓋"
+
+            # 2. 執行更新
+            mutation = f'''
+            mutation {{
+              change_simple_column_value(
+                item_id: {parent_id},
+                board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                column_id: "{self.domestic_expense_col}",
+                value: "{amount}"
+              ) {{ id }}
+            }}'''
+            self._post_with_backoff(self.api_url, {"query": mutation})
+            return True, "登記成功"
+        except Exception as e:
+            return False, str(e) #
