@@ -1444,19 +1444,22 @@ def webhook():
         if group_id == PDF_GROUP_ID:
             # 檢查是否為純數字金額 (如 43.10)
             if re.match(r'^\d+(\.\d{1,2})?$', text):
-                # 從全局 Key 抓取最後一次上傳的 PDF 項目 ID
-                last_pid = r.get("global_last_pdf_parent")
-                
-                if last_pid:
-                    # 調用更新函式，並接收回傳的 item_name
-                    ok, msg, item_name = monday_service.update_domestic_expense(last_pid, text, group_id)
-                    
+                # 從全局 Key 抓取最後一次上傳的 PDF 項目 ID, 取得包含 ID 與 Board 的組合字串
+                redis_val = r.get("global_last_pdf_parent")
+
+                if redis_val and "|" in redis_val:
+                    # 拆分出項目 ID 與板塊 ID
+                    last_pid, last_bid = redis_val.split("|")
+
+                    # 呼叫時多傳入板塊 ID
+                    ok, msg, item_name = monday_service.update_domestic_expense(last_pid, text, group_id, last_bid)
+
                     if ok:
                         _line_push(group_id, f"✅ 已成功登記境內支出: ${text}\n📌 項目: {item_name}")
-                        r.delete("global_last_pdf_parent") # 成功後清除，避免重複錄入
+                        r.delete("global_last_pdf_parent")
                     else:
                         _line_push(group_id, f"❌ 登記失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
-                    continue # 結束本次處理
+                    continue
         
         # 1) 多筆 UPS 末四碼＋重量＋尺寸 一次處理
         # 同時支援「*」「×」「x」或「空白」分隔

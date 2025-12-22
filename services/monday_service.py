@@ -215,15 +215,16 @@ class MondaySyncService:
             self._post_with_backoff(self.api_url, {"query": set_type_q})
 
             log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
-            redis_client.set("global_last_pdf_parent", parent_id, ex=600)
+            # 同時存入項目 ID 與板塊 ID，用直線 | 隔開
+            redis_client.set("global_last_pdf_parent", f"{parent_id}|{target_parent_board_id}", ex=600)
             self.line_push(self.line_status_group, f"[PDF→Monday] Monday sync completed for {parent_name}")
 
         except Exception as e:
             log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
             self.line_push(self.line_status_group, f"ERROR [PDF→Monday] {e}")
             
-    # 新增更新境內支出的方法
-    def update_domestic_expense(self, parent_id, amount, group_id):
+    # 修正：參數增加 board_id
+    def update_domestic_expense(self, parent_id, amount, group_id, board_id):
         """檢查並錄入境內支出金額"""
         # 1. 查詢該項目的名稱與境內支出
         query = f'''
@@ -241,16 +242,20 @@ class MondaySyncService:
             if not res: return False, "找不到項目", ""
 
             item_name = res[0].get("name", "Unknown Item")
-            current_val = res[0]["column_values"][0].get("text", "")
+            
+            # 安全檢查：確保 column_values 存在
+            cols = res[0].get("column_values", [])
+            current_val = cols[0].get("text", "") if cols else ""
+            
             if current_val and current_val.strip():
                 return False, f"欄位已有數值 ({current_val})", item_name
 
-            # 2. 執行更新
+            # 2. 執行更新 (使用傳入的 board_id)
             mutation = f'''
             mutation {{
               change_simple_column_value(
                 item_id: {parent_id},
-                board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                board_id: {board_id},
                 column_id: "{self.domestic_expense_col}",
                 value: "{amount}"
               ) {{ id }}
@@ -258,4 +263,5 @@ class MondaySyncService:
             self._post_with_backoff(self.api_url, {"query": mutation})
             return True, "成功", item_name # 回傳名稱
         except Exception as e:
+            log.error(f"[EXPENSE] Update failed: {str(e)}")
             return False, str(e), ""
