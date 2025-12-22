@@ -205,7 +205,7 @@ class MondaySyncService:
                 self._post_with_backoff(self.api_url, {"query": set_type_q})
 
             log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
-            redis_client.set(f"last_pdf_parent_{group_id}", parent_id, ex=600) # 將 parent_id 存入 Redis，讓系統記住這 10 分鐘內這個群組最後處理的項目
+            redis_client.set("global_last_pdf_parent", parent_id, ex=600) # 將 parent_id 存入 Redis，讓系統記住這 10 分鐘內這個群組最後處理的項目，改成全局唯一的 Key，不管在哪個群組上傳，都存入這同一個位置
             self.line_push(self.line_status_group, f"[PDF→Monday] Monday sync completed for {parent_name}")
 
         except Exception as e:
@@ -215,10 +215,11 @@ class MondaySyncService:
     # 新增更新境內支出的方法
     def update_domestic_expense(self, parent_id, amount, group_id):
         """檢查並錄入境內支出金額"""
-        # 1. 查詢該項目的境內支出是否為空
+        # 1. 查詢該項目的名稱與境內支出
         query = f'''
         query {{
           items (ids: [{parent_id}]) {{
+            name
             column_values(ids: ["{self.domestic_expense_col}"]) {{
               text
             }}
@@ -227,20 +228,12 @@ class MondaySyncService:
         try:
             r = self._post_with_backoff(self.api_url, {"query": query})
             res = r.json().get("data", {}).get("items", [])
-            
-            # 安全檢查 1: 是否有回傳項目
-            if not res: 
-                return False, "在 Monday 上找不到該父項目 ID"
+            if not res: return False, "找不到項目", ""
 
-            # 安全檢查 2: 檢查欄位是否存在
-            column_values = res[0].get("column_values", [])
-            if not column_values:
-                return False, f"找不到欄位 ID: {self.domestic_expense_col}，請檢查開發者 ID 設定"
-
-            # 檢查是否已有數值
-            current_val = column_values[0].get("text", "")
+            item_name = res[0].get("name", "Unknown Item")
+            current_val = res[0]["column_values"][0].get("text", "")
             if current_val and current_val.strip():
-                return False, f"欄位已有數值 ({current_val})，系統不會自動覆蓋"
+                return False, f"欄位已有數值 ({current_val})", item_name
 
             # 2. 執行更新
             mutation = f'''
@@ -253,7 +246,6 @@ class MondaySyncService:
               ) {{ id }}
             }}'''
             self._post_with_backoff(self.api_url, {"query": mutation})
-            return True, "登記成功"
+            return True, "成功", item_name # 回傳名稱
         except Exception as e:
-            log.error(f"Update expense error: {str(e)}")
-            return False, f"系統錯誤: {str(e)}"
+            return False, str(e), ""

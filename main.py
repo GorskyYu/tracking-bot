@@ -66,6 +66,7 @@ VICKY_USER_ID    = os.getenv("VICKY_USER_ID")
 YVES_USER_ID     = os.getenv("YVES_USER_ID") 
 YUMI_GROUP_ID    = os.getenv("LINE_GROUP_ID_YUMI")
 JOYCE_GROUP_ID   = os.getenv("LINE_GROUP_ID_JOYCE")
+IRIS_GROUP_ID    = os.getenv("LINE_GROUP_ID_IRIS")
 PDF_GROUP_ID     = os.getenv("LINE_GROUP_ID_PDF")
 
 SQ_SHEET_URL     = os.getenv("SQ_SHEET_URL")
@@ -1469,7 +1470,7 @@ def webhook():
         if (
             msg.get("type") == "file"
             and msg.get("fileName", "").lower().endswith(".pdf")
-            and src.get("groupId") in {VICKY_GROUP_ID, YUMI_GROUP_ID, JOYCE_GROUP_ID, PDF_GROUP_ID}
+            and src.get("groupId") in {VICKY_GROUP_ID, YUMI_GROUP_ID, JOYCE_GROUP_ID, IRIS_GROUP_ID, PDF_GROUP_ID}
         ):
             file_id = msg["id"]
             original_filename = msg.get("fileName", "uploaded.pdf")
@@ -1742,20 +1743,23 @@ def webhook():
         if mtype != "text":
             continue
 
-        # --- 金額自動錄入邏輯開始 ---
-        if group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, PDF_GROUP_ID}:
-            # 檢查是否為純數字或帶小數點的金額 (如 42.12)
+        # --- 金額自動錄入邏輯：僅限 PDF Scanning 群組觸發 ---
+        if group_id == PDF_GROUP_ID:
+            # 檢查是否為純數字金額 (如 43.10)
             if re.match(r'^\d+(\.\d{1,2})?$', text):
-                last_pid = r.get(f"last_pdf_parent_{group_id}")
+                # 從全局 Key 抓取最後一次上傳的 PDF 項目 ID
+                last_pid = r.get("global_last_pdf_parent")
+                
                 if last_pid:
-                    ok, msg = monday_service.update_domestic_expense(last_pid, text, group_id)
+                    # 調用更新函式，並接收回傳的 item_name
+                    ok, msg, item_name = monday_service.update_domestic_expense(last_pid, text, group_id)
+                    
                     if ok:
-                        _line_push(group_id, f"✅ 已自動登記境內支出: ${text}")
-                        r.delete(f"last_pdf_parent_{group_id}") # 成功就清除
+                        _line_push(group_id, f"✅ 已成功登記境內支出: ${text}\n📌 項目: {item_name}")
+                        r.delete("global_last_pdf_parent") # 成功後清除，避免重複錄入
                     else:
-                        _line_push(group_id, f"❌ 登記失敗: {msg}")
-                    continue # 處理完金額，直接跳過後續所有邏輯
-        # --- 金額自動錄入邏輯結束 ---
+                        _line_push(group_id, f"❌ 登記失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
+                    continue # 結束本次處理
         
         # 1) 多筆 UPS 末四碼＋重量＋尺寸 一次處理
         # 同時支援「*」「×」「x」或「空白」分隔
