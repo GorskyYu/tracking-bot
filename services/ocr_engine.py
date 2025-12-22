@@ -128,6 +128,15 @@ class OCRAgent:
                 "reference_number": res.get("reference_number", "")
             }
 
+            # --- Fedex Reference Number清洗邏輯 ---
+            raw_ref = data.get("reference_number", "")
+            if raw_ref:
+                # 使用 Regex 正則表達式移除結尾的 -1, -2 等後綴
+                # r'-\d+$' 表示匹配字串結尾的「橫槓+數字」
+                clean_ref = re.sub(r'-\d+$', '', raw_ref).strip()
+                data["reference_number"] = clean_ref
+                log.info(f"[OCR CLEAN] Original: {raw_ref} -> Cleaned: {clean_ref}")
+
         # 3. TRACKING CONSOLIDATION
         all_tracking = []
         for p_img in images:

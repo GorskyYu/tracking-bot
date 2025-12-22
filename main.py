@@ -31,6 +31,7 @@ import fitz  # PyMuPDF
 import pytz
 
 from services.ocr_engine import OCRAgent
+from services.monday_service import MondaySyncService
 
 # Requires:
 # pip install pymupdf pillow openai
@@ -1432,210 +1433,11 @@ app = Flask(__name__)
 
 ocr_helper = OCRAgent()
 
-# ─── Create parent / subitems in Monday from PDF data ─────────────
-def run_monday_sync(full_data, pdf_bytes, original_filename):
-    """
-    Run all Monday.com work off the request thread:
-    - find/create parent item
-    - attach the original PDF
-    - create subitems for each tracking number
-    - set initial statuses / logistics columns
-    """
-    try:
-        import os, json, re, time, random, requests
-        from datetime import datetime
-
-        MONDAY_GQL = MONDAY_API_URL  # e.g. "https://api.monday.com/v2"
-        HEADERS = {"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"}
-
-        def post_with_backoff(url, payload=None, headers=None, files=None, max_tries=5, timeout=12):
-            t = 0.8
-            last_exc = None
-            for _ in range(max_tries):
-                try:
-                    if files is not None:
-                        return requests.post(url, headers=headers, data=payload, files=files, timeout=timeout)
-                    else:
-                        return requests.post(url, headers=headers, json=payload, timeout=timeout)
-                except requests.RequestException as e:
-                    last_exc = e
-                    time.sleep(t + random.uniform(0, 0.5))
-                    t = min(t * 2, 8)
-            if last_exc:
-                raise last_exc
-
-        def adjust_caps(s: str) -> str:
-            if not isinstance(s, str):
-                return ""
-            if s.isupper():
-                parts = []
-                for w in s.split():
-                    parts.append("-".join(p.capitalize() for p in w.split("-")))
-                return " ".join(parts)
-            return s
-
-        # Pull sender/receiver safely from full_data
-        sender   = full_data.get("sender", {}) or {}
-        receiver = full_data.get("receiver", {}) or {}
-        name      = (sender.get("name") or "").strip()
-        client_id = (sender.get("client_id") or "").strip()
-        today     = datetime.now().strftime("%Y%m%d")
-
-        # Normalize/override parent display for early-purchase proxies
-        temp      = re.sub(r"\s*\((?:YUMI|VICKY)\)\s*", " ", name, flags=re.IGNORECASE)
-        raw_name  = re.sub(r"\s+", " ", temp).strip()
-        adj_name   = adjust_caps(raw_name)
-        adj_client = adjust_caps(client_id)
-
-        # If name looks like Yumi/Shu-Yen Liu → Yumi, or Vicky/Chia-Chi Ku → Vicky
-        if (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name):
-            adj_name, adj_client = "Shu-Yen Liu", "Yumi"
-        elif (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
-            adj_name, adj_client = "Chia-Chi Ku", "Vicky"
-
-        parent_name = f"{today} {adj_client} - {adj_name}"
-
-        # 1) Find or create parent item
-        find_parent_q = f"""
-        query {{
-          items_by_column_values(
-            board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
-            column_id: "name",
-            column_value: "{parent_name}"
-          ) {{ id }}
-        }}
-        """
-        r = post_with_backoff(MONDAY_GQL, {"query": find_parent_q}, HEADERS)
-        items = (r.json().get("data", {}) or {}).get("items_by_column_values", []) or []
-        if items:
-            parent_id = items[0]["id"]
-        else:
-            create_parent_m = f"""
-            mutation {{
-              create_item(
-                board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
-                item_name: "{parent_name}"
-              ) {{ id }}
-            }}
-            """
-            r2 = post_with_backoff(MONDAY_GQL, {"query": create_parent_m}, HEADERS)
-            parent_id = r2.json()["data"]["create_item"]["id"]
-
-        # 2) Create update and attach original PDF
-        create_update_q = f"""
-        mutation {{
-          create_update(item_id: {parent_id}, body: "原始 PDF 檔案") {{ id }}
-        }}
-        """
-        upd_resp = post_with_backoff(MONDAY_GQL, {"query": create_update_q}, HEADERS)
-        update_id = (upd_resp.json().get("data", {}) or {}).get("create_update", {}) or {}
-        update_id = update_id.get("id")
-
-        if update_id:
-            # File upload uses the /file endpoint with multipart form
-            multipart_payload = {
-                "query": f'''
-                    mutation ($file: File!) {{
-                      add_file_to_update(update_id: {update_id}, file: $file) {{ id }}
-                    }}
-                ''',
-                "map": json.dumps({"file": ["variables.file"]})
-            }
-            files = [("file", (original_filename, pdf_bytes, "application/pdf"))]
-            file_resp = post_with_backoff(f"{MONDAY_GQL}/file", payload=multipart_payload,
-                                          headers={"Authorization": MONDAY_API_TOKEN},
-                                          files=files)
-            if file_resp.status_code != 200:
-                log.error(f"[PDF→Monday] attach PDF failed: {file_resp.status_code} {file_resp.text}")
-
-        # 3) Create subitems for each tracking number
-        all_tn = full_data.get("all_tracking_numbers", []) or []
-        for tn in all_tn:
-            create_sub_m = f"""
-            mutation {{
-              create_subitem(parent_item_id: {parent_id}, item_name: "{tn}") {{ id }}
-            }}
-            """
-            resp_sub = post_with_backoff(MONDAY_GQL, {"query": create_sub_m}, HEADERS)
-            sub_id = resp_sub.json()["data"]["create_subitem"]["id"]
-            log.info(f"[PDF→Monday] Created subitem {sub_id} for tracking {tn}")
-
-            # Set Status to 收包裹
-            mut_status = f"""
-            mutation {{
-              change_column_value(
-                item_id: {sub_id},
-                board_id: {os.getenv('AIR_BOARD_ID')},
-                column_id: "status__1",
-                value: "{{\\"label\\":\\"收包裹\\"}}"
-              ) {{ id }}
-            }}
-            """
-            post_with_backoff(MONDAY_GQL, {"query": mut_status}, HEADERS)
-
-            # Optional: set logistics columns based on postal code
-            postal = (receiver.get("postal_code") or "").replace(" ", "").upper()
-            if postal.startswith("V6X1Z7"):
-                # 國際物流 → Ace
-                mut_intl = f"""
-                mutation {{
-                  change_column_value(
-                    item_id: {sub_id},
-                    board_id: {os.getenv('AIR_BOARD_ID')},
-                    column_id: "status_18__1",
-                    value: "{{\\"label\\":\\"Ace\\"}}"
-                  ) {{ id }}
-                }}
-                """
-                post_with_backoff(MONDAY_GQL, {"query": mut_intl}, HEADERS)
-                # 台灣物流 → ACE大嘴鳥
-                mut_tai = f"""
-                mutation {{
-                  change_column_value(
-                    item_id: {sub_id},
-                    board_id: {os.getenv('AIR_BOARD_ID')},
-                    column_id: "status_19__1",
-                    value: "{{\\"label\\":\\"ACE大嘴鳥\\"}}"
-                  ) {{ id }}
-                }}
-                """
-                post_with_backoff(MONDAY_GQL, {"query": mut_tai}, HEADERS)
-            elif postal.startswith("V6X0B9"):
-                # 國際物流 → SoQuick
-                mut_intl = f"""
-                mutation {{
-                  change_column_value(
-                    item_id: {sub_id},
-                    board_id: {os.getenv('AIR_BOARD_ID')},
-                    column_id: "status_18__1",
-                    value: "{{\\"label\\":\\"SoQuick\\"}}"
-                  ) {{ id }}
-                }}
-                """
-                post_with_backoff(MONDAY_GQL, {"query": mut_intl}, HEADERS)
-
-        # 4) Mark parent 客人種類 = 早期代購 if proxy names matched
-        is_early = (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) \
-                or (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name)
-        if is_early:
-            set_type_q = f"""
-            mutation {{
-              change_column_value(
-                item_id: {parent_id},
-                board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
-                column_id: "status_11__1",
-                value: "{{\\"label\\":\\"早期代購\\"}}"
-              ) {{ id }}
-            }}
-            """
-            post_with_backoff(MONDAY_GQL, {"query": set_type_q}, HEADERS)
-
-        log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
-        _line_push("C1f77f5ef1fe48f4782574df449eac0cf", f"[PDF→Monday] Monday sync completed for {parent_name}")
-
-    except Exception as e:
-        log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
-        _line_push("C1f77f5ef1fe48f4782574df449eac0cf",f"ERROR [PDF→Monday] {e}")
+monday_service = MondaySyncService(
+    api_token=MONDAY_API_TOKEN,
+    gspread_client_func=get_gspread_client,
+    line_push_func=_line_push
+)
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
@@ -1694,7 +1496,7 @@ def webhook():
                 # 3) Run Monday.com sync in a background thread to prevent timeouts
                 import threading
                 threading.Thread(
-                    target=run_monday_sync,
+                    target=monday_service.run_sync,
                     args=(full_data, pdf_bytes, original_filename),
                     daemon=True
                 ).start()
