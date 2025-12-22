@@ -85,7 +85,7 @@ class MondaySyncService:
 
     def run_sync(self, full_data, pdf_bytes, original_filename, redis_client, group_id):
         """
-        整合所有步驟的公開入口方法
+        整合所有步驟的公開入口方法 - 已整合海運判定、加拿大散客標籤與環境變數
         """
         try:
             # 1. 處理參考編號
@@ -114,6 +114,15 @@ class MondaySyncService:
             elif (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
                 adj_name, adj_client = "Chia-Chi Ku", "Vicky"
 
+            # --- 🟢 海運邏輯判定 (使用 Heroku 環境變數) ---
+            is_sea = adj_client.lower().endswith(" sea")
+            if is_sea:
+                target_parent_board_id = os.getenv('SEA_PARENT_BOARD_ID')
+                target_subitem_board_id = os.getenv('SEA_BOARD_ID')
+            else:
+                target_parent_board_id = os.getenv('AIR_PARENT_BOARD_ID')
+                target_subitem_board_id = os.getenv('AIR_BOARD_ID')
+
             today = datetime.now().strftime("%Y%m%d")
             parent_name = f"{today} {adj_client} - {adj_name}"
 
@@ -121,7 +130,7 @@ class MondaySyncService:
             find_parent_q = f"""
             query {{
               items_by_column_values(
-                board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                board_id: {target_parent_board_id},
                 column_id: "name",
                 column_value: "{parent_name}"
               ) {{ id }}
@@ -136,7 +145,7 @@ class MondaySyncService:
                 create_parent_m = f"""
                 mutation {{
                   create_item(
-                    board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
+                    board_id: {target_parent_board_id},
                     item_name: "{parent_name}"
                   ) {{ id }}
                 }}
@@ -172,7 +181,7 @@ class MondaySyncService:
                 mutation {{
                   change_column_value(
                     item_id: {sub_id},
-                    board_id: {os.getenv('AIR_BOARD_ID')},
+                    board_id: {target_subitem_board_id},
                     column_id: "status__1",
                     value: "{{\\"label\\":\\"收包裹\\"}}"
                   ) {{ id }}
@@ -182,30 +191,31 @@ class MondaySyncService:
 
                 # 根據郵遞區號設定物流
                 if postal.startswith("V6X1Z7"):
-                    # 國際物流 → Ace & 台灣物流 → ACE大嘴鳥
-                    self._post_with_backoff(self.api_url, {"query": f'mutation {{ change_column_value(item_id: {sub_id}, board_id: {os.getenv("AIR_BOARD_ID")}, column_id: "status_18__1", value: "{{\\"label\\":\\"Ace\\"}}") {{ id }} }}'})
-                    self._post_with_backoff(self.api_url, {"query": f'mutation {{ change_column_value(item_id: {sub_id}, board_id: {os.getenv("AIR_BOARD_ID")}, column_id: "status_19__1", value: "{{\\"label\\":\\"ACE大嘴鳥\\"}}") {{ id }} }}'})
+                    self._post_with_backoff(self.api_url, {"query": f'mutation {{ change_column_value(item_id: {sub_id}, board_id: {target_subitem_board_id}, column_id: "status_18__1", value: "{{\\"label\\":\\"Ace\\"}}") {{ id }} }}'})
+                    self._post_with_backoff(self.api_url, {"query": f'mutation {{ change_column_value(item_id: {sub_id}, board_id: {target_subitem_board_id}, column_id: "status_19__1", value: "{{\\"label\\":\\"ACE大嘴鳥\\"}}") {{ id }} }}'})
                 elif postal.startswith("V6X0B9"):
-                    # 國際物流 → SoQuick
-                    self._post_with_backoff(self.api_url, {"query": f'mutation {{ change_column_value(item_id: {sub_id}, board_id: {os.getenv("AIR_BOARD_ID")}, column_id: "status_18__1", value: "{{\\"label\\":\\"SoQuick\\"}}") {{ id }} }}'})
+                    self._post_with_backoff(self.api_url, {"query": f'mutation {{ change_column_value(item_id: {sub_id}, board_id: {target_subitem_board_id}, column_id: "status_18__1", value: "{{\\"label\\":\\"SoQuick\\"}}") {{ id }} }}'})
 
-            # 7. 標記早期代購種類
-            is_early = (("Yumi" in adj_name or "Shu-Yen" in adj_name) and "Liu" in adj_name) or (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name)
-            if is_early:
-                set_type_q = f"""
-                mutation {{
-                  change_column_value(
-                    item_id: {parent_id},
-                    board_id: {os.getenv('AIR_PARENT_BOARD_ID')},
-                    column_id: "status_11__1",
-                    value: "{{\\"label\\":\\"早期代購\\"}}"
-                  ) {{ id }}
-                }}
-                """
-                self._post_with_backoff(self.api_url, {"query": set_type_q})
+            # --- 7. 🟢 客人種類分類 (早期代購 vs 加拿大散客) ---
+            is_early = (adj_name == "Shu-Yen Liu" and adj_client == "Yumi") or \
+                       (adj_name == "Chia-Chi Ku" and adj_client == "Vicky")
+            
+            guest_label = "早期代購" if is_early else "加拿大散客"
+            
+            set_type_q = f"""
+            mutation {{
+              change_column_value(
+                item_id: {parent_id},
+                board_id: {target_parent_board_id},
+                column_id: "status_11__1",
+                value: "{{\\"label\\":\\"{guest_label}\\"}}"
+              ) {{ id }}
+            }}
+            """
+            self._post_with_backoff(self.api_url, {"query": set_type_q})
 
             log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
-            redis_client.set("global_last_pdf_parent", parent_id, ex=600) # 將 parent_id 存入 Redis，讓系統記住這 10 分鐘內這個群組最後處理的項目，改成全局唯一的 Key，不管在哪個群組上傳，都存入這同一個位置
+            redis_client.set("global_last_pdf_parent", parent_id, ex=600)
             self.line_push(self.line_status_group, f"[PDF→Monday] Monday sync completed for {parent_name}")
 
         except Exception as e:
