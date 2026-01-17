@@ -32,6 +32,7 @@ import pytz
 
 from services.ocr_engine import OCRAgent
 from services.monday_service import MondaySyncService
+from services.shipment_parser import ShipmentParserService
 
 from jobs.ace_tasks import push_ace_today_shipments
 from jobs.sq_tasks import push_sq_weekly_shipments
@@ -790,315 +791,6 @@ def handle_soquick_and_ace_shipments(event):
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID,  yumi)
 
-
-
-def handle_soquick_full_notification(event):
-
-
-
-    log.info(f"[SOQ FULL] invoked on text={event['message']['text']!r}")
-    text = event["message"]["text"]
-    """
-    1) Parse the incoming text for “您好，請…” + “按申報相符”
-    2) Split off the footer and extract all recipient names
-    3) Push Vicky/Yumi group messages with their names + footer
-    4) Look up those same names in col M of your Soquick sheet
-       to find the corresponding senders in col C, and privately
-       notify Yves of any senders not already in Vicky/Yumi/Excluded.
-    """
-    text = event["message"]["text"]
-    if not ("您好，請" in text and "按" in text and "申報相符" in text):
-        return
-
-    # 1) extract lines & footer
-    # split into non-empty lines and strip any leading @mention
-    lines = [
-        strip_mention(l.strip())
-        for l in text.splitlines()
-        if l.strip()
-    ]
-    try:
-        footer_idx = next(i for i,l in enumerate(lines) if "您好，請" in l)
-    except StopIteration:
-        footer_idx = len(lines)
-    recipients = lines[:footer_idx]
-    footer     = "\n".join(lines[footer_idx:])
-
-    # 2) split into Vicky / Yumi / “others” batches
-    vicky_batch = [r for r in recipients if r in VICKY_NAMES]
-    yumi_batch  = [r for r in recipients if r in YUMI_NAMES]
-    other_recipients = [
-        r for r in recipients
-        if r not in VICKY_NAMES
-           and r not in YUMI_NAMES
-           and r not in EXCLUDED_SENDERS
-    ]
-
-    # ===== 插入這裡：列印 other_recipients =====
-    log.info(f"[SOQ FULL][DEBUG] other_recipients = {other_recipients!r}")
-
-    # dedupe
-    def dedupe(seq):
-        seen = set(); out=[]
-        for x in seq:
-            if x not in seen:
-                seen.add(x); out.append(x)
-        return out
-    vicky_batch = dedupe(vicky_batch)
-    yumi_batch  = dedupe(yumi_batch)
-    other_recipients = dedupe(other_recipients)
-
-    # 3) push the group notifications
-    def push_group(group, batch):
-        if not batch: return
-        standard_footer = "您好，請提醒以上認證人按申報相符"
-        msg = "\n".join(batch) + "\n\n" + standard_footer
-        requests.post(
-            LINE_PUSH_URL,
-            headers=LINE_HEADERS,
-            json={"to": group, "messages":[{"type":"text","text":msg}]}
-        )
-
-    # 這行取消註解就不會推給 Vicky
-    push_group(VICKY_GROUP_ID, vicky_batch)
-    push_group(YUMI_GROUP_ID,  yumi_batch)
-
-    # ── Private “other” pushes ─────────────────────
-    other_recipients = dedupe([
-        r for r in recipients
-        if r not in VICKY_NAMES
-           and r not in YUMI_NAMES
-           and r not in EXCLUDED_SENDERS
-    ])
-    log.info(f"[SOQ FULL][DEBUG] other_recipients = {other_recipients!r}")
-
-    if other_recipients:
-        # 依照訊息日期動態選分頁：前3天到後2天
-        import datetime
-        ts = event["timestamp"]                              # ms
-        dt = datetime.datetime.fromtimestamp(ts/1000,         # +08:00
-            tz=datetime.timezone(datetime.timedelta(hours=8)))
-        # 候選日期字串：e.g. ['250611','250612','250613','250614','250615','250616']
-        base = dt.date()
-        candidates = [(base + datetime.timedelta(days=d)).strftime("%y%m%d")
-                      for d in range(-3, 3)]
-
-        #guard to ensure the sheet exist and don't crash
-        SQ_SHEET_URL = os.getenv("SQ_SHEET_URL")
-        if not SQ_SHEET_URL:
-            log.error("[SOQ FULL] SQ_SHEET_URL not set")
-            return        
-        
-        gs = get_gspread_client()
-        ss = gs.open_by_url(SQ_SHEET_URL)
-        found = [ws.title for ws in ss.worksheets() if ws.title in candidates]
-        if len(found) == 1:
-            sheet = ss.worksheet(found[0])
-            log.info(f"[SOQ FULL][DEBUG] 使用分頁 {found[0]}")
-        else:
-            log.error(f"[SOQ FULL] 分頁數量不唯一，expected=1 got={len(found)}; candidates={candidates}, found={found}")
-            return
-        rows = sheet.get_all_values()[1:]  # skip header
-        senders = set()
-
-        for idx, row in enumerate(rows, start=2):
-            # 印每一列 E 欄
-            name_in_sheet = row[4].strip() if len(row) > 4 else ""
-            log.info(f"[SOQ FULL][DEBUG] row {idx} colE = {name_in_sheet!r}")
-
-            if name_in_sheet in other_recipients:
-                sender = row[2].strip() if len(row) > 2 else ""
-                log.info(f"[SOQ FULL][DEBUG] matched recipient {name_in_sheet!r} → sender {sender!r}")
-                if sender and sender not in (VICKY_NAMES | YUMI_NAMES | EXCLUDED_SENDERS):
-                    senders.add(sender)
-
-        if senders:
-            # header notification
-            requests.post(
-                LINE_PUSH_URL, headers=LINE_HEADERS,
-                json={
-                  "to": YVES_USER_ID,
-                  "messages":[{"type":"text","text":"Soquick散客EZWay需提醒以下寄件人："}]
-                }
-            )
-            for s in sorted(senders):
-                requests.post(
-                    LINE_PUSH_URL, headers=LINE_HEADERS,
-                    json={"to": YVES_USER_ID, "messages":[{"type":"text","text":s}]}
-                )
-            log.info(f"[SOQ FULL] Privately pushed {len(senders)} senders to Yves")
-
- 
-# ─── 新增：處理「申報相符」提醒 ─────────────────────────
-def handle_missing_confirm(event):
-    text = event["message"]["text"]
-    if "收到EZ way通知後" in text or "申報相符" not in text:
-        return
-        
-    # 暫存區
-    bundled_names = {VICKY_GROUP_ID: [], YUMI_GROUP_ID: [], IRIS_GROUP_ID: []}
-    fallback_names = [] 
-
-    # 1. 掃描文字並初步分流
-    for l in text.splitlines():
-        if CODE_TRIGGER_RE.search(l):
-            parts = re.split(r"\s+", l.strip())
-            if len(parts) < 2: continue
-            name = parts[1]
-            
-            if name in VICKY_NAMES:
-                bundled_names[VICKY_GROUP_ID].append(name)
-            elif name in YUMI_NAMES:
-                bundled_names[YUMI_GROUP_ID].append(name)
-            elif name in IRIS_NAMES:
-                bundled_names[IRIS_GROUP_ID].append(name)
-            else:
-                fallback_names.append(name)
-
-    # 2. 推送給 Proxy 群組 (Vicky/Yumi/Iris)
-    for target_id, names in bundled_names.items():
-        if not names: continue
-        unique_names = sorted(list(set(names)))
-        msg = f"您好，以下申報人還沒有按申報相符：\n\n" + "\n".join(unique_names)
-        requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json={"to": target_id, "messages": [{"type": "text", "text": msg}]})
-
-    # 3. 處理散客邏輯 (Fallback to Yves)
-    if fallback_names:
-        try:
-            gs = get_gspread_client()
-            # 使用環境變數中的 ACE_SHEET_URL
-            ss = gs.open_by_url(os.getenv("ACE_SHEET_URL"))
-            ws = ss.sheet1
-            all_rows = ws.get_all_values()
-            
-            # 建立 寄件人 -> [清關人+電話] 的對照
-            # Col C (index 2): 寄件人, Col D (3): 清關人, Col E (4): 電話
-            sender_groups = defaultdict(list)
-            for name in fallback_names:
-                # 從表單底部往上找，以抓取最新的出貨紀錄
-                for row in reversed(all_rows):
-                    if len(row) > 4 and row[3].strip() == name:
-                        sender = row[2].strip()
-                        phone = row[4].strip()
-                        sender_groups[sender].append(f"{name} {phone}")
-                        break
-            
-            # 判斷出貨日
-            ship_day = "週四出貨" if "週四" in text else ("週日出貨" if "週日" in text else "近期出貨")
-            
-            for sender, declarants in sender_groups.items():
-                # 先同時發送給 Yves 和 Gorsky
-                declarant_list = "\n".join(declarants)
-                bundled_msg = (
-                    f"{ship_day}\n\n"
-                    f"麻煩請 \n\n"
-                    f"{declarant_list}\n\n"
-                    f"收到EZ way通知後 請按申報相符 海關才能受理清關\n\n"
-                    f"**須按申報相符者 EZ Way 會提前提傳輸\n\n"
-                    f"台灣時間周五 傍晚至晚上 就可以開始按申報相符**"
-                )
-                
-                # 內容準備好後，再同時發送給所有人
-                for admin_id in [YVES_USER_ID, GORSKY_USER_ID]:
-                    if admin_id: # 確保 ID 存在（防止環境變數未設定導致噴錯）
-                        _line_push(admin_id, sender)      # 先發送寄件人姓名
-                        _line_push(admin_id, bundled_msg) # 再發送彙整訊息
-                
-                # 步驟 B: 發送彙整訊息給 Yves
-                declarant_list = "\n".join(declarants)
-                bundled_msg = (
-                    f"{ship_day}\n\n"
-                    f"麻煩請 \n\n"
-                    f"{declarant_list}\n\n"
-                    f"收到EZ way通知後 請按申報相符 海關才能受理清關\n\n"
-                    f"**須按申報相符者 EZ Way 會提前提傳輸\n\n"
-                    f"台灣時間周五 傍晚至晚上 就可以開始按申報相符**"
-                )
-                _line_push(YVES_USER_ID, bundled_msg)
-                
-        except Exception as e:
-            log.error(f"[FALLBACK ERROR] {e}", exc_info=True)
-            for admin_id in [YVES_USER_ID, GORSKY_USER_ID]:
-                if admin_id:
-                    _line_push(admin_id, f"⚠️ 散客名單處理失敗: {str(e)}")
-
-# ─── Ace schedule handler ─────────────────────────────────────────────────────
-def handle_ace_schedule(event):
-    """
-    Extracts the Ace message, filters lines for Yumi/Vicky,
-    and pushes a cleaned summary into their groups with the names
-    inserted between 麻煩請 and 收到EZ way通知後…
-    """
-    text     = event["message"]["text"]
-    # split into lines
-    lines = text.splitlines()
-
-    # find the index of the “麻煩請” line
-    try:
-        idx_m = next(i for i,l in enumerate(lines) if "麻煩請" in l)
-    except StopIteration:
-        idx_m = 1  # fallback just after the first line
-
-    # find the index of the “收到EZ way通知後” line
-    try:
-        idx_r = next(i for i,l in enumerate(lines) if l.startswith("收到EZ way通知後"))
-    except StopIteration:
-        idx_r = len(lines)
-
-    # header before names: up through 麻煩請
-    header = lines[: idx_m+1 ]
-
-    # footer after names: from 收到EZ way通知後 onward
-    footer = lines[ idx_r: ]
-
-    # collect only the code lines (ACE/250N+name)
-    code_lines = [l for l in lines if CODE_TRIGGER_RE.search(l)]
-
-    # strip off the code prefix from each
-    cleaned = [ CODE_TRIGGER_RE.sub("", l).strip() for l in code_lines ]
-    
-    # strip the code prefix and any stray quotes
-    cleaned = [
-        CODE_TRIGGER_RE.sub("", l).strip().strip('"')
-        for l in code_lines
-    ]    
-
-    # now split into per-group lists
-    vicky_batch = [c for c in cleaned if any(name in c for name in VICKY_NAMES)]
-    yumi_batch  = [c for c in cleaned if any(name in c for name in YUMI_NAMES )]
-
-    # extract just the name token (first word) from each cleaned line
-    names_only  = [c.split()[0] for c in cleaned]    
-    
-    # “others” = those whose name token isn’t in any of the three lists
-    other_batch = [
-        cleaned[i] for i, nm in enumerate(names_only)
-        if nm not in VICKY_NAMES
-           and nm not in YUMI_NAMES
-           and nm not in YVES_NAMES
-    ]    
-
-    def push_to(group, batch):
-        if not batch:
-            # log.info(f"[ACE_SCHEDULE:{label}] batch empty, skipping")
-            return
-        
-        # Build the mini-message: header + blank + batch + blank + footer
-        msg_lines = header + [""] + batch + [""] + footer
-        text_msg = "\n".join(msg_lines)
-
-        # Push to the group
-        requests.post(
-            LINE_PUSH_URL,
-            headers=LINE_HEADERS,
-            json={"to": group, "messages":[{"type":"text","text": text_msg }]}
-        )
-    
-    push_to(VICKY_GROUP_ID, vicky_batch)
-    push_to(YUMI_GROUP_ID,  yumi_batch)
-    # also push any “other” entries to your personal chat
-    push_to(YVES_USER_ID,  other_batch)    
-
 # ─── Ace shipment-block handler ────────────────────────────────────────────────
 def handle_ace_shipments(event):
     """
@@ -1192,6 +884,22 @@ def main():
 app = Flask(__name__)
 
 ocr_helper = OCRAgent()
+
+CONFIG = {
+    'VICKY_GROUP_ID': VICKY_GROUP_ID,
+    'YUMI_GROUP_ID': YUMI_GROUP_ID,
+    'IRIS_GROUP_ID': IRIS_GROUP_ID,
+    'YVES_USER_ID': YVES_USER_ID,
+    'GORSKY_USER_ID': GORSKY_USER_ID,
+    'VICKY_NAMES': VICKY_NAMES,
+    'YUMI_NAMES': YUMI_NAMES,
+    'IRIS_NAMES': IRIS_NAMES,
+    'YVES_NAMES': YVES_NAMES,
+    'CODE_TRIGGER_RE': CODE_TRIGGER_RE,
+    'ACE_SHEET_URL': ACE_SHEET_URL
+}
+
+shipment_parser = ShipmentParserService(CONFIG, get_gspread_client, _line_push)
 
 monday_service = MondaySyncService(
     api_token=MONDAY_API_TOKEN,
@@ -1726,13 +1434,13 @@ def webhook():
  
         # 3) Ace schedule (週四／週日出貨) & ACE EZ-Way check
         if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
-            handle_ace_schedule(event)
+            shipment_parser.handle_ace_schedule(event)
             handle_ace_ezway_check_and_push_to_yves(event)
             continue
 
         # 4) 處理「申報相符」提醒
         if "申報相符" in text and CODE_TRIGGER_RE.search(text):
-            handle_missing_confirm(event)
+            shipment_parser.handle_missing_confirm(event)
             continue
         
         # 5) Richmond-arrival triggers content-request to Vicky —————————
@@ -1789,7 +1497,7 @@ def webhook():
             and "您好，請" in text
             and "按" in text
             and "申報相符" in text):
-            handle_soquick_full_notification(event)
+            shipment_parser.handle_soquick_full_notification(event)
             continue          
 
         # 8) Your existing “追蹤包裹” logic
