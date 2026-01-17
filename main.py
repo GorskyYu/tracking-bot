@@ -1,3 +1,5 @@
+from twws_service import get_twws_value
+
 import os
 import hmac
 import hashlib
@@ -1499,6 +1501,24 @@ def webhook():
             and "申報相符" in text):
             shipment_parser.handle_soquick_full_notification(event)
             continue          
+
+        # 🟢 在這裡加入你的新功能
+        if text.lower() == "twws":
+            # 呼叫你寫好的 service
+            result_value = get_twws_value()
+            
+            # 回傳給 LINE 使用者
+            reply_token = event["replyToken"]
+            payload = {
+                "replyToken": reply_token,
+                "messages": [{"type": "text", "text": f"📊 當前數值為: {result_value}"}]
+            }
+            requests.post(
+                "https://api.line.me/v2/bot/message/reply",
+                headers={"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"},
+                json=payload
+            )
+            continue # 重要：處理完畢後跳過後續邏輯，避免觸發其他指令
 
         # 8) Your existing “追蹤包裹” logic
         if text == "追蹤包裹":
