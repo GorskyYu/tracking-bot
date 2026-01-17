@@ -80,7 +80,7 @@ TIMEZONE = os.getenv("TIMEZONE", "America/Vancouver")
 
 # Trigger when you see “週四出貨”/“週日出貨” + “麻煩請” + an ACE or 250N code,
 # or when you see the exact phrase “這幾位還沒有按申報相符”
-CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|250N)\d+[A-Z0-9]*\b")
+CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|\d+N)\d*[A-Z0-9]*\b")
 MISSING_CONFIRM = "這幾位還沒有按申報相符"
 
 # Names to look for in each group’s list
@@ -943,11 +943,15 @@ def handle_missing_confirm(event):
     # 逐行找 ACE/250N 單號
     for l in text.splitlines():
         if CODE_TRIGGER_RE.search(l):
+            # 使用正則拆分文字，確保能精準抓到姓名
             parts = re.split(r"\s+", l.strip())
             # 確保至少有三段：單號、姓名、電話
             if len(parts) < 2:
                 continue
+               
+            # 通常格式是：單號 姓名 電話，所以取 index 1
             name = parts[1]
+            
             if name in VICKY_NAMES:
                 target = VICKY_GROUP_ID
             elif name in YUMI_NAMES:
@@ -962,7 +966,7 @@ def handle_missing_confirm(event):
             requests.post(
                 LINE_PUSH_URL,
                 headers=LINE_HEADERS,
-                json={"to": target, "messages":[{"type":"text","text": f"{name} 尚未按申報相符"}]}
+                json={"to": target, "messages":[{"type":"text","text": f"🔔 提醒：{name} 尚未按申報相符"}]}
             )
 
 # ─── Ace schedule handler ─────────────────────────────────────────────────────
