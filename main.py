@@ -63,6 +63,7 @@ LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
 
 # ─── LINE & ACE/SQ 設定 ──────────────────────────────────────────────────────
 ACE_GROUP_ID     = os.getenv("LINE_GROUP_ID_ACE")
+GORSKY_USER_ID   = os.getenv("GORSKY_USER_ID")
 SOQUICK_GROUP_ID = os.getenv("LINE_GROUP_ID_SQ")
 VICKY_GROUP_ID   = os.getenv("LINE_GROUP_ID_VICKY")
 VICKY_USER_ID    = os.getenv("VICKY_USER_ID") 
@@ -931,43 +932,95 @@ def handle_soquick_full_notification(event):
 # ─── 新增：處理「申報相符」提醒 ─────────────────────────
 def handle_missing_confirm(event):
     text = event["message"]["text"]
-    
-    # 如果這是原始 EZ-Way 通知，就跳過
-    if "收到EZ way通知後" in text:
-        return
-    
-    # 如果訊息裡沒有「申報相符」，就跳過
-    if "申報相符" not in text:
+    if "收到EZ way通知後" in text or "申報相符" not in text:
         return
         
-    # 逐行找 ACE/250N 單號
+    # 暫存區
+    bundled_names = {VICKY_GROUP_ID: [], YUMI_GROUP_ID: [], IRIS_GROUP_ID: []}
+    fallback_names = [] 
+
+    # 1. 掃描文字並初步分流
     for l in text.splitlines():
         if CODE_TRIGGER_RE.search(l):
-            # 使用正則拆分文字，確保能精準抓到姓名
             parts = re.split(r"\s+", l.strip())
-            # 確保至少有三段：單號、姓名、電話
-            if len(parts) < 2:
-                continue
-               
-            # 通常格式是：單號 姓名 電話，所以取 index 1
+            if len(parts) < 2: continue
             name = parts[1]
             
             if name in VICKY_NAMES:
-                target = VICKY_GROUP_ID
+                bundled_names[VICKY_GROUP_ID].append(name)
             elif name in YUMI_NAMES:
-                target = YUMI_GROUP_ID
+                bundled_names[YUMI_GROUP_ID].append(name)
             elif name in IRIS_NAMES:
-                target = IRIS_GROUP_ID
+                bundled_names[IRIS_GROUP_ID].append(name)
             else:
-                # 不是 Vicky/Yumi/Iris 的人，直接跳過
-                continue
+                fallback_names.append(name)
+
+    # 2. 推送給 Proxy 群組 (Vicky/Yumi/Iris)
+    for target_id, names in bundled_names.items():
+        if not names: continue
+        unique_names = sorted(list(set(names)))
+        msg = f"您好，以下申報人還沒有按申報相符：\n\n" + "\n".join(unique_names)
+        requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json={"to": target_id, "messages": [{"type": "text", "text": msg}]})
+
+    # 3. 處理散客邏輯 (Fallback to Yves)
+    if fallback_names:
+        try:
+            gs = get_gspread_client()
+            # 使用環境變數中的 ACE_SHEET_URL
+            ss = gs.open_by_url(os.getenv("ACE_SHEET_URL"))
+            ws = ss.sheet1
+            all_rows = ws.get_all_values()
+            
+            # 建立 寄件人 -> [清關人+電話] 的對照
+            # Col C (index 2): 寄件人, Col D (3): 清關人, Col E (4): 電話
+            sender_groups = defaultdict(list)
+            for name in fallback_names:
+                # 從表單底部往上找，以抓取最新的出貨紀錄
+                for row in reversed(all_rows):
+                    if len(row) > 4 and row[3].strip() == name:
+                        sender = row[2].strip()
+                        phone = row[4].strip()
+                        sender_groups[sender].append(f"{name} {phone}")
+                        break
+            
+            # 判斷出貨日
+            ship_day = "週四出貨" if "週四" in text else ("週日出貨" if "週日" in text else "近期出貨")
+            
+            for sender, declarants in sender_groups.items():
+                # 先同時發送給 Yves 和 Gorsky
+                declarant_list = "\n".join(declarants)
+                bundled_msg = (
+                    f"{ship_day}\n\n"
+                    f"麻煩請 \n\n"
+                    f"{declarant_list}\n\n"
+                    f"收到EZ way通知後 請按申報相符 海關才能受理清關\n\n"
+                    f"**須按申報相符者 EZ Way 會提前提傳輸\n\n"
+                    f"台灣時間周五 傍晚至晚上 就可以開始按申報相符**"
+                )
                 
-            # 推播姓名（你可以改成更完整的訊息）
-            requests.post(
-                LINE_PUSH_URL,
-                headers=LINE_HEADERS,
-                json={"to": target, "messages":[{"type":"text","text": f"🔔 提醒：{name} 尚未按申報相符"}]}
-            )
+                # 內容準備好後，再同時發送給所有人
+                for admin_id in [YVES_USER_ID, GORSKY_USER_ID]:
+                    if admin_id: # 確保 ID 存在（防止環境變數未設定導致噴錯）
+                        _line_push(admin_id, sender)      # 先發送寄件人姓名
+                        _line_push(admin_id, bundled_msg) # 再發送彙整訊息
+                
+                # 步驟 B: 發送彙整訊息給 Yves
+                declarant_list = "\n".join(declarants)
+                bundled_msg = (
+                    f"{ship_day}\n\n"
+                    f"麻煩請 \n\n"
+                    f"{declarant_list}\n\n"
+                    f"收到EZ way通知後 請按申報相符 海關才能受理清關\n\n"
+                    f"**須按申報相符者 EZ Way 會提前提傳輸\n\n"
+                    f"台灣時間周五 傍晚至晚上 就可以開始按申報相符**"
+                )
+                _line_push(YVES_USER_ID, bundled_msg)
+                
+        except Exception as e:
+            log.error(f"[FALLBACK ERROR] {e}", exc_info=True)
+            for admin_id in [YVES_USER_ID, GORSKY_USER_ID]:
+                if admin_id:
+                    _line_push(admin_id, f"⚠️ 散客名單處理失敗: {str(e)}")
 
 # ─── Ace schedule handler ─────────────────────────────────────────────────────
 def handle_ace_schedule(event):
