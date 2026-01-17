@@ -86,6 +86,7 @@ MISSING_CONFIRM = "這幾位還沒有按申報相符"
 # Names to look for in each group’s list
 VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲","高懿欣","崔書鳳"}
 YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑","陳卉怡","洪瑜駿"}
+IRIS_NAMES  = {"廖偉廷","廖本堂","李成艷"}
 YVES_NAMES = {
     "梁穎琦",
     "張詠凱",
@@ -949,8 +950,10 @@ def handle_missing_confirm(event):
                 target = VICKY_GROUP_ID
             elif name in YUMI_NAMES:
                 target = YUMI_GROUP_ID
+            elif name in IRIS_NAMES:
+                target = IRIS_GROUP_ID
             else:
-                # 不是 Vicky 也不是 Yumi 的人，直接跳過
+                # 不是 Vicky/Yumi/Iris 的人，直接跳過
                 continue
                 
             # 推播姓名（你可以改成更完整的訊息）
