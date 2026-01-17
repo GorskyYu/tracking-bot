@@ -1,5 +1,3 @@
-from twws_service import get_twws_value
-
 import os
 import hmac
 import hashlib
@@ -35,6 +33,8 @@ import pytz
 from services.ocr_engine import OCRAgent
 from services.monday_service import MondaySyncService
 from services.shipment_parser import ShipmentParserService
+
+from services.twws_service import get_twws_value_by_name
 
 from jobs.ace_tasks import push_ace_today_shipments
 from jobs.sq_tasks import push_sq_weekly_shipments
@@ -1212,6 +1212,24 @@ def webhook():
         if mtype != "text":
             continue
 
+        # 🟢 NEW: TWWS 兩段式互動邏輯
+        twws_state_key = f"twws_wait_{group_id}" # 針對不同群組紀錄狀態
+        
+        # 檢查是否正在等待使用者輸入「子項目名稱」
+        if r.get(twws_state_key):
+            # 如果有狀態存在，把這次輸入的 text 當作名稱去查
+            amount = get_twws_value_by_name(text)
+            _line_push(group_id, f"🔍 查詢結果 ({text}):\n💰 應付金額: {amount}")
+            r.delete(twws_state_key) # 查完後刪除狀態，回到一般模式
+            continue
+
+        # 觸發第一階段：使用者輸入 twws
+        if text.lower() == "twws":
+            # 設定狀態並給予 5 分鐘 (300秒) 的時限
+            r.set(twws_state_key, "active", ex=300)
+            _line_push(group_id, "好的，請輸入要查詢的子項目名稱 (例如: 1Z...):")
+            continue
+
         # --- 金額自動錄入邏輯：僅限 PDF Scanning 群組觸發 ---
         if group_id == PDF_GROUP_ID:
             # 檢查是否為純數字金額 (如 43.10)
@@ -1501,24 +1519,6 @@ def webhook():
             and "申報相符" in text):
             shipment_parser.handle_soquick_full_notification(event)
             continue          
-
-        # 🟢 在這裡加入你的新功能
-        if text.lower() == "twws":
-            # 呼叫你寫好的 service
-            result_value = get_twws_value()
-            
-            # 回傳給 LINE 使用者
-            reply_token = event["replyToken"]
-            payload = {
-                "replyToken": reply_token,
-                "messages": [{"type": "text", "text": f"📊 當前數值為: {result_value}"}]
-            }
-            requests.post(
-                "https://api.line.me/v2/bot/message/reply",
-                headers={"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"},
-                json=payload
-            )
-            continue # 重要：處理完畢後跳過後續邏輯，避免觸發其他指令
 
         # 8) Your existing “追蹤包裹” logic
         if text == "追蹤包裹":
