@@ -1212,23 +1212,27 @@ def webhook():
         if mtype != "text":
             continue
 
-        # 🟢 NEW: TWWS 兩段式互動邏輯
-        twws_state_key = f"twws_wait_{group_id}" # 針對不同群組紀錄狀態
+        # 🟢 NEW: TWWS 兩段式互動邏輯 (限定個人私訊且限定 Yves 使用)
+        user_id = src.get("userId")
+        twws_state_key = f"twws_wait_{user_id}" # 使用 userId 確保狀態唯一
         
-        # 檢查是否正在等待使用者輸入「子項目名稱」
-        if r.get(twws_state_key):
-            # 如果有狀態存在，把這次輸入的 text 當作名稱去查
-            amount = get_twws_value_by_name(text)
-            _line_push(group_id, f"🔍 查詢結果 ({text}):\n💰 應付金額: {amount}")
-            r.delete(twws_state_key) # 查完後刪除狀態，回到一般模式
-            continue
+        # 檢查是否為「個人私訊」且為「指定的管理員 (Yves)」
+        if src.get("type") == "user" and user_id == YVES_USER_ID:
+            # 檢查是否正在等待使用者輸入「子項目名稱」
+            if r.get(twws_state_key):
+                # 如果有狀態存在，把這次輸入的 text 當作名稱去查
+                amount = get_twws_value_by_name(text)
+                # 使用 user_id 作為推播對象，確保私訊回傳
+                _line_push(user_id, f"🔍 查詢結果 ({text}):\n💰 應付金額: {amount}")
+                r.delete(twws_state_key) # 查完後刪除狀態
+                continue
 
-        # 觸發第一階段：使用者輸入 twws
-        if text.lower() == "twws":
-            # 設定狀態並給予 5 分鐘 (300秒) 的時限
-            r.set(twws_state_key, "active", ex=300)
-            _line_push(group_id, "好的，請輸入要查詢的子項目名稱 (例如: 1Z...):")
-            continue
+            # 觸發第一階段：使用者輸入 twws
+            if text.lower() == "twws":
+                # 設定狀態並給予 5 分鐘 (300秒) 的時限
+                r.set(twws_state_key, "active", ex=300)
+                _line_push(user_id, "好的，請輸入子項目名稱：")
+                continue
 
         # --- 金額自動錄入邏輯：僅限 PDF Scanning 群組觸發 ---
         if group_id == PDF_GROUP_ID:
