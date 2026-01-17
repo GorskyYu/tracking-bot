@@ -6,51 +6,55 @@ log = logging.getLogger(__name__)
 
 def get_twws_value_by_name(subitem_name):
     """
-    根據子項目名稱搜尋並讀取 formula28__1 數值
+    根據名稱搜尋並讀取子項目的應付金額 (formula28__1)
     """
     api_url = "https://api.monday.com/v2"
     api_token = os.getenv("MONDAY_API_TOKEN")
-    board_id = "4815120249"  # 您指定的子項目板塊 ID
+    
+    # 定義要搜尋的板塊列表：1. 環境變數的 Air Board, 2. 你提供的 Vicky Board
+    # 這樣無論在哪一箱都能查到
+    board_ids = [os.getenv("AIR_BOARD_ID"), "4815120249"]
     column_id = "formula28__1"
-
-    # GraphQL：搜尋名稱匹配的項目並取得特定欄位
-    query = f"""
-    query {{
-      items_by_column_values (board_id: {board_id}, column_id: "name", column_value: "{subitem_name}") {{
-        id
-        name
-        column_values (ids: ["{column_id}"]) {{
-          ... on FormulaValue {{
-            display_value
-          }}
-          text
-        }}
-      }}
-    }}
-    """
+    search_value = str(subitem_name).strip()
 
     headers = {
         "Authorization": api_token,
         "Content-Type": "application/json"
     }
 
-    try:
-        resp = requests.post(api_url, json={'query': query}, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+    for b_id in board_ids:
+        if not b_id: continue
         
-        items = data.get("data", {}).get("items_by_column_values", [])
-        if not items:
-            return f"找不到名稱為 '{subitem_name}' 的項目"
+        # 使用新版 items_page_by_column_values 語法
+        query = """
+        query ($boardId: ID!, $colId: String!, $val: String!) {
+          items_page_by_column_values (board_id: $boardId, columns: [{column_id: $colId, column_values: [$val]}]) {
+            items {
+              id
+              name
+              column_values (ids: ["formula28__1"]) {
+                ... on FormulaValue { display_value }
+                text
+              }
+            }
+          }
+        }
+        """
+        variables = {"boardId": b_id, "colId": "name", "val": search_value}
 
-        # 取第一個匹配的項目
-        col_vals = items[0].get("column_values", [])
-        if col_vals:
-            # 優先取公式顯示值
-            val = col_vals[0].get("display_value") or col_vals[0].get("text")
-            return val if (val and val.strip()) else "0"
-        return "項目存在，但該欄位無資料"
+        try:
+            resp = requests.post(api_url, json={'query': query, 'variables': variables}, headers=headers, timeout=10)
+            data = resp.json()
+            items = data.get("data", {}).get("items_page_by_column_values", {}).get("items", [])
 
-    except Exception as e:
-        log.error(f"Monday API Error: {e}")
-        return f"查詢出錯: {str(e)}"
+            if items:
+                col_vals = items[0].get("column_values", [])
+                if col_vals:
+                    val = col_vals[0].get("display_value") or col_vals[0].get("text")
+                    return val if (val and val.strip()) else "0"
+                return "項目存在，但金額欄位為空"
+        except Exception as e:
+            log.error(f"[TWWS] Board {b_id} query failed: {e}")
+            continue
+
+    return f"❌ 在所有板塊中都找不到名稱為 '{search_value}' 的項目"
