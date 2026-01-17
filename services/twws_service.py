@@ -10,7 +10,7 @@ def get_twws_value_by_name(subitem_name):
     """
     api_url = "https://api.monday.com/v2"
     api_token = os.getenv("MONDAY_API_TOKEN")
-    board_id = "4814336467"  # 您指定的子項目板塊 ID
+    board_id = "4815120249"  # 您指定的子項目板塊 ID
     column_id = "formula28__1"
 
     # GraphQL：搜尋名稱匹配的項目並取得特定欄位
