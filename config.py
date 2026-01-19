@@ -92,7 +92,7 @@ import base64
 from pathlib import Path
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
+line_bot_api = LineBotApi(LINE_TOKEN)
 ABOW_GROUP_ID = os.getenv("ABOW_GROUP_ID", "C8f48ab6318c34a9dee6e98ee035139e5")
 GHEHON_GROUP_ID = os.getenv("GHEHON_GROUP_ID", "C7c91af29fb566fd4881868f9d6941f62")
 
