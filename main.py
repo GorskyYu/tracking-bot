@@ -480,6 +480,8 @@ def webhook():
 
         # 新的 Unpaid 邏輯
         if text.lower().startswith("unpaid"):
+            # 🟢 增加這行 log，部署後去 Heroku logs 看 Gorsky 傳過來的 ID 到底是什麼
+            log.info(f"[DEBUG] Unpaid trigger: user_id={user_id}, GORSKY_VAR={GORSKY_USER_ID}, group={group_id}")
             # 判斷是否為管理員 (Yves 或 Gorsky)
             is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
             

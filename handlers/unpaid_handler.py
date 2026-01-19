@@ -476,7 +476,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
         QuickReplyButton(action=MessageAction(label="All", text=f"{cmd} All")),
         QuickReplyButton(action=MessageAction(label="Vicky", text=f"{cmd} Vicky")),
         QuickReplyButton(action=MessageAction(label="Yumi", text=f"{cmd} Yumi")),
-        QuickReplyButton(action=MessageAction(label="Iris", text=f"{cmd} Iris"))
+        QuickReplyButton(action=MessageAction(label="Iris", text=f"{cmd} Lammond"))
     ]
     
     text_message = TextSendMessage(
