@@ -465,18 +465,27 @@ def _unpaid_worker(destination_id, filter_name=None):
              pass
 
 def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, group_id=None):
-    # 0. Permission Check
-    if not is_authorized_for_event("handle_unpaid_event", group_id, user_id):
-        reply_text(reply_token, "⛔ 您沒有權限使用此指令。")
-        return
-
-    # Check for arguments: "unpaid All" or "unpaid Vicky"
-    # Assuming the trigger is exactly "unpaid" or contains "unpaid"
-    # Let's parse the command args. 
-    # If the message is just "unpaid", show buttons.
-    # If the message is "unpaid name", run query.
+    # 🔍 先抓取管理員狀態與自動對應名稱
+    is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID) # 這裡需確保有匯入變數
+    auto_target_name = GROUP_TO_CLIENT_MAP.get(group_id)
     
     parts = message_text.strip().split()
+    
+    # 1. 如果是一般成員 (非管理員)
+    if not is_admin:
+        # 僅限在有對應表的群組中輸入單純的 "unpaid"
+        if len(parts) == 1 and auto_target_name:
+            # 允許執行自動查詢
+            reply_text(reply_token, f"🔍 正在搜尋 {auto_target_name} 的未付款項目，請稍候...")
+            t = Thread(target=_unpaid_worker, args=(group_id, auto_target_name))
+            t.start()
+            return
+        else:
+            # 企圖查別人 (例如 unpaid All) 或在私訊使用，直接拒絕
+            reply_text(reply_token, "⛔ 您僅限在指定群組查詢該群組的帳單。")
+            return
+
+    # 2. 如果是管理員，維持原有的完整權限 (包含私訊選單、手動查所有人)
     cmd = parts[0].lower()
     
     auto_target_name = GROUP_TO_CLIENT_MAP.get(group_id)

@@ -480,18 +480,19 @@ def webhook():
 
         # 新的 Unpaid 邏輯
         if text.lower().startswith("unpaid"):
-            # 🟢 增加這行 log，部署後去 Heroku logs 看 Gorsky 傳過來的 ID 到底是什麼
-            log.info(f"[DEBUG] Unpaid trigger: user_id={user_id}, GORSKY_VAR={GORSKY_USER_ID}, group={group_id}")
-            # 判斷是否為管理員 (Yves 或 Gorsky)
+            user_id = src.get("userId")
+            group_id = src.get("groupId")
+
+            # 1. 判斷是否為管理員
             is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
             
-            # 判斷環境：個人私訊 OR 指定的三個群組
-            is_valid_context = (
-                src.get("type") == "user" or 
-                group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, IRIS_GROUP_ID}
-            )
+            # 2. 判斷是否為有效的自動查詢群組
+            is_valid_group = group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, IRIS_GROUP_ID}
 
-            if is_admin and is_valid_context:
+            # 🟢 新邏輯：管理員隨時可用；一般成員僅限在指定群組內輸入 "unpaid"
+            can_trigger = is_admin or (is_valid_group and text.lower() == "unpaid")
+
+            if can_trigger:
                 handle_unpaid_event(
                     sender_id=group_id if group_id else user_id,
                     message_text=text,
