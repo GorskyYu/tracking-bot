@@ -36,13 +36,13 @@ TARGET_STATUSES = ["溫哥華收款", "未收款出貨", "台中收款"]
 COL_STATUS = "Status"
 COL_DIMENSION = "箱子尺寸cm"
 COL_WEIGHT = "箱子重量"
-COL_PRICE = "加幣應收" # Target Formula
+COL_PRICE = "加幣應收"
 COL_CAD_PRICE = "加拿大單價"
 COL_INTL_PRICE = "國際單價"
 COL_ADDT_CAD = "追加加幣支出"
 COL_ADDT_TWD = "追加台幣支出"
-COL_CAD_RECEIVED = "加幣實收"
-COL_TWD_RECEIVED = "台幣實收"
+COL_CAD_PAID ="加幣實收"
+COL_TWD_PAID ="台幣實收"
 COL_EXCHANGE = "匯率"
 
 def _get_column_value(col_name, sources):
