@@ -49,6 +49,7 @@ CLIENT_TO_GROUP = {
 # ─── Environment Variables ────────────────────────────────────────────────────
 APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
 APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
+LINE_TOKEN = os.getenv("LINE_TOKEN")
 
 # ─── LINE & ACE/SQ 設定 ──────────────────────────────────────────────────────
 ACE_GROUP_ID     = os.getenv("LINE_GROUP_ID_ACE")
