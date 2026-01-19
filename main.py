@@ -40,6 +40,8 @@ from jobs.sq_tasks import push_sq_weekly_shipments
 
 from sheets import get_gspread_client
 
+from collections import defaultdict
+
 
 # ─── Client → LINE Group Mapping ───────────────────────────────────────────────
 CLIENT_TO_GROUP = {
