@@ -34,6 +34,9 @@ class ShipmentParserService:
         if "申報相符" not in text:
             return
 
+        # 如果是排程訊息，則不發送群組訊息
+        is_schedule = "週四出貨" in text or "週日出貨" in text
+
         bundled_names = {
             self.cfg['VICKY_GROUP_ID']: [],
             self.cfg['YUMI_GROUP_ID']: [],
@@ -49,7 +52,6 @@ class ShipmentParserService:
                 parts = re.split(r"\s+", l.strip())
                 if len(parts) < 2: continue
                 name = parts[1]
-                all_extracted_names.append(name)
                 
                 if name in self.cfg['VICKY_NAMES']:
                     bundled_names[self.cfg['VICKY_GROUP_ID']].append(name)
@@ -57,10 +59,13 @@ class ShipmentParserService:
                     bundled_names[self.cfg['YUMI_GROUP_ID']].append(name)
                 elif name in self.cfg['IRIS_NAMES']:
                     bundled_names[self.cfg['IRIS_GROUP_ID']].append(name)
+                else:
+                    # 只有不在上述清單的人，才需要去表單查 Sender
+                    all_extracted_names.append(name)
 
         # 2. 推送給各負責人群組
         for target_id, names in bundled_names.items():
-            if not names: continue
+            if not names or is_schedule: continue  # 如果是排程訊息，就跳過這裡的推送
             unique_names = sorted(list(set(names)))
             msg = "您好，以下申報人還沒有按申報相符：\n\n" + "\n".join(unique_names)
             self._safe_line_push(target_id, msg)
