@@ -39,7 +39,9 @@ class ShipmentParserService:
             self.cfg['YUMI_GROUP_ID']: [],
             self.cfg['IRIS_GROUP_ID']: []
         }
-        fallback_names = []
+
+        # 所有出現在訊息中的姓名都要查表單，以便找出寄件人
+        all_extracted_names = []
 
         # 1. 掃描文字並分流
         for l in text.splitlines():
@@ -47,6 +49,7 @@ class ShipmentParserService:
                 parts = re.split(r"\s+", l.strip())
                 if len(parts) < 2: continue
                 name = parts[1]
+                all_extracted_names.append(name)
                 
                 if name in self.cfg['VICKY_NAMES']:
                     bundled_names[self.cfg['VICKY_GROUP_ID']].append(name)
@@ -54,8 +57,6 @@ class ShipmentParserService:
                     bundled_names[self.cfg['YUMI_GROUP_ID']].append(name)
                 elif name in self.cfg['IRIS_NAMES']:
                     bundled_names[self.cfg['IRIS_GROUP_ID']].append(name)
-                else:
-                    fallback_names.append(name)
 
         # 2. 推送給各負責人群組
         for target_id, names in bundled_names.items():
@@ -65,7 +66,7 @@ class ShipmentParserService:
             self._safe_line_push(target_id, msg)
 
         # 3. 處理散客 Fallback
-        if fallback_names:
+        if all_extracted_names:
             try:
                 gs = self.get_gspread()
                 ss = gs.open_by_url(self.cfg['ACE_SHEET_URL'])
@@ -73,17 +74,20 @@ class ShipmentParserService:
                 all_rows = ws.get_all_values()
                 
                 sender_groups = defaultdict(list)
-                for name in fallback_names:
+                for name in all_extracted_names:
                     for row in reversed(all_rows):
-                        if len(row) > 4 and row[3].strip() == name:
+                        if len(row) > 7 and row[6].strip() == name:
                             sender = row[2].strip()
-                            phone = row[4].strip()
+                            phone = row[7].strip()
                             sender_groups[sender].append(f"{name} {phone}")
                             break
                 
                 ship_day = "週四出貨" if "週四" in text else ("週日出貨" if "週日" in text else "近期出貨")
                 
                 for sender, declarants in sender_groups.items():
+                    # 排除掉負責人自己，只轉發需要的通知
+                    if sender in self.cfg.get('EXCLUDED_SENDERS', []): continue
+
                     declarant_list = "\n".join(declarants)
                     bundled_msg = (
                         f"{ship_day}\n\n麻煩請 \n\n{declarant_list}\n\n"
@@ -92,7 +96,7 @@ class ShipmentParserService:
                         f"台灣時間周五 傍晚至晚上 就可以開始按申報相符**"
                     )
                     
-                    # 使用初始化傳入的 line_push 函式推送給管理員
+                    # 推送給管理員
                     for admin_id in [self.cfg['YVES_USER_ID'], self.cfg['GORSKY_USER_ID']]:
                         if admin_id:
                             self.line_push(admin_id, sender)
@@ -100,9 +104,7 @@ class ShipmentParserService:
                             
             except Exception as e:
                 log.error(f"[FALLBACK ERROR] {e}", exc_info=True)
-                for admin_id in [self.cfg['YVES_USER_ID'], self.cfg['GORSKY_USER_ID']]:
-                    if admin_id:
-                        self.line_push(admin_id, f"⚠️ 散客名單處理失敗: {str(e)}")
+
 
     def handle_ace_schedule(self, event):
         """處理 Ace 出貨排程通知"""

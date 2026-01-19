@@ -38,7 +38,7 @@ APP_ID     = os.getenv("TE_APP_ID")
 APP_SECRET = os.getenv("TE_SECRET")          # your TE App Secret
 
 # Regex / Names
-CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|250N)\d+[A-Z0-9]*\b")
+CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|\d+N)\d*[A-Z0-9]*\b")
 # Names to look for in each group’s list
 VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲","高懿欣","崔書鳳","周志明"}
 YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑","陳卉怡","洪瑜駿","李祈霈","邱啓倫","許霈珩"}
