@@ -25,6 +25,10 @@ GROUP_TO_CLIENT_MAP = {
     # os.getenv("LINE_GROUP_ID_ABC"): "ABC_Client",
 }
 
+CLIENT_ALIASES = {
+    "Yumi - Shu-Yen Liu": "Yumi - Shu-Yen (Yumi) Liu"
+}
+
 TARGET_BOARD_IDS = [4815120249, 8783157722]
 TARGET_STATUSES = ["溫哥華收款", "未收款出貨", "台中收款"]
 
@@ -99,8 +103,6 @@ def _fetch_status_col_id(board_id):
                  return col["id"]
     return None
 
-
-
 def fetch_unpaid_items_globally():
     """
     Searches across target boards (Bottom-Up Strategy).
@@ -131,88 +133,103 @@ def fetch_unpaid_items_globally():
              continue
              
         # 3. Search Query (Fetching Columns for Item AND Parent)
-        query = """
-        query ($board_id: ID!, $col_id: String!, $vals: [String]!) {
-            items_page_by_column_values (
-                board_id: $board_id, 
-                columns: [{column_id: $col_id, column_values: $vals}],
-                limit: 50
-            ) {
-                items {
-                    id
-                    name
-                    column_values {
-                        ... on FormulaValue { display_value }
-                        text
-                        column { title }
-                    }
-                    parent_item {
+        cursor = None
+        while True:
+            query = """
+            query ($board_id: ID!, $col_id: String!, $vals: [String]!, $cursor: String) {
+                items_page_by_column_values (
+                    board_id: $board_id, 
+                    columns: [{column_id: $col_id, column_values: $vals}],
+                    limit: 100,
+                    cursor: $cursor
+                ) {
+                    cursor
+                    items {
+                        id
                         name
                         column_values {
                             ... on FormulaValue { display_value }
                             text
                             column { title }
                         }
+                        parent_item {
+                            name
+                            column_values {
+                                ... on FormulaValue { display_value }
+                                text
+                                column { title }
+                            }
+                        }
                     }
                 }
             }
-        }
-        """
-        
-        variables = {
-            "board_id": int(subitem_board_id),
-            "col_id": status_col_id,
-            "vals": TARGET_STATUSES
-        }
-        
-        res = _monday_request(query, variables)
-        if not res or "data" not in res or not res["data"]["items_page_by_column_values"]:
-             continue
-             
-        items = res["data"]["items_page_by_column_values"]["items"]
-        
-        for item in items:
-            sub_name = item["name"]
+            """
             
-            # 4. robust mapping (Multi-Source Strategy)
-            subitem_cols = _map_column_values(item.get("column_values", []))
+            variables = {
+                "board_id": int(subitem_board_id),
+                "col_id": status_col_id,
+                "vals": TARGET_STATUSES,
+                "cursor": cursor
+            }
             
-            parent_item = item.get("parent_item")
-            parent_name = parent_item["name"] if parent_item else "No Parent"
-            parent_cols = _map_column_values(parent_item.get("column_values", []) if parent_item else [])
-            
-            sources = [subitem_cols, parent_cols]
-            
-            # Check mandatory fields (Dimensions & Weight)
-            dim_val = _get_column_value(COL_DIMENSION, sources)
-            weight_val = _get_column_value(COL_WEIGHT, sources)
-            
-            if dim_val and dim_val.strip() and weight_val and weight_val.strip():
-                 # Get Price - Strict: Only from Subitem
-                 price_text = subitem_cols.get(COL_PRICE)
+            res = _monday_request(query, variables)
+            if not res or "data" not in res or not res["data"]["items_page_by_column_values"]:
+                 break
                  
-                 # if not price_text:
-                 #      price_text = _calculate_manual_price(sources, sub_name)
-                      
-                 if price_text is None or str(price_text).strip() == "":
-                      price_text = "N/A"
+            page_data = res["data"]["items_page_by_column_values"]
+            items = page_data["items"]
+            cursor = page_data.get("cursor")
+            
+            logging.info(f"Fetched {len(items)} items from board {subitem_board_id}. Next Cursor: {bool(cursor)}")
 
-                 price_val = _extract_float(price_text)
-                      
-                 items_found.append({
-                     "parent_name": parent_name,
-                     "sub_name": sub_name,
-                     "price_text": price_text,
-                     "price_val": price_val,
-                     "dimensions": dim_val,
-                     "weight": weight_val
-                 })
+            for item in items:
+                sub_name = item["name"]
+                
+                # 4. robust mapping (Multi-Source Strategy)
+                subitem_cols = _map_column_values(item.get("column_values", []))
+                
+                parent_item = item.get("parent_item")
+                # Safety check for parent_item being None (orphan subitem)
+                if not parent_item:
+                    continue
+
+                parent_name = parent_item["name"]
+                parent_cols = _map_column_values(parent_item.get("column_values", []) if parent_item else [])
+                
+                sources = [subitem_cols, parent_cols]
+                
+                # Check mandatory fields (Dimensions & Weight)
+                dim_val = _get_column_value(COL_DIMENSION, sources)
+                weight_val = _get_column_value(COL_WEIGHT, sources)
+                
+                if dim_val and dim_val.strip() and weight_val and weight_val.strip():
+                     # Get Price - Strict: Only from Subitem
+                     price_text = subitem_cols.get(COL_PRICE)
+                     
+                     # if not price_text:
+                     #      price_text = _calculate_manual_price(sources, sub_name)
+                          
+                     if price_text is None or str(price_text).strip() == "":
+                          price_text = "N/A"
+    
+                     price_val = _extract_float(price_text)
+                          
+                     items_found.append({
+                         "parent_name": parent_name,
+                         "sub_name": sub_name,
+                         "price_text": price_text,
+                         "price_val": price_val,
+                         "dimensions": dim_val,
+                         "weight": weight_val
+                     })
+                else:
+                     logging.warning(f"Item {sub_name} (Parent: {parent_name}) skipped. Missing Dims/Weight. Dims: '{dim_val}', Weight: '{weight_val}'")
+
+            # Exit loop if no cursor returned
+            if not cursor:
+                break
                  
     return items_found
-
-CLIENT_ALIASES = {
-    "Yumi - Shu-Yen Liu": "Yumi - Shu-Yen (Yumi) Liu"
-}
 
 def _resolve_client_name(name):
     """Resolve client name using manual alias mapping."""
