@@ -216,6 +216,7 @@ def fetch_unpaid_items_globally():
                      items_found.append({
                          "parent_name": parent_name,
                          "sub_name": sub_name,
+                         "price_text": price_text,
                          "price_val": _extract_float(price_text),
                          "dimensions": dim_val,
                          "weight": weight_val,
@@ -401,7 +402,7 @@ def _create_client_flex_message(client_obj):
                 margin='sm',
                 contents=[
                     TextComponent(text="Subtotal", flex=4, size='sm', color='#555555'),
-                    TextComponent(text=f"{group_data['subtotal']:.2f}", flex=2, align='end', size='sm', weight='bold')
+                    TextComponent(text=f"${group_data['subtotal']:.2f}", flex=2, align='end', size='sm', weight='bold')
                 ]
             )
         )
@@ -417,7 +418,7 @@ def _create_client_flex_message(client_obj):
                 margin='md',
                 contents=[
                     TextComponent(text="Total Amount", flex=4, size='lg', weight='bold'),
-                    TextComponent(text=f"{total:.2f}", flex=3, align='end', size='lg', weight='bold', color='#FF4B4B')
+                    TextComponent(text=f"${total:.2f}", flex=3, align='end', size='lg', weight='bold', color='#FF4B4B')
                 ]
             )
         ]
