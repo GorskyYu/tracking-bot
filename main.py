@@ -25,11 +25,8 @@ from services.shipment_parser import ShipmentParserService
 
 # 業務邏輯處理器
 from handlers.handlers import (
-    handle_ace_ezway_check_and_push_to_yves,
     handle_soquick_and_ace_shipments,
     handle_ace_shipments,
-    handle_ace_schedule,
-    handle_missing_confirm,
     handle_soquick_full_notification
 )
 from handlers.unpaid_handler import handle_unpaid_event
@@ -705,13 +702,14 @@ def webhook():
  
         # 3) Ace schedule (週四／週日出貨) & ACE EZ-Way check
         if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
-            handle_ace_schedule(event)
-            handle_ace_ezway_check_and_push_to_yves(event)
+            # 使用 ShipmentParserService 實例呼叫邏輯
+            shipment_parser.handle_ace_schedule(event)      # 負責發送到各負責人小群
+            shipment_parser.handle_missing_confirm(event)   # 負責 Iris 分流與發送 Sender 給 Yves
             continue
 
         # 4) 處理「申報相符」提醒
         if "申報相符" in text and CODE_TRIGGER_RE.search(text):
-            handle_missing_confirm(event)
+            shipment_parser.handle_missing_confirm(event) # 改用 shipment_parser
             continue
         
         # 5) Richmond-arrival triggers content-request to Vicky —————————

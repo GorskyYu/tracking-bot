@@ -164,7 +164,7 @@ def handle_ace_ezway_check_and_push_to_yves(event):
             continue
 
         # Skip anyone already in VICKY_NAMES, YUMI_NAMES, or EXCLUDED_SENDERS
-        if sender in VICKY_NAMES or sender in YUMI_NAMES or sender in EXCLUDED_SENDERS:
+        if sender in VICKY_NAMES or sender in YUMI_NAMES or sender in IRIS_NAMES or sender in EXCLUDED_SENDERS:
             continue
 
         results.add(sender)
@@ -608,6 +608,7 @@ def handle_ace_schedule(event: Dict[str, Any]) -> None:
     # now split into per-group lists
     vicky_batch = [c for c in cleaned if any(name in c for name in VICKY_NAMES)]
     yumi_batch = [c for c in cleaned if any(name in c for name in YUMI_NAMES)]
+    iris_batch  = [c for c in cleaned if any(name in c for name in IRIS_NAMES)]
 
     # extract just the name token (first word) from each cleaned line
     names_only = [c.split()[0] for c in cleaned]
@@ -617,6 +618,7 @@ def handle_ace_schedule(event: Dict[str, Any]) -> None:
         cleaned[i] for i, nm in enumerate(names_only)
         if nm not in VICKY_NAMES
         and nm not in YUMI_NAMES
+        and nm not in IRIS_NAMES
         and nm not in YVES_NAMES
     ]
 
@@ -637,6 +639,7 @@ def handle_ace_schedule(event: Dict[str, Any]) -> None:
 
     push_to(VICKY_GROUP_ID, vicky_batch)
     push_to(YUMI_GROUP_ID, yumi_batch)
+    push_to(IRIS_GROUP_ID, iris_batch)
     # also push any “other” entries to your personal chat
     push_to(YVES_USER_ID, other_batch)
 
@@ -787,7 +790,7 @@ def handle_ace_ezway_check_and_push_to_yves(event: Dict[str, Any]) -> None:
             continue
 
         # Column B is at index 1 in 'row'
-        declarer = (row[1] if len(row) > 1 else "").strip()
+        declarer = (row[6] if len(row) > 6 else "").strip()
         if not declarer or declarer not in declarer_names:
             continue
 
