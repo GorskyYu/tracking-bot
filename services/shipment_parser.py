@@ -31,7 +31,7 @@ class ShipmentParserService:
     def handle_missing_confirm(self, event):
         """處理「申報相符」提醒與散客 Fallback 邏輯"""
         text = event["message"]["text"]
-        if "收到EZ way通知後" in text or "申報相符" not in text:
+        if "申報相符" not in text:
             return
 
         bundled_names = {
@@ -124,11 +124,13 @@ class ShipmentParserService:
 
         vicky_batch = [c for c in cleaned if any(name in c for name in self.cfg['VICKY_NAMES'])]
         yumi_batch  = [c for c in cleaned if any(name in c for name in self.cfg['YUMI_NAMES'])]
+        iris_batch = [c for c in cleaned if any(name in c for name in self.cfg['IRIS_NAMES'])]
         
         names_only = [c.split()[0] for c in cleaned]
         other_batch = [cleaned[i] for i, nm in enumerate(names_only) 
                       if nm not in self.cfg['VICKY_NAMES'] 
                       and nm not in self.cfg['YUMI_NAMES'] 
+                      and nm not in self.cfg['IRIS_NAMES']
                       and nm not in self.cfg.get('YVES_NAMES', [])]
 
         def push_to(group, batch):
@@ -138,6 +140,7 @@ class ShipmentParserService:
         
         push_to(self.cfg['VICKY_GROUP_ID'], vicky_batch)
         push_to(self.cfg['YUMI_GROUP_ID'], yumi_batch)
+        push_to(self.cfg['IRIS_GROUP_ID'], iris_batch)
         push_to(self.cfg['YVES_USER_ID'], other_batch)
 
     def handle_soquick_full_notification(self, event):

@@ -307,7 +307,7 @@ def handle_ace_shipments(event):
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
 # Regex triggers originally defined in main.py
-CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|250N)\d+[A-Z0-9]*\b")
+CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|\d+N)\d*[A-Z0-9]*\b")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
