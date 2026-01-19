@@ -1,12 +1,7 @@
 # 忽略所有測試與備份文件
 test_*.py
-main_new.py
-mainpy_0917_original.txt
 app.py
 ace.py
-holiday.py
-log.py
-redis_client.py
 schedulers.py
 sq.py
 worker.py
