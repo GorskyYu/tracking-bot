@@ -11,7 +11,7 @@ import pytz
 import openai
 
 # 基礎配置與工具
-from config import *
+import config
 from redis_client import r
 from log import log
 
@@ -21,6 +21,7 @@ from services.monday_service import MondaySyncService
 from services.te_api_service import get_statuses_for, call_api
 from services.barcode_service import handle_barcode_image
 from services.twws_service import get_twws_value_by_name
+from services.shipment_parser import ShipmentParserService
 
 # 業務邏輯處理器
 from handlers.handlers import (
@@ -53,7 +54,6 @@ CLIENT_TO_GROUP = {
 # ─── Environment Variables ────────────────────────────────────────────────────
 APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
 APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
-LINE_TOKEN = os.getenv("LINE_TOKEN")
 
 # ─── LINE & ACE/SQ 設定 ──────────────────────────────────────────────────────
 ACE_GROUP_ID     = os.getenv("LINE_GROUP_ID_ACE")
@@ -104,7 +104,7 @@ AIR_PARENT_BOARD_ID = os.getenv("AIR_PARENT_BOARD_ID")
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 LINE_HEADERS = {
     "Content-Type":  "application/json",
-    "Authorization": f"Bearer {LINE_TOKEN}"
+    "Authorization": f"Bearer {config.LINE_TOKEN}"
 }
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 
@@ -313,6 +313,16 @@ def lookup_full_tracking(ups_last4: str) -> Optional[str]:
         return None
     return matches[0]
 
+def _line_push(target_id, text):
+    """通用 LINE PUSH 函式"""
+    payload = {
+        "to": target_id,
+        "messages": [{"type": "text", "text": text}]
+    }
+    resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+    log.info(f"[_line_push] to {target_id}: {resp.status_code}")
+    return resp
+
 # CLI entrypoint
 def main():
     pdf_path = "U110252577.pdf"
@@ -335,10 +345,10 @@ CONFIG = {
     'IRIS_GROUP_ID': IRIS_GROUP_ID,
     'YVES_USER_ID': YVES_USER_ID,
     'GORSKY_USER_ID': GORSKY_USER_ID,
-    'VICKY_NAMES': VICKY_NAMES,
-    'YUMI_NAMES': YUMI_NAMES,
-    'IRIS_NAMES': IRIS_NAMES,
-    'YVES_NAMES': YVES_NAMES,
+    'VICKY_NAMES': config.VICKY_NAMES,
+    'YUMI_NAMES': config.YUMI_NAMES,
+    'IRIS_NAMES': config.IRIS_NAMES,
+    'YVES_NAMES': config.YVES_NAMES,
     'CODE_TRIGGER_RE': CODE_TRIGGER_RE,
     'ACE_SHEET_URL': ACE_SHEET_URL
 }
