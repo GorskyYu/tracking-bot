@@ -1,3 +1,42 @@
+# tracking_bot/handlers.py
+from __future__ import annotations
+from typing import Dict, Any, Optional, List, Set
+
+import re
+import json
+import requests
+import pytz
+from datetime import datetime, timedelta, timezone
+from dateutil.parser import parse as parse_date
+
+from log import log
+from sheets import get_gspread_client
+from config import (
+    # LINE & group ids
+    ACE_GROUP_ID,
+    SOQUICK_GROUP_ID,
+    VICKY_GROUP_ID,
+    YUMI_GROUP_ID,
+    JOYCE_GROUP_ID,
+    PDF_GROUP_ID,
+    VICKY_USER_ID,
+    YVES_USER_ID,
+
+    # names/filters
+    VICKY_NAMES,
+    YUMI_NAMES,
+    YVES_NAMES,
+    EXCLUDED_SENDERS,
+
+    # misc config
+    TIMEZONE,
+    SQ_SHEET_URL,
+
+    # LINE API config
+    LINE_TOKEN,
+    LINE_HEADERS,
+)
+
 import os
 import re
 import logging
@@ -264,44 +303,6 @@ def handle_ace_shipments(event):
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID,  yumi)
     
-# tracking_bot/handlers.py
-from __future__ import annotations
-from typing import Dict, Any, Optional, List, Set
-
-import re
-import json
-import requests
-import pytz
-from datetime import datetime, timedelta, timezone
-from dateutil.parser import parse as parse_date
-
-from log import log
-from sheets import get_gspread_client
-from config import (
-    # LINE & group ids
-    ACE_GROUP_ID,
-    SOQUICK_GROUP_ID,
-    VICKY_GROUP_ID,
-    YUMI_GROUP_ID,
-    JOYCE_GROUP_ID,
-    PDF_GROUP_ID,
-    VICKY_USER_ID,
-    YVES_USER_ID,
-
-    # names/filters
-    VICKY_NAMES,
-    YUMI_NAMES,
-    YVES_NAMES,
-    EXCLUDED_SENDERS,
-
-    # misc config
-    TIMEZONE,
-    SQ_SHEET_URL,
-
-    # LINE API config
-    LINE_TOKEN,
-    LINE_HEADERS,
-)
 # Some constants are used directly with requests; keep URL literal here for clarity
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
