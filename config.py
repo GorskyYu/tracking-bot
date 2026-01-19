@@ -22,6 +22,7 @@ YUMI_GROUP_ID    = os.getenv("LINE_GROUP_ID_YUMI")
 JOYCE_GROUP_ID   = os.getenv("LINE_GROUP_ID_JOYCE")
 PDF_GROUP_ID     = os.getenv("LINE_GROUP_ID_PDF")
 YVES_USER_ID     = os.getenv("YVES_USER_ID")
+GORSKY_USER_ID = os.getenv("GORSKY_USER_ID")
 
 ACE_SHEET_URL    = os.getenv("ACE_SHEET_URL")
 SQ_SHEET_URL     = os.getenv("SQ_SHEET_URL")
