@@ -70,7 +70,7 @@ class ShipmentParserService:
             msg = "您好，以下申報人還沒有按申報相符：\n\n" + "\n".join(unique_names)
             self._safe_line_push(target_id, msg)
 
-        # 3. 處理散客 Fallback
+        # 3. 處理散客 Fallback 包含 Bundling 功能)
         if all_extracted_names:
             try:
                 gs = self.get_gspread()
@@ -79,16 +79,23 @@ class ShipmentParserService:
                 all_rows = ws.get_all_values()
                 
                 sender_groups = defaultdict(list)
+                found_names = set()
+
                 for name in all_extracted_names:
                     for row in reversed(all_rows):
                         if len(row) > 7 and row[6].strip() == name:
                             sender = row[2].strip()
                             phone = row[7].strip()
                             sender_groups[sender].append(f"{name} {phone}")
+                            found_names.add(name) # 標記為已找到
                             break
                 
-                ship_day = "週四出貨" if "週四" in text else ("週日出貨" if "週日" in text else "近期出貨")
-                
+                # 處理時間邏輯，確保與排程訊息一致
+                is_sunday = "週日出貨" in text
+                ship_day = "週日出貨" if is_sunday else ("週四出貨" if "週四" in text else "近期出貨")
+                timing_note = "週一" if is_sunday else "週五" # 週日出貨對應週一，週四對應週五
+
+                # 發送已 Bundle 的寄件人通知
                 for sender, declarants in sender_groups.items():
                     # 排除掉負責人自己，只轉發需要的通知
                     if sender in self.cfg.get('EXCLUDED_SENDERS', []): continue
@@ -107,6 +114,12 @@ class ShipmentParserService:
                             self.line_push(admin_id, sender)
                             self.line_push(admin_id, bundled_msg)
                             
+                # 新增：若有姓名不在表單內，仍發送給 Yves 避免漏掉
+                unfound = [n for n in all_extracted_names if n not in found_names]
+                if unfound:
+                    unfound_msg = f"{ship_day} (表單無資料)：\n\n" + "\n".join(unfound)
+                    self._safe_line_push(self.cfg['YVES_USER_ID'], unfound_msg)
+
             except Exception as e:
                 log.error(f"[FALLBACK ERROR] {e}", exc_info=True)
 
@@ -146,7 +159,6 @@ class ShipmentParserService:
         push_to(self.cfg['VICKY_GROUP_ID'], vicky_batch)
         push_to(self.cfg['YUMI_GROUP_ID'], yumi_batch)
         push_to(self.cfg['IRIS_GROUP_ID'], iris_batch)
-        push_to(self.cfg['YVES_USER_ID'], other_batch)
 
     def handle_soquick_full_notification(self, event):
         """處理 Soquick 全體通知邏輯"""
