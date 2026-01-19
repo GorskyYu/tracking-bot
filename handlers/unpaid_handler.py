@@ -205,34 +205,24 @@ def fetch_unpaid_items_globally():
                 weight_val = _get_column_value(COL_WEIGHT, sources)
                 
                 if dim_val and dim_val.strip() and weight_val and weight_val.strip():
-                     # 1. 抓取各項原始數值
+                     # 1. 抓取 Subitem 應收
                      price_text = subitem_cols.get(COL_PRICE, "0")
-                     cad_rec_text = subitem_cols.get(COL_CAD_RECEIVED, "0")
-                     twd_rec_text = subitem_cols.get(COL_TWD_RECEIVED, "0")
-                     rate_text = subitem_cols.get(COL_EXCHANGE, "1")
-
-                     # 2. 轉換為數字並處理空值
-                     total_owed_cad = _extract_float(price_text)
-                     cad_received = _extract_float(cad_rec_text)
-                     twd_received = _extract_float(twd_rec_text)
-                     rate = _extract_float(rate_text)
-                     if rate <= 0: rate = 1.0 # 避免除以 0
-
-                     # 3. 計算淨餘額 (公式：總應收CAD - 實收CAD - (實收TWD / 匯率))
-                     remaining_balance = total_owed_cad - cad_received - (twd_received / rate)
                      
-                     # 4. 存入結果 (用於顯示與加總)
-                     # 我們將 price_val 改為餘額，這樣後面的 Subtotal 和 Total 就會自動變動
-                     price_val = remaining_balance
-                     display_price = f"{remaining_balance:.2f}"
+                     # 2. 從 Parent 抓取實收與匯率
+                     cad_paid_text = parent_cols.get(COL_CAD_PAID, "0")
+                     twd_paid_text = parent_cols.get(COL_TWD_PAID, "0")
+                     rate_text = parent_cols.get(COL_EXCHANGE, "1")
                           
                      items_found.append({
                          "parent_name": parent_name,
                          "sub_name": sub_name,
-                         "price_text": display_price, # 帳單上顯示的單項餘額
-                         "price_val": price_val,      # 用於 _group_items_by_client 累加 Subtotal/Total
+                         "price_val": _extract_float(price_text),
                          "dimensions": dim_val,
-                         "weight": weight_val
+                         "weight": weight_val,
+                         # 存入母項目實收數據供後續計算
+                         "parent_cad_paid": _extract_float(cad_paid_text),
+                         "parent_twd_paid": _extract_float(twd_paid_text),
+                         "parent_rate": _extract_float(rate_text)
                      })
                 else:
                      logging.warning(f"Item {sub_name} (Parent: {parent_name}) skipped. Missing Dims/Weight. Dims: '{dim_val}', Weight: '{weight_val}'")
@@ -283,7 +273,19 @@ def _group_items_by_client(items, filter_name=None):
         client_data = raw_clients[canonical_name]
         
         if date_str not in client_data["data"]:
-            client_data["data"][date_str] = {"items": [], "subtotal": 0.0}
+            # 紀錄母項目的實收總額
+            rate = item.get("parent_rate", 1.0)
+            if rate <= 0: rate = 1.0
+            total_paid_cad = item.get("parent_cad_paid", 0) + (item.get("parent_twd_paid", 0) / rate)
+            
+            client_data["data"][date_str] = {
+                "items": [], 
+                "subtotal": 0.0,
+                "paid_amount": total_paid_cad # 該筆貨物已付總額 (CAD)
+            }
+            # 預扣除實收
+            client_data["data"][date_str]["subtotal"] -= total_paid_cad
+            client_data["total"] -= total_paid_cad
             
         client_data["data"][date_str]["items"].append(item)
         client_data["data"][date_str]["subtotal"] += item["price_val"]
@@ -379,6 +381,18 @@ def _create_client_flex_message(client_obj):
         for item in group_data["items"]:
             body_contents.append(_create_item_row(item))
             
+        if group_data["paid_amount"] > 0:
+            body_contents.append(
+                BoxComponent(
+                    layout='horizontal',
+                    margin='md',
+                    contents=[
+                        TextComponent(text="Paid (Already Received)", flex=4, size='sm', color='#1DB446'),
+                        TextComponent(text=f"-${group_data['paid_amount']:.2f}", flex=2, align='end', size='sm', color='#1DB446', weight='bold')
+                    ]
+                )
+            )
+            
         # Date Subtotal
         body_contents.append(SeparatorComponent(margin='sm'))
         body_contents.append(
@@ -403,7 +417,7 @@ def _create_client_flex_message(client_obj):
                 margin='md',
                 contents=[
                     TextComponent(text="Total Amount", flex=4, size='lg', weight='bold'),
-                    TextComponent(text=f"{total:.2f}", flex=3, align='end', size='lg', weight='bold', color='#1DB446')
+                    TextComponent(text=f"{total:.2f}", flex=3, align='end', size='lg', weight='bold', color='#FF4B4B')
                 ]
             )
         ]
