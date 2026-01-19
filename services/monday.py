@@ -2,7 +2,7 @@ import requests
 import json
 import logging
 import os
-from app.config import MONDAY_API_TOKEN
+from config import MONDAY_API_TOKEN
 
 logger = logging.getLogger(__name__)
 
