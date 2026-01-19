@@ -41,6 +41,8 @@ COL_CAD_PRICE = "加拿大單價"
 COL_INTL_PRICE = "國際單價"
 COL_ADDT_CAD = "追加加幣支出"
 COL_ADDT_TWD = "追加台幣支出"
+COL_CAD_RECEIVED = "加幣實收"
+COL_TWD_RECEIVED = "台幣實收"
 COL_EXCHANGE = "匯率"
 
 def _get_column_value(col_name, sources):
@@ -203,22 +205,32 @@ def fetch_unpaid_items_globally():
                 weight_val = _get_column_value(COL_WEIGHT, sources)
                 
                 if dim_val and dim_val.strip() and weight_val and weight_val.strip():
-                     # Get Price - Strict: Only from Subitem
-                     price_text = subitem_cols.get(COL_PRICE)
+                     # 1. 抓取各項原始數值
+                     price_text = subitem_cols.get(COL_PRICE, "0")
+                     cad_rec_text = subitem_cols.get(COL_CAD_RECEIVED, "0")
+                     twd_rec_text = subitem_cols.get(COL_TWD_RECEIVED, "0")
+                     rate_text = subitem_cols.get(COL_EXCHANGE, "1")
+
+                     # 2. 轉換為數字並處理空值
+                     total_owed_cad = _extract_float(price_text)
+                     cad_received = _extract_float(cad_rec_text)
+                     twd_received = _extract_float(twd_rec_text)
+                     rate = _extract_float(rate_text)
+                     if rate <= 0: rate = 1.0 # 避免除以 0
+
+                     # 3. 計算淨餘額 (公式：總應收CAD - 實收CAD - (實收TWD / 匯率))
+                     remaining_balance = total_owed_cad - cad_received - (twd_received / rate)
                      
-                     # if not price_text:
-                     #      price_text = _calculate_manual_price(sources, sub_name)
-                          
-                     if price_text is None or str(price_text).strip() == "":
-                          price_text = "N/A"
-    
-                     price_val = _extract_float(price_text)
+                     # 4. 存入結果 (用於顯示與加總)
+                     # 我們將 price_val 改為餘額，這樣後面的 Subtotal 和 Total 就會自動變動
+                     price_val = remaining_balance
+                     display_price = f"{remaining_balance:.2f}"
                           
                      items_found.append({
                          "parent_name": parent_name,
                          "sub_name": sub_name,
-                         "price_text": price_text,
-                         "price_val": price_val,
+                         "price_text": display_price, # 帳單上顯示的單項餘額
+                         "price_val": price_val,      # 用於 _group_items_by_client 累加 Subtotal/Total
                          "dimensions": dim_val,
                          "weight": weight_val
                      })
