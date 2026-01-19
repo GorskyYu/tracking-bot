@@ -8,6 +8,7 @@ import threading
 from flask import Flask, request, jsonify
 from datetime import datetime, timezone, timedelta
 import pytz
+import openai
 
 # 基礎配置與工具
 from config import *
