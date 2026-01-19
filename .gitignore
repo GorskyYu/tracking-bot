@@ -19,8 +19,7 @@ worker.py
 *.sh
 
 # 忽略敏感金鑰與環境設定
-service_account.json
-careful-lock-*.json
+*.json
 .env
 venv/
 __pycache__/

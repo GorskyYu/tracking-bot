@@ -1,57 +1,44 @@
 import os
-import hmac
-import hashlib
 import requests
 import json
-import base64
 import redis
 import logging
 import re
-from urllib.parse import quote
-from flask import Flask, request, jsonify
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from datetime import timedelta, datetime, timezone
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from dateutil.parser import parse as parse_date
-import openai
-from collections import defaultdict
 import threading
-from typing import Optional
-
-import io
-from io import BytesIO
-from PIL import Image, ImageFilter
-from pyzbar.pyzbar import decode, ZBarSymbol
-from pdf2image import convert_from_bytes  # 新增：將 PDF 頁面轉為影像供條碼掃描
-from PyPDF2 import PdfReader  # 新增：解析 PDF 文字內容
-import fitz  # PyMuPDF
-
+from flask import Flask, request, jsonify
+from datetime import datetime, timezone, timedelta
 import pytz
 
+# 基礎配置與工具
+from config import *
+from redis_client import r
+from log import log
+
+# 核心服務層
 from services.ocr_engine import OCRAgent
 from services.monday_service import MondaySyncService
-from services.shipment_parser import ShipmentParserService
-
+from services.te_api_service import get_statuses_for, call_api
+from services.barcode_service import handle_barcode_image
 from services.twws_service import get_twws_value_by_name
 
+# 業務邏輯處理器
+from handlers.handlers import (
+    handle_ace_ezway_check_and_push_to_yves,
+    handle_soquick_and_ace_shipments,
+    handle_ace_shipments,
+    handle_ace_schedule,
+    handle_missing_confirm,
+    handle_soquick_full_notification
+)
+from handlers.unpaid_handler import handle_unpaid_event
+from handlers.vicky_handler import remind_vicky
+
+# 工作排程
 from jobs.ace_tasks import push_ace_today_shipments
 from jobs.sq_tasks import push_sq_weekly_shipments
 
-# Requires:
-# pip install pymupdf pillow openai
+from sheets import get_gspread_client
 
-# ─── Google Sheets 認證（環境變數 + lazy init）─────────────────────────
-import os, json, base64, gspread
-from google.oauth2.service_account import Credentials
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
-_gs = None  # lazy singleton, avoid authenticating at import time
 
 # ─── Client → LINE Group Mapping ───────────────────────────────────────────────
 CLIENT_TO_GROUP = {
@@ -86,54 +73,6 @@ TIMEZONE = os.getenv("TIMEZONE", "America/Vancouver")
 # or when you see the exact phrase “這幾位還沒有按申報相符”
 CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|\d+N)\d*[A-Z0-9]*\b")
 MISSING_CONFIRM = "這幾位還沒有按申報相符"
-
-# Names to look for in each group’s list
-VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲","高懿欣","崔書鳳","周志明"}
-YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑","陳卉怡","洪瑜駿","李祈霈","邱啓倫","許霈珩"}
-IRIS_NAMES  = {"廖偉廷","廖本堂","李成艷"}
-YVES_NAMES = {
-    "梁穎琦",
-    "張詠凱",
-    "劉育伶",
-    "羅唯英",
-    "陳品茹",
-    "張碧蓮",
-    "吳政融",
-    "解瑋庭",
-    "洪君豪",
-    "洪芷翎",
-    "羅木癸",
-    "洪金珠",
-    "林憶慧",
-    "葉怡秀",
-    "葉詹明",
-    "廖聰毅",
-    "蔡英豪",
-    "魏媴蓁",
-    "黃淑芬",
-    "解佩頴",
-    "曹芷茜",
-    "王詠皓",
-    "曹亦芳",
-    "李慧芝",
-    "李錦祥",
-    "詹欣陵",
-    "陳志賢",
-    "曾惠玲",
-    "李白秀",
-    "陳聖玄",
-    "柯雅甄",
-    "游玉慧",
-    "鄭詠渝",
-    "鄭芸婷",
-    "游繼堯",
-    "游承哲",
-    "游傳杰",
-    "陳秀華",
-    "陳秀玲",
-    "陳恒楷"
-}
-EXCLUDED_SENDERS = {"Yves Lai", "Yves KT Lai", "Yves MM Lai", "Yumi Liu", "Vicky Ku"}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ACE「今日出貨」：排程 + 手動觸發
@@ -202,34 +141,6 @@ def _ensure_scheduler_for_sq_weekly():
     _sq_scheduler = sched
     return _sq_scheduler
 
-def get_gspread_client():
-    """Authorize gspread using env vars. Prefers GCP_SA_JSON_BASE64; falls back to GOOGLE_SVCKEY_JSON."""
-    global _gs
-    if _gs is not None:
-        return _gs
-
-    # Prefer the base64 var you added on Heroku
-    b64 = os.getenv("GCP_SA_JSON_BASE64", "")
-    json_inline = os.getenv("GOOGLE_SVCKEY_JSON", "")
-
-    if b64:
-        info = json.loads(base64.b64decode(b64))
-    elif json_inline:
-        # Back-compat: if you're still providing raw JSON text in GOOGLE_SVCKEY_JSON
-        info = json.loads(json_inline)
-    else:
-        raise RuntimeError("Missing credentials: set GCP_SA_JSON_BASE64 (preferred) or GOOGLE_SVCKEY_JSON")
-
-    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-
-    # Only if you intentionally use Workspace domain-wide delegation:
-    delegate = os.getenv("GSUITE_DELEGATE")
-    if delegate:
-        creds = creds.with_subject(delegate)
-
-    _gs = gspread.authorize(creds)
-    return _gs
-
 # --- Debug: print SA client_email once on startup (safe) ---
 try:
     import os, json, base64
@@ -257,23 +168,6 @@ log = logging.getLogger(__name__)
 CUSTOMER_FILTERS = {
     os.getenv("LINE_GROUP_ID_YUMI"):   ["yumi", "shu-yen"],
     os.getenv("LINE_GROUP_ID_VICKY"):  ["vicky","chia-chi"]
-}
-
-# ─── Status Translations ──────────────────────────────────────────────────────
-TRANSLATIONS = {
-    "out for delivery today":         "今日派送中",
-    "out for delivery":               "派送中",
-    "processing at ups facility":     "UPS處理中",
-    "arrived at facility":            "已到達派送中心",
-    "departed from facility":         "已離開派送中心",
-    "pickup scan":                    "取件掃描",
-    "your package is currently at the ups access point™ and is scheduled to be tendered to ups.": 
-                                      "貨件目前在 UPS 取貨點，稍後將交予 UPS",
-    "drop-off":                       "已寄件",
-    "order created at triple eagle":  "已在系統建立訂單",
-    "shipper created a label, ups has not received the package yet.": 
-                                      "已建立運單，UPS 尚未收件",
-    "delivered":                      "已送達",
 }
 
 # 模組載入時就確保 SQ 排程啟動（與 ACE 的 _ensure_scheduler_for_ace_today 並存）
@@ -350,222 +244,12 @@ def _schedule_summary(group_id):
     }
     requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
 
-
-# ─── Signature Generator ──────────────────────────────────────────────────────
-def generate_sign(params: dict, secret: str) -> str:
-    # Build encodeURIComponent-style querystring
-    parts = []
-    for k in sorted(params.keys()):
-        v = params[k]
-        parts.append(f"{k}={quote(str(v), safe='~')}")
-    qs = "&".join(parts)
-
-    # HMAC-SHA256 and Base64-encode
-    sig_bytes = hmac.new(secret.encode(), qs.encode(), hashlib.sha256).digest()
-    return base64.b64encode(sig_bytes).decode('utf-8')
-
-# ─── TripleEagle API Caller ───────────────────────────────────────────────────
-def call_api(action: str, payload: dict = None) -> dict:
-    ts = str(int(datetime.now().timestamp()))
-    params = {"id": APP_ID, "timestamp": ts, "format": "json", "action": action}
-    params["sign"] = generate_sign(params, APP_SECRET)
-    url = "https://eship.tripleeaglelogistics.com/api?" + "&".join(
-        f"{k}={quote(str(params[k]), safe='~')}" for k in params
-    )
-    headers = {"Content-Type": "application/json"}
-    if payload:
-        r = requests.post(url, json=payload, headers=headers)
-    else:
-        r = requests.get(url, headers=headers)
-    r.raise_for_status()
-    return r.json()
-
-# Helper for sending single final LINE message for uploading PDF
-def _line_push(to: str, text: str):
-    try:
-        requests.post(
-            "https://api.line.me/v2/bot/message/push",
-            headers=LINE_HEADERS,
-            json={"to": to, "messages": [{"type": "text", "text": text}]},
-            timeout=10,
-        )
-    except Exception as e:
-        log.error(f"[LINE PUSH] failed: {e}")
-
-
-# ─── Business Logic ───────────────────────────────────────────────────────────
-def get_statuses_for(keywords: list[str]) -> list[str]:
-    # 1) list all active orders
-    resp = call_api("shipment/list")
-    lst  = resp.get("response", {}).get("list") or resp.get("response") or []
-    order_ids = [o["id"] for o in lst if "id" in o]
-    # 2) filter by these keywords
-    cust_ids = []
-    for oid in order_ids:
-        det = call_api("shipment/detail", {"id": oid}).get("response", {})
-        if isinstance(det, list): det = det[0]
-        init = det.get("initiation", {})
-        loc  = next(iter(init), None)
-        name = init.get(loc,{}).get("name","").lower() if loc else ""
-        if any(kw in name for kw in keywords):
-            cust_ids.append(oid)
-    if not cust_ids:
-        return ["📦 沒有此客戶的有效訂單"]
-    # 3) fetch tracking updates
-    td = call_api("shipment/tracking", {
-        "keyword": ",".join(cust_ids),
-        "rsync":   0,
-        "timezone": TIMEZONE
-    })
-    # 4) format reply using each event’s own timestamp
-    lines: list[str] = []
-    for item in td.get("response", []):
-        oid = item.get("id"); num = item.get("number","")
-        events = item.get("list") or []
-        if not events:
-            lines.append(f"📦 {oid} ({num}) – 尚無追蹤紀錄")
-            continue
-        # pick the most recent event
-        ev = max(events, key=lambda e: int(e["timestamp"]))
-        loc_raw    = ev.get("location","")
-        loc        = f"[{loc_raw.replace(',',', ')}] " if loc_raw else ""
-        ctx_lc     = ev.get("context","").strip().lower()
-        translated = TRANSLATIONS.get(ctx_lc, ev.get("context","").replace("Triple Eagle","system"))
-
-        # derive the *real* event time from its epoch timestamp
-        # 1) parse the numeric timestamp
-        event_ts = int(ev["timestamp"])
-        # 2) convert to a timezone‐aware datetime
-        #    (make sure you have `import pytz` and `from datetime import datetime` at the top)
-        tzobj = pytz.timezone(TIMEZONE)
-        dt = datetime.fromtimestamp(event_ts, tz=tzobj)
-        # 3) format it exactly like "Wed, 11 Jun 2025 15:05:46 -0700"
-        tme = dt.strftime('%a, %d %b %Y %H:%M:%S %z')
-
-        lines.append(f"📦 {oid} ({num}) → {loc}{translated}  @ {tme}")
-    return lines
-
 MONDAY_API_URL    = "https://api.monday.com/v2"
 MONDAY_TOKEN      = os.getenv("MONDAY_TOKEN")
 VICKY_SUBITEM_BOARD_ID = 4815120249    # 請填你 Vicky 子任務所在的 Board ID
 VICKY_STATUS_COLUMN_ID = "status__1"   # 請填溫哥華收款那個欄位的 column_id
 
-# ─── Vicky-reminder helpers ───────────────────────────────────────────────────(under construction)    
-def vicky_has_active_orders() -> list[str]:
-    """
-    Return a list of Vicky’s active UPS tracking numbers (the 1Z… codes).
-    """
-    # include parent_item.name so we can filter only Vicky’s
-    query = '''
-    query ($boardId: ID!, $columnId: String!, $value: String!) {
-      items_page_by_column_values(
-        board_id: $boardId,
-        limit: 100,
-        columns: [{ column_id: $columnId, column_values: [$value] }]
-      ) {
-        items {
-          name
-          parent_item { name }
-        }
-      }
-    }
-    '''
-    # 查詢多種需提醒的狀態
-    statuses = ["收包裹", "測量", "重新包裝", "提供資料", "溫哥華收款"]
-    to_remind = []
-    
-    for status in statuses:
-        log.info(f"[vicky_has_active_orders] querying status {status!r}")
-        resp = requests.post(
-            MONDAY_API_URL,
-            headers={ "Authorization": f"Bearer {MONDAY_TOKEN}", "Content-Type": "application/json" },
-            json={ "query": query, "variables": {
-                "boardId": VICKY_SUBITEM_BOARD_ID,
-                "columnId": VICKY_STATUS_COLUMN_ID,
-                "value": status
-            }}
-        )
-        items = resp.json()\
-                   .get("data", {})\
-                   .get("items_page_by_column_values", {})\
-                   .get("items", [])
 
-        # keep only Vicky’s
-        filtered = [
-            itm["name"].strip()
-            for itm in items
-            if itm.get("parent_item", {}).get("name", "").find("Vicky") != -1
-        ]
-        log.info(f"[vicky_has_active_orders] {len(filtered)} of {len(items)} are Vicky’s for {status!r}")
-        to_remind.extend(filtered)
-    
-    # 去重排序
-    to_remind = sorted(set(to_remind))
-    
-    if not to_remind:
-      return []
-
-    # 3) We already have the subitem names (tracking IDs) in to_remind:
-    return to_remind
-
-# ─── Wednesday/Friday reminder callback ───────────────────────────────────────
-def remind_vicky(day_name: str):
-    log.info(f"[remind_vicky] Called for {day_name}")
-    tz = pytz.timezone(TIMEZONE)
-    today_str = datetime.now(tz).date().isoformat()
-    guard_key = f"vicky_reminder_{day_name}_{today_str}"
-    log.info(f"[remind_vicky] guard_key={guard_key!r}, existing={r.get(guard_key)!r}")
-    if r.get(guard_key):
-        log.info("[remind_vicky] Skipping because guard is set")
-        return  
-         
-    # 1) Grab Monday subitems in the statuses you care about
-    to_remind_ids = vicky_has_active_orders()  # returns list of TE IDs from Monday
-    log.info(f"[remind_vicky] vicky_has_active_orders → {to_remind_ids!r}")
-    if not to_remind_ids:
-        log.info("[remind_vicky] No subitems in statuses to remind, exiting")
-        return
-
-    # 2) Use the subitem names directly as the list to remind
-    to_remind = to_remind_ids
-
-    if not to_remind:
-        log.info("[remind_vicky] No tracking numbers found, exiting")
-        return
-
-    # ── 3) Assemble and send reminder (no sheet link) ──────────────────
-    placeholder = "{user1}"
-    header = (
-        f"{placeholder} 您好，溫哥華倉庫預計{day_name}出貨，"
-        "請麻煩填寫以下包裹的内容物清單。謝謝！"
-    )
-    body = "\n".join(to_remind)
-    payload = {
-        "to": VICKY_GROUP_ID,
-        "messages": [{
-            "type":        "textV2",
-            "text":        "\n\n".join([header, body]),
-            "substitution": {
-                "user1": {
-                    "type": "mention",
-                    "mentionee": {
-                        "type":   "user",
-                        "userId": VICKY_USER_ID
-                    }
-                }
-            }
-        }]
-    }
-    try:
-        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        if resp.status_code == 200:
-            # mark as sent for today
-            r.set(guard_key, "1", ex=24*3600)
-            log.info(f"Sent Vicky reminder for {day_name}: {len(to_remind)} packages")
-        else:
-            log.error(f"Failed to send Vicky reminder: {resp.status_code} {resp.text}")
-    except Exception as e:
-        log.error(f"Error sending Vicky reminder: {e}")
 
 # def vicky_sheet_recently_edited():
     ##1) build a credentials object from your SERVICE_ACCOUNT JSON
@@ -590,253 +274,7 @@ def remind_vicky(day_name: str):
     # age = datetime.now(timezone.utc) - last_edit
     # return age.days < 3
   
-def handle_ace_ezway_check_and_push_to_yves(event):
-    """
-    For any ACE message that contains “麻煩請” + “收到EZ way通知後” + (週四出貨 or 週日出貨),
-    we will look up the *sheet* for the row whose date is closest to today, but ONLY
-    for those “declaring persons” that actually appeared in the ACE text.  For each
-    matching row, we pull the “sender” (column C) and push it privately if it's not in
-    VICKY_NAMES or YUMI_NAMES or EXCLUDED_SENDERS.
-    """
-    text = event["message"]["text"]
 
-    # Only trigger on the exact keywords
-    if not (
-        "麻煩請" in text
-        and "收到EZ way通知後" in text
-        and ("週四出貨" in text or "週日出貨" in text)
-    ):
-        return
-
-    # ── 1) Extract declarer‐names from the ACE text ────────────────────────
-    lines = text.splitlines()
-
-    # find the line index that contains “麻煩請”
-    try:
-        idx_m = next(i for i, l in enumerate(lines) if "麻煩請" in l)
-    except StopIteration:
-        # If we can't find it, default to the top
-        idx_m = 0
-
-    # find the line index that starts with “收到EZ way通知後”
-    try:
-        idx_r = next(i for i, l in enumerate(lines) if l.startswith("收到EZ way通知後"))
-    except StopIteration:
-        idx_r = len(lines)
-
-    # declarer lines are everything strictly between “麻煩請” and “收到EZ way通知後”
-    raw_declarer_lines = lines[idx_m+1 : idx_r]
-    declarer_names = set()
-
-    for line in raw_declarer_lines:
-        # Remove any ACE‐style code prefix (e.g. “ACE250605YL04 ”)
-        cleaned = CODE_TRIGGER_RE.sub("", line).strip().strip('"')
-        if not cleaned:
-            continue
-
-        # Take the first “token” as the actual name (before any phone or other columns)
-        name_token = cleaned.split()[0]
-        if name_token:
-            declarer_names.add(name_token)
-
-    if not declarer_names:
-        # No valid declarers found in the message → nothing to do
-        return
-
-    # ── 2) Open the ACE sheet and find the “closest‐date” row ─────────────
-    ACE_SHEET_URL = os.getenv("ACE_SHEET_URL")
-    gs = get_gspread_client()
-    sheet = gs.open_by_url(ACE_SHEET_URL).sheet1
-    data = sheet.get_all_values()  # raw rows as lists of strings
-
-    today = datetime.now(timezone.utc).date()
-    closest_date = None
-    closest_diff = timedelta(days=9999)
-
-    # Assume column A is date; skip header row at index 0, so start at row 2 in the sheet
-    for row_idx, row in enumerate(data[1:], start=2):
-        date_str = row[0].strip()
-        if not date_str:
-            continue
-        try:
-            row_date = parse_date(date_str).date()
-        except Exception:
-            continue
-
-        diff = abs(row_date - today)
-        if diff < closest_diff:
-            closest_diff = diff
-            closest_date = row_date
-
-    if closest_date is None:
-        # No parseable dates in sheet → bail out
-        return
-
-    # ── 3) Scan only the rows on that closest_date, and only if column B (declarer)
-    #         is in our declarer_names set.  Then we grab column C (sender) for private push.
-    results = set()
-
-    for row_idx, row in enumerate(data[1:], start=2):
-        date_str = row[0].strip()
-        if not date_str:
-            continue
-        try:
-            row_date = parse_date(date_str).date()
-        except Exception:
-            continue
-
-        if row_date != closest_date:
-            continue
-
-        # Column B is at index 1 in 'row'
-        declarer = row[1].strip() if len(row) > 1 else ""
-        if not declarer or declarer not in declarer_names:
-            continue
-
-        # Column C is at index 2 in 'row' → this is the “sender” we want to notify
-        sender = row[2].strip() if len(row) > 2 else ""
-        if not sender:
-            continue
-
-        # Skip anyone already in VICKY_NAMES, YUMI_NAMES, or EXCLUDED_SENDERS
-        if sender in VICKY_NAMES or sender in YUMI_NAMES or sender in EXCLUDED_SENDERS:
-            continue
-
-        results.add(sender)
-
-    # ── 4) Push to Yves privately if any senders remain ────────────────────
-    if results:
-        header_payload = {
-            "to": YVES_USER_ID,
-            "messages": [{"type": "text", "text": "Ace散客EZWay需提醒以下寄件人："}]
-        }
-        requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=header_payload)
-
-        for sender in sorted(results):
-            payload = {
-                "to": YVES_USER_ID,
-                "messages": [{"type": "text", "text": sender}]
-            }
-            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-
-        print(f"DEBUG: Pushed {len(results)} sender(s) to Yves: {sorted(results)}")
-    else:
-        print("DEBUG: No matching senders found for any declarer in the ACE message.")
-
-# ─── Soquick & Ace shipment-block handler ────────────────────────────────────────────
-def handle_soquick_and_ace_shipments(event):
-    """
-    Parse Soquick & Ace text containing "上周六出貨包裹的派件單號", "出貨單號", "宅配單號"
-    split out lines of tracking+code+recipient, then push
-    only the matching Vicky/Yumi lines + footer.
-    """
-    raw = event["message"]["text"]
-    if "上周六出貨包裹的派件單號" not in raw and not ("出貨單號" in raw and "宅配單號" in raw):
-        return
-
-    vicky, yumi = [], []
-
-    # — Soquick flow —
-    if "上周六出貨包裹的派件單號" in raw:
-        # Split into non-empty lines
-        lines = [l.strip() for l in raw.splitlines() if l.strip()]
-        # Locate footer (starts with “您好”)
-        footer_idx = next((i for i,l in enumerate(lines) if l.startswith("您好")), len(lines))
-        header = lines[:footer_idx]
-        footer = "\n".join(lines[footer_idx:])
-
-        for line in header:
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            recipient = parts[-1]
-            if recipient in VICKY_NAMES:
-                vicky.append(line)
-            elif recipient in YUMI_NAMES:
-                yumi.append(line)
-
-    # — Ace flow —
-    else:
-        # split into one block per “出貨單號:” line
-        blocks = [b.strip().strip('"') for b in re.split(r'(?=出貨單號:)', raw) if b.strip()]
-        
-        for blk in blocks:
-            # strip whitespace and any wrapping quotes
-            block = blk.strip().strip('"')
-            if not block:
-                continue
-            # must contain both 出貨單號 and 宅配單號
-            if "出貨單號" not in block or "宅配單號" not in block:
-                continue
-            lines = block.splitlines()
-            if len(lines) < 3:
-                continue
-            recipient = lines[2].split()[0]
-            if recipient in VICKY_NAMES:
-                vicky.append(block)
-            elif recipient in YUMI_NAMES:
-                yumi.append(block)
-
-    def push(group, msgs):
-        if not msgs:
-            return
-        
-        # choose formatting per flow
-        if "上周六出貨包裹的派件單號" in raw:
-            text = "\n".join(msgs) + "\n\n" + footer
-        else:
-            text = "\n\n".join(msgs)
-        payload = {"to": group, "messages":[{"type":"text","text": text}]}
-        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Sent {len(msgs)} Soquick blocks to {group}: {resp.status_code}")
-
-    push(VICKY_GROUP_ID, vicky)
-    push(YUMI_GROUP_ID,  yumi)
-
-# ─── Ace shipment-block handler ────────────────────────────────────────────────
-def handle_ace_shipments(event):
-    """
-    Splits the text into blocks starting with '出貨單號:', then
-    forwards each complete block to Yumi or Vicky based on the
-    recipient name.
-    """
-    # 1) Grab & clean the raw text
-    raw = event["message"]["text"]
-    log.info(f"[ACE SHIP] raw incoming text: {repr(raw)}")        # DEBUG log
-    text = raw.replace('"', '').strip()                         # strip stray quotes
-    
-    # split into shipment‐blocks
-    parts = re.split(r'(?=出貨單號:)', text)
-    log.info(f"[ACE SHIP] split into {len(parts)} parts")         # DEBUG log
-    
-    vicky, yumi = [], []
-
-    for blk in parts:
-        if "出貨單號:" not in blk or "宅配單號:" not in blk:
-            continue
-        lines = [l.strip() for l in blk.strip().splitlines() if l.strip()]
-        if len(lines) < 4:
-            continue
-        # recipient name is on line 3
-        recipient = lines[2].split()[0]
-        full_msg  = "\n".join(lines)
-        if recipient in VICKY_NAMES:
-            vicky.append(full_msg)
-        elif recipient in YUMI_NAMES:
-            yumi.append(full_msg)
-
-    def push(group, messages):
-        if not messages:
-            return
-        payload = {
-            "to": group,
-            "messages":[{"type":"text","text":"\n\n".join(messages)}]
-        }
-        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Sent {len(messages)} shipment blocks to {group}: {resp.status_code}")
-
-    push(VICKY_GROUP_ID, vicky)
-    push(YUMI_GROUP_ID,  yumi)
 
 # ─── UPS tracking normalization ───────────────────
 def normalize_ups(trk: str) -> str:
@@ -976,241 +414,12 @@ def webhook():
                 _line_push(YVES_USER_ID, f"⚠️ PDF System Error: {str(e)}")
 
             return "OK", 200
- 
-        # ─── If image, run ONLY the barcode logic and then continue ──────────
+
+        # 🟢 新增：圖片條碼辨識邏輯
         if mtype == "image":
-            is_from_me      = src.get("type") == "user"  and src.get("userId")  == YVES_USER_ID
-            is_from_ace     = src.get("type") == "group" and src.get("groupId") == ACE_GROUP_ID
-            is_from_soquick = src.get("type") == "group" and src.get("groupId") == SOQUICK_GROUP_ID
-            if not (is_from_me or is_from_ace or is_from_soquick):
-                continue
-
-            try:
-                # (1) Download raw image bytes from LINE
-                message_id = event["message"]["id"]
-                stream_resp = requests.get(
-                    f"https://api-data.line.me/v2/bot/message/{message_id}/content",
-                    headers={"Authorization": f"Bearer {LINE_TOKEN}"},
-                    stream=True
-                )
-                stream_resp.raise_for_status()
-                chunks = []
-                for chunk in stream_resp.iter_content(chunk_size=4096):
-                    if chunk:
-                        chunks.append(chunk)
-                raw_bytes = b"".join(chunks)
-                # log.info(f"[OCR] Downloaded {len(raw_bytes)} bytes from LINE")
-                log.info(f"[BARCODE] Downloaded {len(raw_bytes)} bytes from LINE")
-
-                # (2) Load into Pillow and auto‐crop to dark (text/barcode) region
-                img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-                                
-                # ── DEBUG CHANGE: use full-resolution image, no thumbnail ──
-                img_crop = img
-                log.info(f"[BARCODE] Decoding full‐resolution image size {img_crop.size}")
-
-                # (4) Decode any barcodes in the PIL image
-                # Instead of decoding only CODE128, we now include multiple symbologies:
-                decoded_objs = decode(
-                    img_crop,
-                    symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.EAN13, ZBarSymbol.UPCA]
-                )
-
-                if not decoded_objs:
-                    log.info("[BARCODE] No barcode detected in the image.")
-                    # reply_payload = {
-                        # "replyToken": event["replyToken"],
-                        # "messages": [
-                            # {
-                                # "type": "text",
-                                # "text": "No barcode detected. Please try again with a clearer image."
-                            # }
-                        # ]
-                    # }
-                    # requests.post(
-                        # "https://api.line.me/v2/bot/message/reply",
-                        # headers={
-                            # "Content-Type": "application/json",
-                            # "Authorization": f"Bearer {LINE_TOKEN}"
-                        # },
-                        # json=reply_payload
-                    # )
-                else:
-                    # 1. Take the first decoded barcode as the Tracking ID
-                    for obj in decoded_objs:
-                        log.info(f"[BARCODE] Detected: {obj.type} → {obj.data.decode('utf-8')}")
-                    tracking_raw = next(
-                        (obj.data.decode("utf-8") for obj in decoded_objs if obj.data.decode("utf-8").startswith("1Z")),
-                        decoded_objs[0].data.decode("utf-8")  # fallback
-                    )
-
-                    log.info(f"[BARCODE] First decoded raw data (tracking): {tracking_raw}")
-
-                    # 2. If there is a tracking ID (we already decode it)
-                    # tracking_id = decoded_objs[0].data.decode("utf-8").strip()
-                    tracking_id = tracking_raw.strip()
-                    log.info(f"[BARCODE] Decoded tracking ID: {tracking_id}")
-
-                    # ─── Lookup the subitem directly on the subitem board via items_page_by_column_values ──────────────────────────────
-                    q_search = """
-                    query (
-                      $boardId: ID!
-                      $columnId: String!
-                      $value: String!
-                    ) {
-                      items_page_by_column_values(
-                        board_id: $boardId,
-                        limit: 1,
-                        columns: [
-                          { column_id: $columnId, column_values: [$value] }
-                        ]
-                      ) {
-                        items {
-                          id
-                          name
-                        }
-                      }
-                    }
-                    """
-                    vars_search = {
-                      "boardId":  os.getenv("AIR_BOARD_ID"),  # must be your subitem‐board ID
-                      "columnId": "name",
-                      "value":    tracking_id
-                    }
-                    r_search = requests.post(
-                      "https://api.monday.com/v2",
-                      headers={
-                        "Authorization": MONDAY_API_TOKEN,
-                        "Content-Type":  "application/json"
-                      },
-                      json={ "query": q_search, "variables": vars_search }
-                    )
-                    if r_search.status_code != 200:
-                        log.error("[MONDAY] search failed %s: %s", r_search.status_code, r_search.text)
-                        continue
-
-                    items_page = r_search.json().get("data", {}) \
-                                          .get("items_page_by_column_values", {}) \
-                                          .get("items", [])
-                    if not items_page:
-                        log.warning(f"Tracking ID {tracking_id} not found in subitem board")
-                        requests.post(
-                          LINE_PUSH_URL, headers=LINE_HEADERS,
-                          json={
-                            "to": YVES_USER_ID,
-                            "messages": [
-                              {
-                                "type": "text",
-                                "text": f"⚠️ Tracking ID {tracking_id} not found in Monday."
-                              }
-                            ]
-                          }
-                        )
-                        continue
-
-                    found_subitem_id = items_page[0]["id"]
-                    log.info(f"Found subitem {found_subitem_id} for {tracking_id}")
-                                 
-                    # STORE for next text event
-                    pending_key = f"last_subitem_for_{group_id}"
-                    r.set(pending_key, found_subitem_id, ex=300)
-                    log.info(f"Stored subitem ID {found_subitem_id} for next text parsing (group {group_id})")
-                    # ── END STORE ───────────────────────────────────────────────────────────────
-###
-                    # first decide location text based on which group this came from
-                    src = event.get("source", {})
-
-                    if group_id == ACE_GROUP_ID:
-                        loc = "溫哥華倉A"
-                    elif group_id == SOQUICK_GROUP_ID:
-                        loc = "溫哥華倉S"
-                    else:
-                        # fallback or skip summary tracking if you prefer
-                        loc = "Yves/Simply"
-
-                    # ─── Update Location & Status ─────────────────────────────────────────
-                    mutation = """
-                    mutation ($itemId: ID!, $boardId: ID!, $columnVals: JSON!) {
-                      change_multiple_column_values(
-                        item_id: $itemId,
-                        board_id: $boardId,
-                        column_values: $columnVals
-                      ) { id }
-                    }
-                    """
-                    variables = {
-                      "itemId":    found_subitem_id,
-                      "boardId":   os.getenv("AIR_BOARD_ID"),  # same subitem‐board
-                      "columnVals": json.dumps({
-                        "location__1": { "label": loc },
-                        "status__1":    { "label": "測量" }
-                      })
-                    }
-                    up = requests.post(
-                      "https://api.monday.com/v2",
-                      headers={
-                        "Authorization": MONDAY_API_TOKEN,
-                        "Content-Type":  "application/json"
-                      },
-                      json={ "query": mutation, "variables": variables }
-                    )
-                    if up.status_code != 200:
-                        log.error("[MONDAY] update failed %s: %s", up.status_code, up.text)
-                    else:
-                        log.info(f"Updated subitem {found_subitem_id}: location & status set")
-
-                        # ─── BATCH SUMMARY TRACKING ───────────────────────────────────────
-                        _pending[group_id].append(tracking_id)
-                        if group_id not in _scheduled:
-                            _scheduled.add(group_id)
-                            # schedule the summary for this group in 30 minutes
-                            threading.Timer(30*60, _schedule_summary, args=[group_id]).start()
-
-                    # 3. If there is a second decoded value, extract the postal code portion
-                    if len(decoded_objs) > 1:
-                        postal_raw = decoded_objs[1].data.decode("utf-8")  # e.g. "420V6X1Z7"
-                        # Extract everything after the first three characters:
-                        postal_code = postal_raw[3:]  # yields "V6X1Z7"
-                        log.info(f"[BARCODE] Extracted postal code (not printed): {postal_code}")
-
-                        # 4. Save postal_code into memory (bio)
-                        #    This call uses the 'bio' tool so that future conversations can recall it.
-                        #    We do not print it to the user now.
-                        # 
-                        # Format: just the fact we want to remember, e.g. "Postal code V6X1Z7"
-                        #
-                        # (A separate tool call below will persist this memory.)
-
-                        # ◆ ◆ ◆ Tool call follows below ◆ ◆ ◆
-
-            except Exception:
-                # Log any barcode or Monday API errors without replying to the chat
-                log.error("[BARCODE] Error during image handling", exc_info=True)
-                # log.error("[BARCODE] Error decoding barcode", exc_info=True)
-                # Optionally, reply “NONE” or a helpful message:
-                # error_payload = {
-                    # "replyToken": event["replyToken"],
-                    # "messages": [
-                        # {
-                            # "type": "text",
-                            # "text": "An error occurred while reading the image. Please try again."
-                        # }
-                    # ]
-                # }
-                # requests.post(
-                    # "https://api.line.me/v2/bot/message/reply",
-                    # headers={
-                        # "Content-Type": "application/json",
-                        # "Authorization": f"Bearer {LINE_TOKEN}"
-                    # },
-                    # json=error_payload
-                # )
-            # now that images are handled, skip text logic
-            continue
-    
-        # 0) 只處理文字
-        if mtype != "text":
-            continue
+            # 呼叫 barcode_service 處理，傳入所需的緩存與回呼函式
+            if handle_barcode_image(event, group_id, r, _pending, _scheduled, _schedule_summary):
+                continue # 如果處理成功（是條碼圖片），則跳過後續邏輯
 
         # 🟢 NEW: TWWS 兩段式互動邏輯 (限定個人私訊且限定 Yves 使用)
         user_id = src.get("userId")
@@ -1232,6 +441,17 @@ def webhook():
                 # 設定狀態並給予 5 分鐘 (300秒) 的時限
                 r.set(twws_state_key, "active", ex=300)
                 _line_push(user_id, "好的，請輸入子項目名稱：")
+                continue
+
+            # 🟢 新增：未付款項查詢指令
+            if text.lower().startswith("unpaid"):
+                handle_unpaid_event(
+                    sender_id=group_id if group_id else user_id,
+                    message_text=text,
+                    reply_token=event["replyToken"],
+                    user_id=user_id,
+                    group_id=group_id
+                )
                 continue
 
         # --- 金額自動錄入邏輯：僅限 PDF Scanning 群組觸發 ---
@@ -1458,13 +678,13 @@ def webhook():
  
         # 3) Ace schedule (週四／週日出貨) & ACE EZ-Way check
         if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
-            shipment_parser.handle_ace_schedule(event)
+            handle_ace_schedule(event)
             handle_ace_ezway_check_and_push_to_yves(event)
             continue
 
         # 4) 處理「申報相符」提醒
         if "申報相符" in text and CODE_TRIGGER_RE.search(text):
-            shipment_parser.handle_missing_confirm(event)
+            handle_missing_confirm(event)
             continue
         
         # 5) Richmond-arrival triggers content-request to Vicky —————————
@@ -1657,44 +877,6 @@ def monday_webhook():
  
 # ─── Poller State Helpers & Job ───────────────────────────────────────────────
 # ─── Helpers for parsing batch lines ─────────────────────────────────────────
-
-def extract_order_key(line: str) -> str:
-    return line.rsplit("@",1)[0].strip()
-
-def extract_timestamp(line: str) -> str:
-    return line.rsplit("@",1)[1].strip()
-
-def load_state():
-    """Fetch the JSON-encoded map of order_key→timestamp from Redis."""
-    data = r.get("last_seen")
-    return json.loads(data) if data else {}
-
-def save_state(state):
-    """Persist the map of order_key→timestamp back to Redis."""
-    r.set("last_seen", json.dumps(state))
-
-def check_te_updates():
-    """Poll TE API every interval; push only newly changed statuses."""
-    state = load_state()
-    for group_id, keywords in CUSTOMER_FILTERS.items():
-        lines = get_statuses_for(keywords)
-        new_lines = []
-        for line in lines[1:]:
-            ts = extract_timestamp(line)
-            key = extract_order_key(line)
-            if state.get(key) != ts:
-                state[key] = ts
-                new_lines.append(line)
-        if new_lines:
-            payload = {
-                "to": group_id,
-                "messages": [{
-                    "type": "text",
-                    "text": "\n\n".join(new_lines)
-                }]
-            }
-            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-    save_state(state)   
 
 ##——— Vicky reminders (Wed & Fri at 18:00) ——————————————————————
 # sched.add_job(lambda: remind_vicky("星期四"),

@@ -6,15 +6,14 @@ import os
 import redis
 import pytz
 from datetime import datetime
+from handlers.vicky_handler import vicky_has_active_orders, remind_vicky
+from services.te_api_service import call_api
 from main import (
     VICKY_GROUP_ID,
     VICKY_USER_ID,
     LINE_PUSH_URL,
     LINE_HEADERS,
-    call_api,
     TIMEZONE,
-    vicky_has_active_orders,
-    remind_vicky,
 )
 
 # Regex to pull the order ID at the start of each line
@@ -29,6 +28,9 @@ def schedule_jobs():
     sched.add_job(lambda: remind_vicky("週末"),
                   trigger="cron", day_of_week="fri", hour=18, minute=0)
     sched.start()
+
+def extract_timestamp(line: str) -> str:
+    return line.rsplit("@",1)[1].strip()  
 
 if __name__ == "__main__":
     schedule_jobs()

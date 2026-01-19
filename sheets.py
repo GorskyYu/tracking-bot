@@ -28,3 +28,4 @@ def get_gspread_client():
     except Exception:
         pass
     return _gs
+
