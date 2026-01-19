@@ -8,6 +8,23 @@ import logging
 import json
 import re
 
+# 從 config 匯入所有相關群組 ID
+from config import (
+    line_bot_api, 
+    IRIS_GROUP_ID, 
+    VICKY_GROUP_ID, 
+    YUMI_GROUP_ID
+)
+
+# 建立對應表：只要指令來自這個群組，就自動查詢對應的名稱
+GROUP_TO_CLIENT_MAP = {
+    IRIS_GROUP_ID: "Lammond",
+    VICKY_GROUP_ID: "Vicky",
+    YUMI_GROUP_ID: "Yumi",
+    # 未來想加新的群組，直接在下面加一行即可
+    # os.getenv("LINE_GROUP_ID_ABC"): "ABC_Client",
+}
+
 TARGET_BOARD_IDS = [4815120249, 8783157722]
 TARGET_STATUSES = ["溫哥華收款", "未收款出貨", "台中收款"]
 
@@ -418,6 +435,16 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     parts = message_text.strip().split()
     cmd = parts[0].lower()
     
+    auto_target_name = GROUP_TO_CLIENT_MAP.get(group_id)
+ 
+    # 如果在特定群組發送且沒有帶參數 (例如只打 unpaid)
+    if len(parts) == 1 and auto_target_name:
+        reply_text(reply_token, f"🔍 正在搜尋 {auto_target_name} 的未付款項目，請稍候...")
+        target_id = group_id if group_id else sender_id
+        t = Thread(target=_unpaid_worker, args=(target_id, auto_target_name))
+        t.start()
+        return
+ 
     # If user used the Quick Reply, it might send "unpaid All" etc.
     if len(parts) > 1:
         target_name = " ".join(parts[1:]) 
@@ -427,11 +454,12 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
         t.start()
         return
 
-    # If no args, Ask Question with Quick Reply
+    # If no args, Ask Question with Quick Reply, 如果都不符合 (例如私訊且沒帶參數)，才顯示 Quick Reply 選單
     buttons = [
         QuickReplyButton(action=MessageAction(label="All", text=f"{cmd} All")),
         QuickReplyButton(action=MessageAction(label="Vicky", text=f"{cmd} Vicky")),
-        QuickReplyButton(action=MessageAction(label="Yumi", text=f"{cmd} Yumi"))
+        QuickReplyButton(action=MessageAction(label="Yumi", text=f"{cmd} Yumi")),
+        QuickReplyButton(action=MessageAction(label="Iris", text=f"{cmd} Iris"))
     ]
     
     text_message = TextSendMessage(

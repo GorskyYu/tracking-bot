@@ -17,12 +17,14 @@ LINE_HEADERS = {
 ACE_GROUP_ID     = os.getenv("LINE_GROUP_ID_ACE")
 SOQUICK_GROUP_ID = os.getenv("LINE_GROUP_ID_SQ")
 VICKY_GROUP_ID   = os.getenv("LINE_GROUP_ID_VICKY")
-VICKY_USER_ID    = os.getenv("VICKY_USER_ID")
 YUMI_GROUP_ID    = os.getenv("LINE_GROUP_ID_YUMI")
+IRIS_GROUP_ID    = os.getenv("LINE_GROUP_ID_IRIS")
 JOYCE_GROUP_ID   = os.getenv("LINE_GROUP_ID_JOYCE")
 PDF_GROUP_ID     = os.getenv("LINE_GROUP_ID_PDF")
+
 YVES_USER_ID     = os.getenv("YVES_USER_ID")
-GORSKY_USER_ID = os.getenv("GORSKY_USER_ID")
+GORSKY_USER_ID   = os.getenv("GORSKY_USER_ID")
+VICKY_USER_ID    = os.getenv("VICKY_USER_ID")
 
 ACE_SHEET_URL    = os.getenv("ACE_SHEET_URL")
 SQ_SHEET_URL     = os.getenv("SQ_SHEET_URL")

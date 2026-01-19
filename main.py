@@ -457,17 +457,6 @@ def webhook():
                 _line_push(user_id, "好的，請輸入子項目名稱：")
                 continue
 
-            # 🟢 新增：未付款項查詢指令
-            if text.lower().startswith("unpaid"):
-                handle_unpaid_event(
-                    sender_id=group_id if group_id else user_id,
-                    message_text=text,
-                    reply_token=event["replyToken"],
-                    user_id=user_id,
-                    group_id=group_id
-                )
-                continue
-
         # --- 金額自動錄入邏輯：僅限 PDF Scanning 群組觸發 ---
         if group_id == PDF_GROUP_ID:
             # 檢查是否為純數字金額 (如 43.10)
@@ -488,6 +477,27 @@ def webhook():
                     else:
                         _line_push(group_id, f"❌ 登記失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
                     continue
+
+        # 新的 Unpaid 邏輯
+        if text.lower().startswith("unpaid"):
+            # 判斷是否為管理員 (Yves 或 Gorsky)
+            is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
+            
+            # 判斷環境：個人私訊 OR 指定的三個群組
+            is_valid_context = (
+                src.get("type") == "user" or 
+                group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, IRIS_GROUP_ID}
+            )
+
+            if is_admin and is_valid_context:
+                handle_unpaid_event(
+                    sender_id=group_id if group_id else user_id,
+                    message_text=text,
+                    reply_token=event["replyToken"],
+                    user_id=user_id,
+                    group_id=group_id
+                )
+                continue
         
         # 1) 多筆 UPS 末四碼＋重量＋尺寸 一次處理
         # 同時支援「*」「×」「x」或「空白」分隔
