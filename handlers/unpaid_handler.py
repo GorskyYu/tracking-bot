@@ -308,8 +308,10 @@ def _group_items_by_client(items, filter_name=None):
 
 def _create_item_row(item):
     """Creates a vertical box component for a single item row."""
-    sub_name = item.get("sub_name", "N/A")
-    price_text = str(item.get("price_text", "")).strip()
+    # 折讓案顯示母項目全名，其餘顯示子項目名
+    parent_name = item.get("parent_name", "N/A")
+    sub_name = parent_name if "折讓" in parent_name else item.get("sub_name", "N/A")
+
     # 不論原始文字為何，統一由 price_val 轉為兩位小數
     price_val = item.get("price_val", 0.0)
     formatted_price = f"${price_val:.2f}"
