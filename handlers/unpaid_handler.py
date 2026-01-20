@@ -260,7 +260,16 @@ def _group_items_by_client(items, filter_name=None):
             date_str = ""
             client_name = raw_parent
         
-        canonical_name = _resolve_client_name(client_name)
+        # 只要名稱中包含關鍵字，就統一歸類到該客戶下
+        found_canonical = False
+        for main_name in ["Vicky", "Yumi", "Lammond"]:
+            if main_name in client_name:
+                canonical_name = main_name
+                found_canonical = True
+                break
+        
+        if not found_canonical:
+            canonical_name = _resolve_client_name(client_name)
         
         # Filter Logic
         if filter_name and filter_name != "All":
@@ -301,11 +310,9 @@ def _create_item_row(item):
     """Creates a vertical box component for a single item row."""
     sub_name = item.get("sub_name", "N/A")
     price_text = str(item.get("price_text", "")).strip()
-    # ✅ 修正：如果沒有金額，預設顯示 $0.00
-    if not price_text or price_text == "0":
-        formatted_price = "$0.00"
-    else:
-        formatted_price = price_text if price_text.startswith("$") else f"${price_text}"
+    # 不論原始文字為何，統一由 price_val 轉為兩位小數
+    price_val = item.get("price_val", 0.0)
+    formatted_price = f"${price_val:.2f}"
     
     dims = item.get("dimensions", "").strip()
     weight = item.get("weight", "").strip()
