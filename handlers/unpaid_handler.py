@@ -310,58 +310,70 @@ def _create_item_row(item):
     """Creates a vertical box component for a single item row."""
     # 折讓案顯示母項目全名，其餘顯示子項目名
     parent_name = item.get("parent_name", "N/A")
-    sub_name = parent_name if "折讓" in parent_name else item.get("sub_name", "N/A")
+    sub_name = item.get("sub_name", "").strip()
+
+    # 判斷是否為「折讓」特例路徑
+    is_discount_path = "折讓" in parent_name
 
     # 不論原始文字為何，統一由 price_val 轉為兩位小數
     price_val = item.get("price_val", 0.0)
     formatted_price = f"${price_val:.2f}"
+
+    # 準備顯示內容容器
+    row_contents = []
     
-    dims = item.get("dimensions", "").strip()
-    weight = item.get("weight", "").strip()
-    dims_display = f"{dims} cm" if dims and not dims.lower().endswith("cm") else dims
-    weight_display = f"{weight} kg" if weight and not weight.lower().endswith("kg") else weight
-    specs_display = f"{dims_display} | {weight_display}"
-    
-    return BoxComponent(
-        layout='vertical',
-        margin='md',
-        contents=[
-            # Row 1: Name and Price (Aligned)
+    if is_discount_path:
+        # ─── 折讓特例路徑 ───
+        # 1. 第一行：顯示母項目全名 + 金額
+        row_contents.append(
             BoxComponent(
                 layout='horizontal',
                 contents=[
-                    TextComponent(
-                        text=sub_name,
-                        flex=4,
-                        size='sm',
-                        wrap=True,
-                        gravity='center'
-                    ),
-                    TextComponent(
-                        text=formatted_price,
-                        flex=2,
-                        size='sm',
-                        align='end',
-                        gravity='center',
-                        weight='bold'
-                    )
-                ]
-            ),
-            # Row 2: Specs (Smaller, Gray)
-            BoxComponent(
-                layout='horizontal',
-                contents=[
-                    TextComponent(
-                        text=specs_display,
-                        size='xs',
-                        color='#aaaaaa',
-                        flex=1,
-                        wrap=True
-                    )
+                    TextComponent(text=parent_name, flex=4, size='sm', wrap=True, weight='bold'),
+                    TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold')
                 ]
             )
-        ]
-    )
+        )
+        # 2. 第二行：若子項目名稱存在且不等於母項目名，則顯示子項目名 (不顯示分隔符)
+        if sub_name and sub_name != parent_name:
+            row_contents.append(
+                BoxComponent(
+                    layout='horizontal',
+                    contents=[
+                        TextComponent(text=sub_name, size='xs', color='#aaaaaa', flex=1)
+                    ]
+                )
+            )
+    else:    
+        # ─── 原本路徑 (一般包裹) ───
+        # 1. 第一行：顯示原本的子項目名 (單號) + 金額
+        row_contents.append(
+            BoxComponent(
+                layout='horizontal',
+                contents=[
+                    TextComponent(text=sub_name if sub_name else "N/A", flex=4, size='sm', wrap=True),
+                    TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold')
+                ]
+            )
+        )
+        # 2. 第二行：規格 (尺寸 | 重量) 
+        dims = item.get("dimensions", "").strip()
+        weight = item.get("weight", "").strip()
+        if dims or weight:
+            dims_display = f"{dims} cm" if dims and not dims.lower().endswith("cm") else dims
+            weight_display = f"{weight} kg" if weight and not weight.lower().endswith("kg") else weight
+            # 使用分隔符結合，如果只有一個則不顯示符號
+            specs_text = " | ".join(filter(None, [dims_display, weight_display]))
+            row_contents.append(
+                BoxComponent(
+                    layout='horizontal',
+                    contents=[
+                        TextComponent(text=specs_text, size='xs', color='#aaaaaa', flex=1)
+                    ]
+                )
+            )
+    
+    return BoxComponent(layout='vertical', margin='md', contents=row_contents)
 
 def _create_client_flex_message(client_obj):
     """Builds a Flex Bubble for a single client."""
