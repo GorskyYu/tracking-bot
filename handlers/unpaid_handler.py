@@ -13,7 +13,9 @@ from config import (
     line_bot_api, 
     IRIS_GROUP_ID, 
     VICKY_GROUP_ID, 
-    YUMI_GROUP_ID
+    YUMI_GROUP_ID,
+    YVES_USER_ID,
+    GORSKY_USER_ID
 )
 
 # 建立對應表：只要指令來自這個群組，就自動查詢對應的名稱
