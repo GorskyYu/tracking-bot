@@ -208,7 +208,7 @@ def fetch_unpaid_items_globally():
                 
                 # 只要母項目名稱有「折讓」，或者尺寸重量齊全，就進入計算
                 if ("折讓" in parent_name) or (dim_val and dim_val.strip() and weight_val and weight_val.strip()):
-                     # 1. 抓取 Subitem 應收 (後續累加邏輯不變)
+                     # 1. 抓取 Subitem 應收
                      price_text = subitem_cols.get(COL_PRICE, "0")
                      
                      # 2. 從 Parent 抓取實收與匯率
@@ -301,7 +301,11 @@ def _create_item_row(item):
     """Creates a vertical box component for a single item row."""
     sub_name = item.get("sub_name", "N/A")
     price_text = str(item.get("price_text", "")).strip()
-    formatted_price = price_text if price_text.startswith("$") else f"${price_text}"
+    # ✅ 修正：如果沒有金額，預設顯示 $0.00
+    if not price_text or price_text == "0":
+        formatted_price = "$0.00"
+    else:
+        formatted_price = price_text if price_text.startswith("$") else f"${price_text}"
     
     dims = item.get("dimensions", "").strip()
     weight = item.get("weight", "").strip()
@@ -385,13 +389,18 @@ def _create_client_flex_message(client_obj):
         for item in group_data["items"]:
             body_contents.append(_create_item_row(item))
             
-        if group_data["paid_amount"] > 0:
+        # 只要實收不為 0 就顯示，並根據母項目名稱判定是否顯示 "Discount"
+        if group_data["paid_amount"] != 0:
+            # 檢查該組包裹中是否包含「折讓」母項目
+            is_discount = any("折讓" in item.get("parent_name", "") for item in group_data["items"])
+            label_text = "Discount" if is_discount else "Paid (Already Received)"
+
             body_contents.append(
                 BoxComponent(
                     layout='horizontal',
                     margin='md',
                     contents=[
-                        TextComponent(text="Paid (Already Received)", flex=4, size='sm', color='#1DB446'),
+                        TextComponent(text=label_text, flex=4, size='sm', color='#1DB446'),
                         TextComponent(text=f"-${group_data['paid_amount']:.2f}", flex=2, align='end', size='sm', color='#1DB446', weight='bold')
                     ]
                 )
