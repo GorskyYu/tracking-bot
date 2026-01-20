@@ -285,7 +285,8 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
             # 確保至少有三段：單號、姓名、電話（原碼只用到姓名）
             if len(parts) < 2:
                 continue
-            name = parts[1]
+            name = parts[1].strip()
+            log.info(f"[Debug] Checking name: '{name}' against Vicky/Yumi lists") # 加入這一行
             if name in VICKY_NAMES:
                 target = VICKY_GROUP_ID
             elif name in YUMI_NAMES:
