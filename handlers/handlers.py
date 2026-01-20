@@ -43,6 +43,8 @@ from config import (
     LINE_HEADERS,
 )
 
+LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -274,9 +276,14 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
     if "收到EZ way通知後" in text:
         return
 
-    # 如果訊息裡沒有「申報相符」，就跳過
-    if "申報相符" not in text:
+    # 允許「申報相符」或「還沒按」作為觸發關鍵字
+    if not ("申報相符" in text or "還沒按" in text):
         return
+
+    # 準備名單收集器
+    vicky_found = []
+    yumi_found = []
+    iris_found = []
 
     # 逐行找 ACE/250N 單號
     for l in text.splitlines():
@@ -287,20 +294,31 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                 continue
             name = parts[1].strip()
             log.info(f"[Debug] Checking name: '{name}' against Vicky/Yumi lists") # 加入這一行
-            if name in VICKY_NAMES:
-                target = VICKY_GROUP_ID
-            elif name in YUMI_NAMES:
-                target = YUMI_GROUP_ID
-            else:
-                # 不是 Vicky 也不是 Yumi 的人，直接跳過
-                continue
 
-            # 推播姓名（你可以改成更完整的訊息）
-            requests.post(
-                LINE_PUSH_URL,
-                headers=LINE_HEADERS,
-                json={"to": target, "messages": [{"type": "text", "text": f"{name} 尚未按申報相符"}]}
-            )
+            # 分類收集名字
+            if name in VICKY_NAMES:
+                vicky_found.append(name)
+            elif name in YUMI_NAMES:
+                yumi_found.append(name)
+            elif name in IRIS_NAMES:
+                iris_found.append(name)
+
+    # 彙整發送函式
+    def push_summary(group_id: str, names: List[str]):
+        if not names:
+            return
+        # 將名字用換行串接，並加上結尾語
+        summary_text = "\n".join(names) + "\n尚未按申報相符，請再通知一下，謝謝！"
+        requests.post(
+            LINE_PUSH_URL,
+            headers=LINE_HEADERS,
+            json={"to": group_id, "messages": [{"type": "text", "text": summary_text}]}
+        )
+
+    # 分別發送各群組推播
+    push_summary(VICKY_GROUP_ID, vicky_found)
+    push_summary(YUMI_GROUP_ID, yumi_found)
+    push_summary(IRIS_GROUP_ID, iris_found)
 
 
 def handle_ace_schedule(event: Dict[str, Any]) -> None:
