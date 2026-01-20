@@ -308,7 +308,8 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
         if not names:
             return
         # 將名字用換行串接，並加上結尾語
-        summary_text = "\n".join(names) + "\n尚未按申報相符，請再通知一下，謝謝！"
+        # 修改後的版本
+        summary_text = "您好，以下申報人尚未按申報相符，再麻煩通知：\n" + "\n".join(names)
         requests.post(
             LINE_PUSH_URL,
             headers=LINE_HEADERS,
