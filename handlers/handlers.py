@@ -14,15 +14,20 @@ from sheets import get_gspread_client
 from config import (
     # LINE & group ids
     ACE_GROUP_ID,
+    IRIS_GROUP_ID,
     SOQUICK_GROUP_ID,
     VICKY_GROUP_ID,
     YUMI_GROUP_ID,
     JOYCE_GROUP_ID,
     PDF_GROUP_ID,
+    DANNY_USER_ID,
+    GORSKY_USER_ID,
+    IRIS_USER_ID,
     VICKY_USER_ID,
     YVES_USER_ID,
 
     # names/filters
+    IRIS_NAMES,
     VICKY_NAMES,
     YUMI_NAMES,
     YVES_NAMES,
@@ -31,284 +36,12 @@ from config import (
     # misc config
     TIMEZONE,
     SQ_SHEET_URL,
+    CODE_TRIGGER_RE,
 
     # LINE API config
     LINE_TOKEN,
     LINE_HEADERS,
 )
-
-import os
-import re
-import logging
-import requests
-import json
-from datetime import datetime, timedelta, timezone
-from dateutil.parser import parse as parse_date
-
-from sheets import get_gspread_client
-
-# 從 config.py 匯入需要的常數與工具函式
-from config import (
-    CODE_TRIGGER_RE, VICKY_NAMES, YUMI_NAMES, EXCLUDED_SENDERS,
-    YVES_USER_ID, LINE_PUSH_URL, LINE_HEADERS, ACE_SHEET_URL
-)
-
-log = logging.getLogger(__name__)
-
-def handle_ace_ezway_check_and_push_to_yves(event):
-    """
-    For any ACE message that contains “麻煩請” + “收到EZ way通知後” + (週四出貨 or 週日出貨),
-    we will look up the *sheet* for the row whose date is closest to today, but ONLY
-    for those “declaring persons” that actually appeared in the ACE text.  For each
-    matching row, we pull the “sender” (column C) and push it privately if it's not in
-    VICKY_NAMES or YUMI_NAMES or EXCLUDED_SENDERS.
-    """
-    text = event["message"]["text"]
-
-    # Only trigger on the exact keywords
-    if not (
-        "麻煩請" in text
-        and "收到EZ way通知後" in text
-        and ("週四出貨" in text or "週日出貨" in text)
-    ):
-        return
-
-    # ── 1) Extract declarer‐names from the ACE text ────────────────────────
-    lines = text.splitlines()
-
-    # find the line index that contains “麻煩請”
-    try:
-        idx_m = next(i for i, l in enumerate(lines) if "麻煩請" in l)
-    except StopIteration:
-        # If we can't find it, default to the top
-        idx_m = 0
-
-    # find the line index that starts with “收到EZ way通知後”
-    try:
-        idx_r = next(i for i, l in enumerate(lines) if l.startswith("收到EZ way通知後"))
-    except StopIteration:
-        idx_r = len(lines)
-
-    # declarer lines are everything strictly between “麻煩請” and “收到EZ way通知後”
-    raw_declarer_lines = lines[idx_m+1 : idx_r]
-    declarer_names = set()
-
-    for line in raw_declarer_lines:
-        # Remove any ACE‐style code prefix (e.g. “ACE250605YL04 ”)
-        cleaned = CODE_TRIGGER_RE.sub("", line).strip().strip('"')
-        if not cleaned:
-            continue
-
-        # Take the first “token” as the actual name (before any phone or other columns)
-        name_token = cleaned.split()[0]
-        if name_token:
-            declarer_names.add(name_token)
-
-    if not declarer_names:
-        # No valid declarers found in the message → nothing to do
-        return
-
-    # ── 2) Open the ACE sheet and find the “closest‐date” row ─────────────
-    ACE_SHEET_URL = os.getenv("ACE_SHEET_URL")
-    gs = get_gspread_client()
-    sheet = gs.open_by_url(ACE_SHEET_URL).sheet1
-    data = sheet.get_all_values()  # raw rows as lists of strings
-
-    today = datetime.now(timezone.utc).date()
-    closest_date = None
-    closest_diff = timedelta(days=9999)
-
-    # Assume column A is date; skip header row at index 0, so start at row 2 in the sheet
-    for row_idx, row in enumerate(data[1:], start=2):
-        date_str = row[0].strip()
-        if not date_str:
-            continue
-        try:
-            row_date = parse_date(date_str).date()
-        except Exception:
-            continue
-
-        diff = abs(row_date - today)
-        if diff < closest_diff:
-            closest_diff = diff
-            closest_date = row_date
-
-    if closest_date is None:
-        # No parseable dates in sheet → bail out
-        return
-
-    # ── 3) Scan only the rows on that closest_date, and only if column B (declarer)
-    #         is in our declarer_names set.  Then we grab column C (sender) for private push.
-    results = set()
-
-    for row_idx, row in enumerate(data[1:], start=2):
-        date_str = row[0].strip()
-        if not date_str:
-            continue
-        try:
-            row_date = parse_date(date_str).date()
-        except Exception:
-            continue
-
-        if row_date != closest_date:
-            continue
-
-        # Column B is at index 1 in 'row'
-        declarer = row[1].strip() if len(row) > 1 else ""
-        if not declarer or declarer not in declarer_names:
-            continue
-
-        # Column C is at index 2 in 'row' → this is the “sender” we want to notify
-        sender = row[2].strip() if len(row) > 2 else ""
-        if not sender:
-            continue
-
-        # Skip anyone already in VICKY_NAMES, YUMI_NAMES, or EXCLUDED_SENDERS
-        if sender in VICKY_NAMES or sender in YUMI_NAMES or sender in IRIS_NAMES or sender in EXCLUDED_SENDERS:
-            continue
-
-        results.add(sender)
-
-    # ── 4) Push to Yves privately if any senders remain ────────────────────
-    if results:
-        header_payload = {
-            "to": YVES_USER_ID,
-            "messages": [{"type": "text", "text": "Ace散客EZWay需提醒以下寄件人："}]
-        }
-        requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=header_payload)
-
-        for sender in sorted(results):
-            payload = {
-                "to": YVES_USER_ID,
-                "messages": [{"type": "text", "text": sender}]
-            }
-            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-
-        print(f"DEBUG: Pushed {len(results)} sender(s) to Yves: {sorted(results)}")
-    else:
-        print("DEBUG: No matching senders found for any declarer in the ACE message.")
-
-# ─── Soquick & Ace shipment-block handler ────────────────────────────────────────────
-def handle_soquick_and_ace_shipments(event):
-    """
-    Parse Soquick & Ace text containing "上周六出貨包裹的派件單號", "出貨單號", "宅配單號"
-    split out lines of tracking+code+recipient, then push
-    only the matching Vicky/Yumi lines + footer.
-    """
-    raw = event["message"]["text"]
-    if "上周六出貨包裹的派件單號" not in raw and not ("出貨單號" in raw and "宅配單號" in raw):
-        return
-
-    vicky, yumi = [], []
-
-    # — Soquick flow —
-    if "上周六出貨包裹的派件單號" in raw:
-        # Split into non-empty lines
-        lines = [l.strip() for l in raw.splitlines() if l.strip()]
-        # Locate footer (starts with “您好”)
-        footer_idx = next((i for i,l in enumerate(lines) if l.startswith("您好")), len(lines))
-        header = lines[:footer_idx]
-        footer = "\n".join(lines[footer_idx:])
-
-        for line in header:
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            recipient = parts[-1]
-            if recipient in VICKY_NAMES:
-                vicky.append(line)
-            elif recipient in YUMI_NAMES:
-                yumi.append(line)
-
-    # — Ace flow —
-    else:
-        # split into one block per “出貨單號:” line
-        blocks = [b.strip().strip('"') for b in re.split(r'(?=出貨單號:)', raw) if b.strip()]
-        
-        for blk in blocks:
-            # strip whitespace and any wrapping quotes
-            block = blk.strip().strip('"')
-            if not block:
-                continue
-            # must contain both 出貨單號 and 宅配單號
-            if "出貨單號" not in block or "宅配單號" not in block:
-                continue
-            lines = block.splitlines()
-            if len(lines) < 3:
-                continue
-            recipient = lines[2].split()[0]
-            if recipient in VICKY_NAMES:
-                vicky.append(block)
-            elif recipient in YUMI_NAMES:
-                yumi.append(block)
-
-    def push(group, msgs):
-        if not msgs:
-            return
-        
-        # choose formatting per flow
-        if "上周六出貨包裹的派件單號" in raw:
-            text = "\n".join(msgs) + "\n\n" + footer
-        else:
-            text = "\n\n".join(msgs)
-        payload = {"to": group, "messages":[{"type":"text","text": text}]}
-        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Sent {len(msgs)} Soquick blocks to {group}: {resp.status_code}")
-
-    push(VICKY_GROUP_ID, vicky)
-    push(YUMI_GROUP_ID,  yumi)
-
-# ─── Ace shipment-block handler ────────────────────────────────────────────────
-def handle_ace_shipments(event):
-    """
-    Splits the text into blocks starting with '出貨單號:', then
-    forwards each complete block to Yumi or Vicky based on the
-    recipient name.
-    """
-    # 1) Grab & clean the raw text
-    raw = event["message"]["text"]
-    log.info(f"[ACE SHIP] raw incoming text: {repr(raw)}")        # DEBUG log
-    text = raw.replace('"', '').strip()                         # strip stray quotes
-    
-    # split into shipment‐blocks
-    parts = re.split(r'(?=出貨單號:)', text)
-    log.info(f"[ACE SHIP] split into {len(parts)} parts")         # DEBUG log
-    
-    vicky, yumi = [], []
-
-    for blk in parts:
-        if "出貨單號:" not in blk or "宅配單號:" not in blk:
-            continue
-        lines = [l.strip() for l in blk.strip().splitlines() if l.strip()]
-        if len(lines) < 4:
-            continue
-        # recipient name is on line 3
-        recipient = lines[2].split()[0]
-        full_msg  = "\n".join(lines)
-        if recipient in VICKY_NAMES:
-            vicky.append(full_msg)
-        elif recipient in YUMI_NAMES:
-            yumi.append(full_msg)
-
-    def push(group, messages):
-        if not messages:
-            return
-        payload = {
-            "to": group,
-            "messages":[{"type":"text","text":"\n\n".join(messages)}]
-        }
-        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Sent {len(messages)} shipment blocks to {group}: {resp.status_code}")
-
-    push(VICKY_GROUP_ID, vicky)
-    push(YUMI_GROUP_ID,  yumi)
-    
-# Some constants are used directly with requests; keep URL literal here for clarity
-LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
-
-# Regex triggers originally defined in main.py
-CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|\d+N)\d*[A-Z0-9]*\b")
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -800,7 +533,7 @@ def handle_ace_ezway_check_and_push_to_yves(event: Dict[str, Any]) -> None:
             continue
 
         # Skip anyone already in VICKY_NAMES, YUMI_NAMES, or EXCLUDED_SENDERS
-        if sender in VICKY_NAMES or sender in YUMI_NAMES or sender in EXCLUDED_SENDERS:
+        if sender in VICKY_NAMES or sender in YUMI_NAMES or sender in IRIS_NAMES or sender in EXCLUDED_SENDERS:
             continue
 
         results.add(sender)
@@ -823,3 +556,24 @@ def handle_ace_ezway_check_and_push_to_yves(event: Dict[str, Any]) -> None:
         log.info(f"[ACE EZWay] Pushed {len(results)} sender(s) to Yves: {sorted(results)}")
     else:
         log.info("[ACE EZWay] No matching senders found for any declarer in the ACE message.")
+
+def dispatch_confirmation_notification(event, text, user_id):
+    """
+    專門處理申報相符通知的分流邏輯
+    """
+    has_code = CODE_TRIGGER_RE.search(text)
+    
+    # 1. Danny 的判定：必須是 Danny 發送 + 包含「還沒按」 + 包含單號
+    if user_id == DANNY_USER_ID and "還沒按" in text and has_code:
+        log.info(f"[Danny Trigger] Auto-processing re-notification: {text[:20]}...")
+        handle_missing_confirm(event) # 呼叫原本的處理邏輯
+        return True
+
+    # 2. 管理員 (Yves/Gorsky) 的判定：手動輸入「申報相符」或「還沒按」
+    is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
+    if is_admin and ("申報相符" in text or "還沒按" in text) and has_code:
+        log.info(f"[Admin Trigger] Processing confirmation request: {text[:20]}...")
+        handle_missing_confirm(event)
+        return True
+
+    return False
