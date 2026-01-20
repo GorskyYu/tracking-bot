@@ -206,8 +206,9 @@ def fetch_unpaid_items_globally():
                 dim_val = _get_column_value(COL_DIMENSION, sources)
                 weight_val = _get_column_value(COL_WEIGHT, sources)
                 
-                if dim_val and dim_val.strip() and weight_val and weight_val.strip():
-                     # 1. 抓取 Subitem 應收
+                # 只要母項目名稱有「折讓」，或者尺寸重量齊全，就進入計算
+                if ("折讓" in parent_name) or (dim_val and dim_val.strip() and weight_val and weight_val.strip()):
+                     # 1. 抓取 Subitem 應收 (後續累加邏輯不變)
                      price_text = subitem_cols.get(COL_PRICE, "0")
                      
                      # 2. 從 Parent 抓取實收與匯率
