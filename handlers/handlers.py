@@ -72,6 +72,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
 
     vicky: List[str] = []
     yumi: List[str] = []
+    iris: List[str] = []
 
     # — Soquick flow —
     if "上周六出貨包裹的派件單號" in raw:
@@ -88,9 +89,11 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
                 continue
             recipient = parts[-1]
             if recipient in VICKY_NAMES:
-                vicky.append(line)
+                vicky.append("\n".join(lines[1:]))
             elif recipient in YUMI_NAMES:
-                yumi.append(line)
+                yumi.append("\n".join(lines[1:]))
+            elif recipient in IRIS_NAMES:
+                iris.append("\n".join(lines[1:]))
 
     # — Ace flow —
     else:
@@ -109,10 +112,16 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
             if len(lines) < 3:
                 continue
             recipient = lines[2].split()[0]
+
+            # 使用 "\n".join(lines[1:]) 來刪除第一行
+            full_msg = "\n".join(lines[1:])
+
             if recipient in VICKY_NAMES:
-                vicky.append(block)
+                vicky.append(full_msg)
             elif recipient in YUMI_NAMES:
-                yumi.append(block)
+                yumi.append(full_msg)
+            elif recipient in IRIS_NAMES:
+                yumi.append(full_msg)
 
     def push(group: str, msgs: List[str]) -> None:
         if not msgs:
@@ -129,6 +138,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
 
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID, yumi)
+    push(IRIS_GROUP_ID, iris)
 
 
 def handle_soquick_full_notification(event: Dict[str, Any]) -> None:
@@ -414,6 +424,7 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
 
     vicky: List[str] = []
     yumi: List[str] = []
+    iris: List[str] = []
 
     for blk in parts:
         if "出貨單號:" not in blk or "宅配單號:" not in blk:
@@ -423,10 +434,12 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
             continue
         # recipient name is on line 3
         recipient = lines[2].split()[0]
-        full_msg = "\n".join(lines)
+        full_msg  = "\n".join(lines[1:])
         if recipient in VICKY_NAMES:
             vicky.append(full_msg)
         elif recipient in YUMI_NAMES:
+            yumi.append(full_msg)
+        elif recipient in IRIS_NAMES:
             yumi.append(full_msg)
 
     def push(group: str, messages: List[str]) -> None:
@@ -442,6 +455,7 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
 
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID, yumi)
+    push(IRIS_GROUP_ID, iris)
 
 
 def handle_ace_ezway_check_and_push_to_yves(event: Dict[str, Any]) -> None:
