@@ -121,7 +121,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
             elif recipient in YUMI_NAMES:
                 yumi.append(full_msg)
             elif recipient in IRIS_NAMES:
-                yumi.append(full_msg)
+                iris.append(full_msg)
 
     def push(group: str, msgs: List[str]) -> None:
         if not msgs:
@@ -440,7 +440,7 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
         elif recipient in YUMI_NAMES:
             yumi.append(full_msg)
         elif recipient in IRIS_NAMES:
-            yumi.append(full_msg)
+            iris.append(full_msg)
 
     def push(group: str, messages: List[str]) -> None:
         if not messages:
