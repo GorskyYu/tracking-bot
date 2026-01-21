@@ -1,4 +1,7 @@
-﻿from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD_MAPPING
+﻿import pytz
+from datetime import datetime
+
+from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD_MAPPING
 from utils.permissions import is_authorized_for_event
 from utils.line_reply import reply_text
 from config import line_bot_api
@@ -432,7 +435,18 @@ def _create_client_flex_message(client_obj):
 def _unpaid_worker(destination_id, filter_name=None):
     """Background thread worker."""
     try:
-        results = fetch_unpaid_items_globally()
+        # ✅ 判斷是否為 today 模式
+        is_today_mode = (filter_name == "today")
+        
+        if is_today_mode:
+            results, date_display = fetch_and_tag_unpaid_today()
+            # 發送第一條訊息：YYMMDD出賬：
+            line_bot_api.push_message(destination_id, TextSendMessage(text=f"{date_display}出賬："))
+            # today 模式下，我們針對所有客戶進行歸類發送，不再過濾單一客戶
+            final_filter = None 
+        else:
+            results = fetch_unpaid_items_globally()
+            final_filter = filter_name
         
         if not results:
              line_bot_api.push_message(destination_id, TextSendMessage(text="沒有發現符合條件的項目（箱子尺寸與重量皆不為空，且狀態符合作業需求）。"))
@@ -467,6 +481,14 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     auto_target_name = GROUP_TO_CLIENT_MAP.get(group_id)
     
     parts = message_text.strip().split()
+    text_lower = message_text.strip().lower()
+
+    # 處理 unpaid today
+    if text_lower == "unpaid today":
+        reply_text(reply_token, "📅 正在掃描未出賬項目並標記日期，請稍候...")
+        # 啟動 Thread 執行，傳入 "today" 作為 filter_name
+        Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today")).start()
+        return
     
     # 1. 如果是一般成員 (非管理員)
     if not is_admin:
@@ -652,3 +674,70 @@ def handle_bill_event(sender_id, message_text, reply_token, user_id, group_id=No
                 client, date_val = parts[1], parts[2]
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {client} 的 {date_val} 賬單..."))
                 Thread(target=_bill_worker, args=(user_id, client, date_val)).start()
+
+def fetch_and_tag_unpaid_today():
+    """
+    抓取未出賬項目，並自動填入今日日期 (溫哥華時間)
+    """
+    items_found = []
+    
+    # 1. 取得溫哥華今日日期
+    tz = pytz.timezone('America/Vancouver')
+    now_van = datetime.now(tz)
+    today_iso = now_van.strftime("%Y-%m-%d") # 用於寫入 Monday (YYYY-MM-DD)
+    today_display = now_van.strftime("%y%m%d") # 用於訊息標題 (YYMMDD)
+    
+    for parent_board_id in TARGET_BOARD_IDS:
+        subitem_board_id = SUBITEM_BOARD_MAPPING.get(parent_board_id) or get_subitem_board_id(parent_board_id)
+        if not subitem_board_id: continue
+
+        status_col_id = _fetch_col_id_by_title(subitem_board_id, COL_STATUS)
+        date_col_id = _fetch_col_id_by_title(subitem_board_id, COL_BILL_DATE)
+        if not status_col_id or not date_col_id: continue
+
+        # 搜尋符合狀態的項目
+        query = """
+        query ($board_id: ID!, $col_id: String!, $vals: [String]!) {
+            items_page_by_column_values (
+                board_id: $board_id, 
+                columns: [{column_id: $col_id, column_values: $vals}],
+                limit: 100
+            ) {
+                items {
+                    id name
+                    column_values { ... on FormulaValue { display_value } text column { title } }
+                    parent_item {
+                        name
+                        column_values { ... on FormulaValue { display_value } text column { title } }
+                    }
+                }
+            }
+        }
+        """
+        res = _monday_request(query, {"board_id": int(subitem_board_id), "col_id": status_col_id, "vals": TARGET_STATUSES})
+        
+        if res and "data" in res and res["data"]["items_page_by_column_values"]:
+            for item in res["data"]["items_page_by_column_values"]["items"]:
+                cols = _map_column_values(item.get("column_values", []))
+                
+                # ✅ 關鍵邏輯：只處理「出賬日」為空的項目
+                if not cols.get(COL_BILL_DATE):
+                    # 🚀 A. 在 Monday.com 寫上今日日期
+                    mutation = """
+                    mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $val: String!) {
+                        change_simple_column_value (board_id: $board_id, item_id: $item_id, column_id: $col_id, value: $val) { id }
+                    }
+                    """
+                    _monday_request(mutation, {
+                        "board_id": int(subitem_board_id),
+                        "item_id": int(item["id"]),
+                        "col_id": date_col_id,
+                        "val": today_iso
+                    })
+                    
+                    # 🚀 B. 處理資料格式以便後續發送
+                    processed = _process_monday_item(item)
+                    if processed:
+                        items_found.append(processed)
+                
+    return items_found, today_display
