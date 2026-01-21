@@ -2,7 +2,7 @@
 from datetime import datetime
 
 from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD_MAPPING
-from utils.permissions import is_authorized_for_event
+from utils.permissions import is_authorized_for_event, ADMIN_USER_IDS
 from utils.line_reply import reply_text
 from config import line_bot_api
 from linebot.models import TextSendMessage, QuickReply, QuickReplyButton, MessageAction, FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, SeparatorComponent
@@ -16,9 +16,7 @@ from config import (
     line_bot_api, 
     IRIS_GROUP_ID, 
     VICKY_GROUP_ID, 
-    YUMI_GROUP_ID,
-    YVES_USER_ID,
-    GORSKY_USER_ID
+    YUMI_GROUP_ID
 )
 
 # 建立對應表：只要指令來自這個群組，就自動查詢對應的名稱
@@ -477,7 +475,7 @@ def _unpaid_worker(destination_id, filter_name=None):
 
 def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, group_id=None):
     # 🔍 先抓取管理員狀態與自動對應名稱
-    is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID) # 這裡需確保有匯入變數
+    is_admin = user_id in ADMIN_USER_IDS
     auto_target_name = GROUP_TO_CLIENT_MAP.get(group_id)
     
     parts = message_text.strip().split()
@@ -485,6 +483,10 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
 
     # 處理 unpaid today
     if text_lower == "unpaid today":
+        if not is_admin:
+            reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
+            return
+        
         reply_text(reply_token, "📅 正在掃描未出賬項目並標記日期，請稍候...")
         # 啟動 Thread 執行，傳入 "today" 作為 filter_name
         Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today")).start()
@@ -643,11 +645,11 @@ def _bill_worker(destination_id, client_filter, date_val):
 
 def handle_bill_event(sender_id, message_text, reply_token, user_id, group_id=None):
     text = message_text.strip()
-    is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
+    is_admin = user_id in ADMIN_USER_IDS
     auto_client = GROUP_TO_CLIENT_MAP.get(group_id)
 
     # 1. 群組模式：查看賬單YYMMDD
-    group_match = re.match(r"查看賬單(\d{6})", text)
+    group_match = re.search(r"查看賬單.*?(\d{6})", text)
     if group_id and group_match:
         date_val = group_match.group(1)
         if not auto_client:
