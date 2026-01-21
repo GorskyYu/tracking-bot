@@ -46,6 +46,7 @@ COL_ADDT_TWD = "追加台幣支出"
 COL_CAD_PAID ="加幣實收"
 COL_TWD_PAID ="台幣實收"
 COL_EXCHANGE = "匯率"
+COL_BILL_DATE = "出賬日"
 
 def _get_column_value(col_name, sources):
     """Helper to find value in a list of column data sources (priority order)."""
@@ -90,7 +91,7 @@ def _map_column_values(column_values_list):
              mapped[title] = str(val)
     return mapped
 
-def _fetch_status_col_id(board_id):
+def _fetch_col_id_by_title(board_id, title):
     """Fetches the Status column ID for a board."""
     query = """
     query ($board_id: [ID!]) {
@@ -103,7 +104,7 @@ def _fetch_status_col_id(board_id):
     logging.info(f"Fetched columns for board {board_id}: {json.dumps(res)}")
     if res and "data" in res and res["data"]["boards"]:
          for col in res["data"]["boards"][0]["columns"]:
-             if col["title"].strip() == COL_STATUS:
+             if col["title"].strip() == title:
                  return col["id"]
     return None
 
@@ -130,7 +131,7 @@ def fetch_unpaid_items_globally():
         logging.info(f"Scanning Subitem Board {subitem_board_id} (Parent: {parent_board_id})")
         
         # 2. Get Status Column ID for Filtering
-        status_col_id = _fetch_status_col_id(subitem_board_id)
+        status_col_id = _fetch_col_id_by_title(subitem_board_id, COL_STATUS)
         if not status_col_id:
              logging.warning(f"Status column not found on {subitem_board_id}") 
             #  1
@@ -187,49 +188,12 @@ def fetch_unpaid_items_globally():
             logging.info(f"Fetched {len(items)} items from board {subitem_board_id}. Next Cursor: {bool(cursor)}")
 
             for item in items:
-                sub_name = item["name"]
+                # ✅ 直接調用獨立出的處理函式
+                processed = _process_monday_item(item)
                 
-                # 4. robust mapping (Multi-Source Strategy)
-                subitem_cols = _map_column_values(item.get("column_values", []))
-                
-                parent_item = item.get("parent_item")
-                # Safety check for parent_item being None (orphan subitem)
-                if not parent_item:
-                    continue
-
-                parent_name = parent_item["name"]
-                parent_cols = _map_column_values(parent_item.get("column_values", []) if parent_item else [])
-                
-                sources = [subitem_cols, parent_cols]
-                
-                # Check mandatory fields (Dimensions & Weight)
-                dim_val = _get_column_value(COL_DIMENSION, sources)
-                weight_val = _get_column_value(COL_WEIGHT, sources)
-                
-                # 只要母項目名稱有「折讓」，或者尺寸重量齊全，就進入計算
-                if ("折讓" in parent_name) or (dim_val and dim_val.strip() and weight_val and weight_val.strip()):
-                     # 1. 抓取 Subitem 應收
-                     price_text = subitem_cols.get(COL_PRICE, "0")
-                     
-                     # 2. 從 Parent 抓取實收與匯率
-                     cad_paid_text = parent_cols.get(COL_CAD_PAID, "0")
-                     twd_paid_text = parent_cols.get(COL_TWD_PAID, "0")
-                     rate_text = parent_cols.get(COL_EXCHANGE, "1")
-                          
-                     items_found.append({
-                         "parent_name": parent_name,
-                         "sub_name": sub_name,
-                         "price_text": price_text,
-                         "price_val": _extract_float(price_text),
-                         "dimensions": dim_val,
-                         "weight": weight_val,
-                         # 存入母項目實收數據供後續計算
-                         "parent_cad_paid": _extract_float(cad_paid_text),
-                         "parent_twd_paid": _extract_float(twd_paid_text),
-                         "parent_rate": _extract_float(rate_text)
-                     })
-                else:
-                     logging.warning(f"Item {sub_name} (Parent: {parent_name}) skipped. Missing Dims/Weight. Dims: '{dim_val}', Weight: '{weight_val}'")
+                # 如果符合條件 (折讓案或尺寸重量齊全)，就加入列表
+                if processed:
+                    items_found.append(processed)
 
             # Exit loop if no cursor returned
             if not cursor:
@@ -554,3 +518,137 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     )
     
     line_bot_api.reply_message(reply_token, text_message)
+
+def fetch_items_by_bill_date(target_date_yyyymmdd):
+    """
+    依照「出賬日」搜尋所有板塊的項目
+    """
+    items_found = []
+    # 轉換日期格式：260120 -> 2026-01-20 (以匹配 Monday Date 格式)
+    formatted_date = f"20{target_date_yyyymmdd[:2]}-{target_date_yyyymmdd[2:4]}-{target_date_yyyymmdd[4:]}"
+    
+    for parent_board_id in TARGET_BOARD_IDS:
+        subitem_board_id = SUBITEM_BOARD_MAPPING.get(parent_board_id) or get_subitem_board_id(parent_board_id)
+        if not subitem_board_id: continue
+
+        # 這裡沿用你的 _fetch_col_id_by_title 邏輯，但改為抓取「出賬日」的 ID
+        bill_date_col_id = _fetch_col_id_by_title(subitem_board_id, COL_BILL_DATE)
+        if not bill_date_col_id: continue
+
+        # 搜尋 Query：篩選出賬日等於目標日期的項目
+        query = """
+        query ($board_id: ID!, $col_id: String!, $val: String!) {
+            items_page_by_column_values (
+                board_id: $board_id, 
+                columns: [{column_id: $col_id, column_values: [$val]}],
+                limit: 100
+            ) {
+                items {
+                    id name
+                    column_values { ... on FormulaValue { display_value } text column { title } }
+                    parent_item {
+                        name
+                        column_values { ... on FormulaValue { display_value } text column { title } }
+                    }
+                }
+            }
+        }
+        """
+        res = _monday_request(query, {"board_id": int(subitem_board_id), "col_id": bill_date_col_id, "val": formatted_date})
+        
+        if res and "data" in res and res["data"]["items_page_by_column_values"]:
+            for item in res["data"]["items_page_by_column_values"]["items"]:
+                # ✅ 直接調用共用的處理邏輯
+                processed = _process_monday_item(item)
+                if processed: items_found.append(processed)
+                
+    return items_found
+
+def _process_monday_item(item):
+    """
+    通用處理邏輯：將 Monday 的 Item 物件轉化為帳單資料格式
+    """
+    sub_name = item["name"]
+    subitem_cols = _map_column_values(item.get("column_values", []))
+    parent_item = item.get("parent_item")
+    if not parent_item: return None
+
+    parent_name = parent_item["name"]
+    parent_cols = _map_column_values(parent_item.get("column_values", []))
+    sources = [subitem_cols, parent_cols]
+
+    dim_val = _get_column_value(COL_DIMENSION, sources)
+    weight_val = _get_column_value(COL_WEIGHT, sources)
+
+    # ✅ 沿用折讓特例或尺寸齊全邏輯
+    if ("折讓" in parent_name) or (dim_val and dim_val.strip() and weight_val and weight_val.strip()):
+        rate = _extract_float(parent_cols.get(COL_EXCHANGE, "1"))
+        if rate <= 0: rate = 1.0
+        
+        return {
+            "parent_name": parent_name,
+            "sub_name": sub_name,
+            "price_text": subitem_cols.get(COL_PRICE, "0"),
+            "price_val": _extract_float(subitem_cols.get(COL_PRICE, "0")),
+            "dimensions": dim_val,
+            "weight": weight_val,
+            "parent_cad_paid": _extract_float(parent_cols.get(COL_CAD_PAID, "0")),
+            "parent_twd_paid": _extract_float(parent_cols.get(COL_TWD_PAID, "0")),
+            "parent_rate": rate
+        }
+    return None
+
+def _bill_worker(destination_id, client_filter, date_val):
+    """查看賬單的背景執行程序"""
+    try:
+        results = fetch_items_by_bill_date(date_val)
+        if not results:
+            line_bot_api.push_message(destination_id, TextSendMessage(text=f"📅 {date_val} 沒有找到任何出賬項目。"))
+            return
+
+        # ✅ 直接複用原本的群組邏輯 (會自動按 Parent 分類並計算實收)
+        grouped = _group_items_by_client(results, client_filter)
+        if not grouped:
+            line_bot_api.push_message(destination_id, TextSendMessage(text=f"🔍 在 {date_val} 找不到屬於 {client_filter} 的項目。"))
+            return
+
+        for client_name, client_data in grouped.items():
+            flex = _create_client_flex_message(client_data)
+            line_bot_api.push_message(destination_id, flex)
+            
+    except Exception as e:
+        logging.error(f"Bill worker failed: {e}")
+
+def handle_bill_event(sender_id, message_text, reply_token, user_id, group_id=None):
+    text = message_text.strip()
+    is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
+    auto_client = GROUP_TO_CLIENT_MAP.get(group_id)
+
+    # 1. 群組模式：查看賬單YYMMDD
+    group_match = re.match(r"查看賬單(\d{6})", text)
+    if group_id and group_match:
+        date_val = group_match.group(1)
+        if not auto_client:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="⛔ 此群組未對應客戶。"))
+            return
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {auto_client} 的 {date_val} 賬單..."))
+        Thread(target=_bill_worker, args=(group_id, auto_client, date_val)).start()
+        return
+
+    # 2. 私訊模式 (僅限管理員)
+    if not group_id and is_admin:
+        if text == "查看賬單":
+            buttons = [
+                QuickReplyButton(action=MessageAction(label="Vicky", text="查看賬單 Vicky")),
+                QuickReplyButton(action=MessageAction(label="Yumi", text="查看賬單 Yumi")),
+                QuickReplyButton(action=MessageAction(label="Iris", text="查看賬單 Lammond"))
+            ]
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="請選擇客戶：", quick_reply=QuickReply(items=buttons)))
+        elif text.startswith("查看賬單 "):
+            parts = text.split()
+            if len(parts) == 2: # 點選了客戶，提示輸入日期
+                line_bot_api.reply_message(reply_token, TextSendMessage(text=f"請補上日期 (YYMMDD)\n例如：查看賬單 {parts[1]} 260120"))
+            elif len(parts) == 3: # 完整指令
+                client, date_val = parts[1], parts[2]
+                line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {client} 的 {date_val} 賬單..."))
+                Thread(target=_bill_worker, args=(user_id, client, date_val)).start()

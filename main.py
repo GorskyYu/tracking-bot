@@ -29,7 +29,7 @@ from handlers.handlers import (
     handle_ace_shipments,
     handle_soquick_full_notification
 )
-from handlers.unpaid_handler import handle_unpaid_event
+from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event
 from handlers.vicky_handler import remind_vicky
 
 # 工作排程
@@ -442,6 +442,20 @@ def webhook():
                         _line_push(group_id, f"❌ 登記失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
                     continue
 
+
+        # ─── 查看賬單觸發入口 ───
+        if text.startswith("查看賬單"):
+            # 確保有從 handlers.unpaid_handler 匯入 handle_bill_event
+            from handlers.unpaid_handler import handle_bill_event
+            handle_bill_event(
+                sender_id=group_id if group_id else user_id,
+                message_text=text,
+                reply_token=event["replyToken"],
+                user_id=user_id,
+                group_id=group_id
+            )
+            continue
+        
         # 新的 Unpaid 邏輯
         if text.lower().startswith("unpaid"):
             user_id = src.get("userId")
