@@ -410,21 +410,28 @@ def handle_ace_schedule(event: Dict[str, Any]) -> None:
 def handle_ace_shipments(event: Dict[str, Any]) -> None:
     """
     Splits the text into blocks starting with '出貨單號:', then
-    forwards each complete block to Yumi or Vicky based on the
+    forwards each complete block to Yumi or Vicky or Iris or Yves based on the
     recipient name.
     """
-    # 1) Grab & clean the raw text
+    # 獲取發送者 ID 並查詢暱稱 (新增)
+    user_id = event["source"]["userId"]
+    try:
+        profile = line_bot_api.get_profile(user_id)
+        sender_name = profile.display_name
+    except Exception:
+        sender_name = "未知發送者"
+
+    # 原有的清理與分割邏輯
     raw = event["message"]["text"]
-    log.info(f"[ACE SHIP] raw incoming text: {repr(raw)}")  # DEBUG log
     text = raw.replace('"', '').strip()                     # strip stray quotes
 
     # split into shipment‐blocks
     parts = re.split(r'(?=出貨單號:)', text)
-    log.info(f"[ACE SHIP] split into {len(parts)} parts")   # DEBUG log
 
     vicky: List[str] = []
     yumi: List[str] = []
     iris: List[str] = []
+    yves: List[str] = []
 
     for blk in parts:
         if "出貨單號:" not in blk or "宅配單號:" not in blk:
@@ -432,15 +439,20 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
         lines = [l.strip() for l in blk.strip().splitlines() if l.strip()]
         if len(lines) < 4:
             continue
+        
         # recipient name is on line 3
         recipient = lines[2].split()[0]
         full_msg  = "\n".join(lines[1:])
+
         if recipient in VICKY_NAMES:
             vicky.append(full_msg)
         elif recipient in YUMI_NAMES:
             yumi.append(full_msg)
         elif recipient in IRIS_NAMES:
             iris.append(full_msg)
+        else:
+            # 如果都不屬於以上名單，就塞進 yves 列表 保留收件人姓名以便查看
+            yves.append(f"收件人: {recipient}\n{full_msg}")   
 
     def push(group: str, messages: List[str]) -> None:
         if not messages:
@@ -456,6 +468,14 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID, yumi)
     push(IRIS_GROUP_ID, iris)
+
+    # 新增：發送 Fallback 貨單給你個人 (Yves)
+    if yves:
+        from config import YVES_USER_ID
+        # 第一條：發送者名字
+        line_bot_api.push_message(YVES_USER_ID, TextSendMessage(text=f"來自 {sender_name} 的 fallback 貨單："))
+        # 第二條：合併後的貨單內容
+        line_bot_api.push_message(YVES_USER_ID, TextSendMessage(text="\n\n".join(yves)))
 
 
 def handle_ace_ezway_check_and_push_to_yves(event: Dict[str, Any]) -> None:
