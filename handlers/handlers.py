@@ -83,8 +83,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
     vicky: List[str] = []
     yumi: List[str] = []
     iris: List[str] = []
-    fallback_recipients: Set[str] = set()
-    fallback_details: List[str] = []
+    fallback_map: Dict[str, List[str]] = {}
 
     # --- 1. 執行分流邏輯 ---
     if "上周六出貨包裹的派件單號" in raw:
@@ -110,8 +109,9 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
             elif recipient in IRIS_NAMES:
                 iris.append(full_msg)
             else:
-                fallback_recipients.add(recipient)
-                fallback_details.append(f"收件人: {recipient}\n{full_msg}")
+                # 按收件人收集單號
+                if recipient not in fallback_map: fallback_map[recipient] = []
+                fallback_map[recipient].append(full_msg)
     else:
         # ACE 流程
         # split into one block per “出貨單號:” line
@@ -140,8 +140,9 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
             elif recipient in IRIS_NAMES:
                 iris.append(full_msg)
             else:
-                fallback_recipients.add(recipient)
-                fallback_details.append(f"收件人: {recipient}\n{full_msg}")
+                # 按收件人收集單號
+                if recipient not in fallback_map: fallback_map[recipient] = []
+                fallback_map[recipient].append(full_msg)
 
     # --- 2. 執行群組發送 ---
     def push(group: str, msgs: List[str]) -> None:
@@ -161,41 +162,58 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
     push(YUMI_GROUP_ID, yumi)
     push(IRIS_GROUP_ID, iris)
 
-    #--- 3. ACE 試算表反查寄件人 (同申報相符邏輯) ---
-    if fallback_recipients:
+    #--- 3. ACE 試算表反查與打包分組 (名字一條、內容一條) ---
+    sender_to_bundles: Dict[str, List[str]] = {} # 儲存 寄件人 -> [單號1, 單號2...]
+    unmapped_blocks: List[str] = []
+
+    if fallback_map:
         from utils.permissions import ADMIN_USER_IDS
         from config import ACE_SHEET_URL, EXCLUDED_SENDERS
-        found_senders: Set[str] = set()
         
         try:
             gs = get_gspread_client()
             ss = gs.open_by_url(ACE_SHEET_URL)
-            # 依日期選分頁 (yymmdd)
             target_date = datetime.fromtimestamp(event["timestamp"]/1000, tz=timezone(timedelta(hours=8))).strftime("%y%m%d")
             
-            # 尋找最近的分頁
             worksheets = ss.worksheets()
             ws = next((w for w in worksheets if w.title == target_date), worksheets[0]) 
-            rows = ws.get_all_values()[1:] # 跳過標題
+            rows = ws.get_all_values()[1:] 
 
+            matched_recipients = set()
             for row in rows:
-                # G 欄 (Index 6) 為收件人/認證人，C 欄 (Index 2) 為寄件人
                 sheet_recipient = row[6].strip() if len(row) > 6 else ""
-                if sheet_recipient in fallback_recipients:
-                    sender = row[2].strip() if len(row) > 2 else ""
+                if sheet_recipient in fallback_map:
+                    sender = row[2].strip() if len(row) > 2 else "未知寄件人"
                     if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
-                        found_senders.add(sender)
+                        if sender not in sender_to_bundles:
+                            sender_to_bundles[sender] = []
+                        # 將該收件人的所有單號合併到該寄件人的 Bundle 中
+                        sender_to_bundles[sender].extend(fallback_map[sheet_recipient])
+                        matched_recipients.add(sheet_recipient)
+            
+            # 處理查不到寄件人的項目
+            for rec, msgs in fallback_map.items():
+                if rec not in matched_recipients: unmapped_blocks.extend(msgs)
         except Exception as e:
             log.error(f"Fallback sheet lookup failed: {e}")
+            for msgs in fallback_map.values(): unmapped_blocks.extend(msgs)
 
-        # --- 4. 私訊發送給所有管理員 ---
-        for admin_id in ADMIN_USER_IDS:  # ✅ 已改為迴圈發送
-            line_bot_api.push_message(admin_id, TextSendMessage(text=f"來自 {sender_name} 的 fallback 訊息："))
-            if found_senders:
-                sender_msg = "ACE 試算表對應寄件人：\n" + "\n".join(sorted(found_senders))
-                line_bot_api.push_message(admin_id, TextSendMessage(text=sender_msg))
-            if fallback_details:
-                line_bot_api.push_message(admin_id, TextSendMessage(text="\n\n".join(fallback_details)))
+        # --- 4. 私訊發送給管理員 (分條發送邏輯) ---
+        for admin_id in ADMIN_USER_IDS:
+            # A. 發送開頭標題
+            line_bot_api.push_message(admin_id, TextSendMessage(text=f"ACE Fallback收件人："))
+            
+            # B. 依寄件人分組發送
+            for s_name, blocks in sender_to_bundles.items():
+                # 訊息1：寄件人名字 (獨立一條)
+                line_bot_api.push_message(admin_id, TextSendMessage(text=s_name))
+                # 訊息2：該寄件人打包後的單號 (合併在一條)
+                line_bot_api.push_message(admin_id, TextSendMessage(text="\n\n".join(blocks)))
+
+            # C. 查無寄件人的剩餘資料
+            if unmapped_blocks:
+                line_bot_api.push_message(admin_id, TextSendMessage(text="以下為查無 ACE 試算表寄件人之單號："))
+                line_bot_api.push_message(admin_id, TextSendMessage(text="\n\n".join(unmapped_blocks)))
 
 
 def handle_soquick_full_notification(event: Dict[str, Any]) -> None:
@@ -491,8 +509,7 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
     vicky: List[str] = []
     yumi: List[str] = []
     iris: List[str] = []
-    fallback_recipients: Set[str] = set()
-    fallback_details: List[str] = []
+    fallback_map: Dict[str, List[str]] = {}
 
     for blk in parts:
         if "出貨單號:" not in blk or "宅配單號:" not in blk:
@@ -512,9 +529,10 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
         elif recipient in IRIS_NAMES:
             iris.append(full_msg)
         else:
-            # 如果都不屬於以上名單，就塞進 yves 列表 保留收件人姓名以便查看
-            fallback_recipients.add(recipient)
-            fallback_details.append(f"收件人: {recipient}\n{full_msg}")
+            # 收集需要反查的收件人與對應內容
+            if recipient not in fallback_map:
+                fallback_map[recipient] = []
+            fallback_map[recipient].append(full_msg)
 
     # 定義群組發送函式
     def push(group: str, messages: List[str]) -> None:
@@ -531,43 +549,56 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
     push(YUMI_GROUP_ID, yumi)
     push(IRIS_GROUP_ID, iris)
 
-    #--- 3. ACE 試算表反查寄件人 (同申報相符邏輯) ---
-    if fallback_recipients:
+    #--- 3. ACE 試算表反查與按寄件人分組發送 ---
+    sender_to_bundles: Dict[str, List[str]] = {} # 儲存 寄件人 -> [單號1, 單號2...]
+    unmapped_blocks: List[str] = []
+
+    if fallback_map:
         from utils.permissions import ADMIN_USER_IDS
         from config import ACE_SHEET_URL, EXCLUDED_SENDERS
-        found_senders: Set[str] = set()
         
         try:
             gs = get_gspread_client()
             ss = gs.open_by_url(ACE_SHEET_URL)
-            # 依日期選分頁 (yymmdd)
             target_date = datetime.fromtimestamp(event["timestamp"]/1000, tz=timezone(timedelta(hours=8))).strftime("%y%m%d")
             
-            # 尋找最近的分頁
             worksheets = ss.worksheets()
             ws = next((w for w in worksheets if w.title == target_date), worksheets[0]) 
-            rows = ws.get_all_values()[1:] # 跳過標題
+            rows = ws.get_all_values()[1:] 
 
+            matched_recipients = set()
             for row in rows:
-                # G 欄 (Index 6) 為收件人/認證人，C 欄 (Index 2) 為寄件人
                 sheet_recipient = row[6].strip() if len(row) > 6 else ""
-                if sheet_recipient in fallback_recipients:
-                    sender = row[2].strip() if len(row) > 2 else ""
+                if sheet_recipient in fallback_map:
+                    sender = row[2].strip() if len(row) > 2 else "未知寄件人"
                     if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
-                        found_senders.add(sender)
+                        if sender not in sender_to_bundles:
+                            sender_to_bundles[sender] = []
+                        # 將同一個寄件人的所有單號打包
+                        sender_to_bundles[sender].extend(fallback_map[sheet_recipient])
+                        matched_recipients.add(sheet_recipient)
+            
+            for rec, msgs in fallback_map.items():
+                if rec not in matched_recipients:
+                    unmapped_blocks.extend(msgs)
         except Exception as e:
             log.error(f"Fallback sheet lookup failed: {e}")
+            for msgs in fallback_map.values(): unmapped_blocks.extend(msgs)
 
-        # --- 4. 私訊發送給管理員清單 (加入迴圈) ---
+        # --- 4. 分條發送給所有管理員 ---
         for admin_id in ADMIN_USER_IDS:
-            line_bot_api.push_message(admin_id, TextSendMessage(text=f"來自 {sender_name} 的 fallback 訊息："))
+            # 開頭標題
+            line_bot_api.push_message(admin_id, TextSendMessage(text=f"ACE Fallback收件人："))
             
-            if found_senders:
-                sender_msg = "ACE 試算表對應寄件人：\n" + "\n".join(sorted(found_senders))
-                line_bot_api.push_message(admin_id, TextSendMessage(text=sender_msg))
-            
-            if fallback_details:
-                line_bot_api.push_message(admin_id, TextSendMessage(text="\n\n".join(fallback_details)))
+            for s_name, blocks in sender_to_bundles.items():
+                # 訊息1：寄件人名字 (獨立一條)
+                line_bot_api.push_message(admin_id, TextSendMessage(text=s_name))
+                # 訊息2：打包後的該寄件人所有單號
+                line_bot_api.push_message(admin_id, TextSendMessage(text="\n\n".join(blocks)))
+
+            if unmapped_blocks:
+                line_bot_api.push_message(admin_id, TextSendMessage(text="以下為查無 ACE 試算表寄件人之單號："))
+                line_bot_api.push_message(admin_id, TextSendMessage(text="\n\n".join(unmapped_blocks)))
 
 
 def handle_ace_ezway_check_and_push_to_yves(event: Dict[str, Any]) -> None:
