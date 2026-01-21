@@ -452,8 +452,8 @@ def _unpaid_worker(destination_id, filter_name=None):
              line_bot_api.push_message(destination_id, TextSendMessage(text="沒有發現符合條件的項目（箱子尺寸與重量皆不為空，且狀態符合作業需求）。"))
              return
 
-        # Group Data
-        grouped_clients = _group_items_by_client(results, filter_name)
+        # Group Data 這裡要改用 final_filter，因為在 today 模式下 final_filter 會被設為 None
+        grouped_clients = _group_items_by_client(results, final_filter)
         
         if not grouped_clients:
              line_bot_api.push_message(destination_id, TextSendMessage(text=f"在 '{filter_name}' 條件下未搜尋到符合結果。"))
