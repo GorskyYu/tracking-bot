@@ -1,6 +1,8 @@
 # tracking_bot/handlers.py
 from __future__ import annotations
 from typing import Dict, Any, Optional, List, Set
+from linebot.models import TextSendMessage
+from utils.permissions import ADMIN_USER_IDS
 
 import re
 import json
@@ -41,6 +43,7 @@ from config import (
     # LINE API config
     LINE_TOKEN,
     LINE_HEADERS,
+    line_bot_api,
 )
 
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
@@ -62,10 +65,17 @@ def strip_mention(line: str) -> str:
 
 def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
     """
-    Parse Soquick & Ace text containing "上周六出貨包裹的派件單號", "出貨單號", "宅配單號"
-    split out lines of tracking+code+recipient, then push
-    only the matching Vicky/Yumi lines + footer.
+    解析 Soquick & Ace 文字。若收件人不在名單內，則去 ACE 試算表反查寄件人，
+    並將結果私訊給 Yves。
     """
+    # 1. 獲取發送者暱稱 (為了 Fallback 標籤)
+    user_id = event["source"]["userId"]
+    try:
+        profile = line_bot_api.get_profile(user_id)
+        sender_name = profile.display_name
+    except Exception:
+        sender_name = "未知發送者"
+
     raw = event["message"]["text"]
     if "上周六出貨包裹的派件單號" not in raw and not ("出貨單號" in raw and "宅配單號" in raw):
         return
@@ -73,9 +83,12 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
     vicky: List[str] = []
     yumi: List[str] = []
     iris: List[str] = []
+    fallback_recipients: Set[str] = set()
+    fallback_details: List[str] = []
 
-    # — Soquick flow —
+    # --- 1. 執行分流邏輯 ---
     if "上周六出貨包裹的派件單號" in raw:
+        # Soquick 流程
         # Split into non-empty lines
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
         # Locate footer (starts with “您好”)
@@ -88,15 +101,19 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
             if len(parts) < 3:
                 continue
             recipient = parts[-1]
-            if recipient in VICKY_NAMES:
-                vicky.append("\n".join(lines[1:]))
-            elif recipient in YUMI_NAMES:
-                yumi.append("\n".join(lines[1:]))
-            elif recipient in IRIS_NAMES:
-                iris.append("\n".join(lines[1:]))
+            full_msg = line
 
-    # — Ace flow —
+            if recipient in VICKY_NAMES:
+                vicky.append(full_msg)
+            elif recipient in YUMI_NAMES:
+                yumi.append(full_msg)
+            elif recipient in IRIS_NAMES:
+                iris.append(full_msg)
+            else:
+                fallback_recipients.add(recipient)
+                fallback_details.append(f"收件人: {recipient}\n{full_msg}")
     else:
+        # ACE 流程
         # split into one block per “出貨單號:” line
         blocks = [b.strip().strip('"') for b in re.split(r'(?=出貨單號:)', raw) if b.strip()]
 
@@ -122,7 +139,11 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
                 yumi.append(full_msg)
             elif recipient in IRIS_NAMES:
                 iris.append(full_msg)
+            else:
+                fallback_recipients.add(recipient)
+                fallback_details.append(f"收件人: {recipient}\n{full_msg}")
 
+    # --- 2. 執行群組發送 ---
     def push(group: str, msgs: List[str]) -> None:
         if not msgs:
             return
@@ -139,6 +160,42 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID, yumi)
     push(IRIS_GROUP_ID, iris)
+
+    #--- 3. ACE 試算表反查寄件人 (同申報相符邏輯) ---
+    if fallback_recipients:
+        from utils.permissions import ADMIN_USER_IDS
+        from config import ACE_SHEET_URL, EXCLUDED_SENDERS
+        found_senders: Set[str] = set()
+        
+        try:
+            gs = get_gspread_client()
+            ss = gs.open_by_url(ACE_SHEET_URL)
+            # 依日期選分頁 (yymmdd)
+            target_date = datetime.fromtimestamp(event["timestamp"]/1000, tz=timezone(timedelta(hours=8))).strftime("%y%m%d")
+            
+            # 尋找最近的分頁
+            worksheets = ss.worksheets()
+            ws = next((w for w in worksheets if w.title == target_date), worksheets[0]) 
+            rows = ws.get_all_values()[1:] # 跳過標題
+
+            for row in rows:
+                # G 欄 (Index 6) 為收件人/認證人，C 欄 (Index 2) 為寄件人
+                sheet_recipient = row[6].strip() if len(row) > 6 else ""
+                if sheet_recipient in fallback_recipients:
+                    sender = row[2].strip() if len(row) > 2 else ""
+                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
+                        found_senders.add(sender)
+        except Exception as e:
+            log.error(f"Fallback sheet lookup failed: {e}")
+
+        # --- 4. 私訊發送給所有管理員 ---
+        for admin_id in ADMIN_USER_IDS:  # ✅ 已改為迴圈發送
+            line_bot_api.push_message(admin_id, TextSendMessage(text=f"來自 {sender_name} 的 fallback 訊息："))
+            if found_senders:
+                sender_msg = "ACE 試算表對應寄件人：\n" + "\n".join(sorted(found_senders))
+                line_bot_api.push_message(admin_id, TextSendMessage(text=sender_msg))
+            if fallback_details:
+                line_bot_api.push_message(admin_id, TextSendMessage(text="\n\n".join(fallback_details)))
 
 
 def handle_soquick_full_notification(event: Dict[str, Any]) -> None:
@@ -259,20 +316,22 @@ def handle_soquick_full_notification(event: Dict[str, Any]) -> None:
                     senders.add(sender)
 
         if senders:
-            # header notification
-            requests.post(
-                LINE_PUSH_URL, headers=LINE_HEADERS,
-                json={
-                    "to": YVES_USER_ID,
-                    "messages": [{"type": "text", "text": "Soquick散客EZWay需提醒以下寄件人："}]
-                }
-            )
-            for s in sorted(senders):
+            # header notification 改為迴圈發送給所有管理員
+            for admin_id in ADMIN_USER_IDS:
+                # A. 發送標題
                 requests.post(
                     LINE_PUSH_URL, headers=LINE_HEADERS,
-                    json={"to": YVES_USER_ID, "messages": [{"type": "text", "text": s}]}
+                    json={
+                        "to": admin_id,
+                        "messages": [{"type": "text", "text": "Soquick散客EZWay需提醒以下寄件人："}]
+                    }
                 )
-            log.info(f"[SOQ FULL] Privately pushed {len(senders)} senders to Yves")
+                # B. 發送寄件人名單
+                for s in sorted(senders):
+                    requests.post(
+                        LINE_PUSH_URL, headers=LINE_HEADERS,
+                        json={"to": admin_id, "messages": [{"type": "text", "text": s}]}
+                    )
 
 
 def handle_missing_confirm(event: Dict[str, Any]) -> None:
@@ -403,15 +462,16 @@ def handle_ace_schedule(event: Dict[str, Any]) -> None:
     push_to(VICKY_GROUP_ID, vicky_batch)
     push_to(YUMI_GROUP_ID, yumi_batch)
     push_to(IRIS_GROUP_ID, iris_batch)
-    # also push any “other” entries to your personal chat
-    push_to(YVES_USER_ID, other_batch)
+    # also push any “other” entries to your personal chat 改為迴圈發送給所有管理員
+    if other_batch:
+        for admin_id in ADMIN_USER_IDS:
+            push_to(admin_id, other_batch)
 
 
 def handle_ace_shipments(event: Dict[str, Any]) -> None:
     """
-    Splits the text into blocks starting with '出貨單號:', then
-    forwards each complete block to Yumi or Vicky or Iris or Yves based on the
-    recipient name.
+    解析 ACE 文字。若收件人不在名單內，則去 ACE 試算表反查寄件人，
+    並將結果私訊給管理員。
     """
     # 獲取發送者 ID 並查詢暱稱 (新增)
     user_id = event["source"]["userId"]
@@ -431,7 +491,8 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
     vicky: List[str] = []
     yumi: List[str] = []
     iris: List[str] = []
-    yves: List[str] = []
+    fallback_recipients: Set[str] = set()
+    fallback_details: List[str] = []
 
     for blk in parts:
         if "出貨單號:" not in blk or "宅配單號:" not in blk:
@@ -452,8 +513,10 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
             iris.append(full_msg)
         else:
             # 如果都不屬於以上名單，就塞進 yves 列表 保留收件人姓名以便查看
-            yves.append(f"收件人: {recipient}\n{full_msg}")   
+            fallback_recipients.add(recipient)
+            fallback_details.append(f"收件人: {recipient}\n{full_msg}")
 
+    # 定義群組發送函式
     def push(group: str, messages: List[str]) -> None:
         if not messages:
             return
@@ -462,20 +525,49 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
             "messages": [{"type": "text", "text": "\n\n".join(messages)}]
         }
         resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-        log.info(f"Sent {len(messages)} shipment blocks to {group}: {resp.status_code}")
-
+        log.info(f"Sent {len(messages)} ACE blocks to {group}: {resp.status_code}")
 
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID, yumi)
     push(IRIS_GROUP_ID, iris)
 
-    # 新增：發送 Fallback 貨單給你個人 (Yves)
-    if yves:
-        from config import YVES_USER_ID
-        # 第一條：發送者名字
-        line_bot_api.push_message(YVES_USER_ID, TextSendMessage(text=f"來自 {sender_name} 的 fallback 貨單："))
-        # 第二條：合併後的貨單內容
-        line_bot_api.push_message(YVES_USER_ID, TextSendMessage(text="\n\n".join(yves)))
+    #--- 3. ACE 試算表反查寄件人 (同申報相符邏輯) ---
+    if fallback_recipients:
+        from utils.permissions import ADMIN_USER_IDS
+        from config import ACE_SHEET_URL, EXCLUDED_SENDERS
+        found_senders: Set[str] = set()
+        
+        try:
+            gs = get_gspread_client()
+            ss = gs.open_by_url(ACE_SHEET_URL)
+            # 依日期選分頁 (yymmdd)
+            target_date = datetime.fromtimestamp(event["timestamp"]/1000, tz=timezone(timedelta(hours=8))).strftime("%y%m%d")
+            
+            # 尋找最近的分頁
+            worksheets = ss.worksheets()
+            ws = next((w for w in worksheets if w.title == target_date), worksheets[0]) 
+            rows = ws.get_all_values()[1:] # 跳過標題
+
+            for row in rows:
+                # G 欄 (Index 6) 為收件人/認證人，C 欄 (Index 2) 為寄件人
+                sheet_recipient = row[6].strip() if len(row) > 6 else ""
+                if sheet_recipient in fallback_recipients:
+                    sender = row[2].strip() if len(row) > 2 else ""
+                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
+                        found_senders.add(sender)
+        except Exception as e:
+            log.error(f"Fallback sheet lookup failed: {e}")
+
+        # --- 4. 私訊發送給管理員清單 (加入迴圈) ---
+        for admin_id in ADMIN_USER_IDS:
+            line_bot_api.push_message(admin_id, TextSendMessage(text=f"來自 {sender_name} 的 fallback 訊息："))
+            
+            if found_senders:
+                sender_msg = "ACE 試算表對應寄件人：\n" + "\n".join(sorted(found_senders))
+                line_bot_api.push_message(admin_id, TextSendMessage(text=sender_msg))
+            
+            if fallback_details:
+                line_bot_api.push_message(admin_id, TextSendMessage(text="\n\n".join(fallback_details)))
 
 
 def handle_ace_ezway_check_and_push_to_yves(event: Dict[str, Any]) -> None:
@@ -624,7 +716,7 @@ def dispatch_confirmation_notification(event, text, user_id):
         return True
 
     # 2. 管理員 (Yves/Gorsky) 的判定：手動輸入「申報相符」或「還沒按」
-    is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
+    is_admin = user_id in ADMIN_USER_IDS
     if is_admin and ("申報相符" in text or "還沒按" in text) and has_code:
         log.info(f"[Admin Trigger] Processing confirmation request: {text[:20]}...")
         handle_missing_confirm(event)
