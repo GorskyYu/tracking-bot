@@ -364,7 +364,7 @@ def webhook():
                 # 1) Download the PDF bytes from LINE
                 resp = requests.get(
                     f"https://api-data.line.me/v2/bot/message/{file_id}/content",
-                    headers={"Authorization": f"Bearer {LINE_TOKEN}"},
+                    headers={"Authorization": f"Bearer {config.LINE_TOKEN}"},
                 )
                 resp.raise_for_status()
                 pdf_bytes = resp.content
@@ -576,7 +576,7 @@ def webhook():
 
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {LINE_TOKEN}"
+                "Authorization": f"Bearer {config.LINE_TOKEN}"
             }
             resp = requests.post(
                 "https://api.line.me/v2/bot/message/reply",
@@ -594,7 +594,7 @@ def webhook():
             requests.post(
                 "https://api.line.me/v2/bot/message/reply",
                 headers={
-                    "Authorization": f"Bearer {LINE_TOKEN}",
+                    "Authorization": f"Bearer {config.LINE_TOKEN}",
                     "Content-Type": "application/json"
                 },
                 json={
@@ -675,7 +675,7 @@ def monday_webhook():
     push = requests.post(
       "https://api.line.me/v2/bot/message/push",
       headers={
-        "Authorization": f"Bearer {LINE_TOKEN}",
+        "Authorization": f"Bearer {config.LINE_TOKEN}",
         "Content-Type":  "application/json"
       },
       json={"to": group_id, "messages":[{"type":"text","text":message}]}
