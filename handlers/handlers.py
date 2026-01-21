@@ -180,16 +180,16 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
             rows = ws.get_all_values()[1:] 
 
             matched_recipients = set()
+            # 加入 matched_recipients 判定，避免同一收件人重複匹配多行
             for row in rows:
                 sheet_recipient = row[6].strip() if len(row) > 6 else ""
-                if sheet_recipient in fallback_map:
+                if sheet_recipient in fallback_map and sheet_recipient not in matched_recipients:
                     sender = row[2].strip() if len(row) > 2 else "未知寄件人"
                     if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
                         if sender not in sender_to_bundles:
                             sender_to_bundles[sender] = []
-                        # 將該收件人的所有單號合併到該寄件人的 Bundle 中
                         sender_to_bundles[sender].extend(fallback_map[sheet_recipient])
-                        matched_recipients.add(sheet_recipient)
+                        matched_recipients.add(sheet_recipient) # 標記已處理
             
             # 處理查不到寄件人的項目
             for rec, msgs in fallback_map.items():
@@ -569,12 +569,12 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
             matched_recipients = set()
             for row in rows:
                 sheet_recipient = row[6].strip() if len(row) > 6 else ""
-                if sheet_recipient in fallback_map:
+                # 確保每個收件人只會被 extend 一次
+                if sheet_recipient in fallback_map and sheet_recipient not in matched_recipients:
                     sender = row[2].strip() if len(row) > 2 else "未知寄件人"
                     if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
                         if sender not in sender_to_bundles:
                             sender_to_bundles[sender] = []
-                        # 將同一個寄件人的所有單號打包
                         sender_to_bundles[sender].extend(fallback_map[sheet_recipient])
                         matched_recipients.add(sheet_recipient)
             
