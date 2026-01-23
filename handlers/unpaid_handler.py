@@ -160,6 +160,7 @@ def fetch_unpaid_items_globally():
                             column { title }
                         }
                         parent_item {
+                            id
                             name
                             column_values {
                                 ... on FormulaValue { display_value }
@@ -579,6 +580,7 @@ def fetch_items_by_bill_date(target_date_yyyymmdd):
                     id name
                     column_values { ... on FormulaValue { display_value } text column { title } }
                     parent_item {
+                        id
                         name
                         column_values { ... on FormulaValue { display_value } text column { title } }
                     }
@@ -720,6 +722,7 @@ def fetch_and_tag_unpaid_today():
                     id name
                     column_values { ... on FormulaValue { display_value } text column { title } }
                     parent_item {
+                        id
                         name
                         column_values { ... on FormulaValue { display_value } text column { title } }
                     }
