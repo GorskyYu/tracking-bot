@@ -33,7 +33,7 @@ CLIENT_ALIASES = {
     "Yumi - Shu-Yen Liu": "Yumi - Shu-Yen (Yumi) Liu"
 }
 
-TARGET_BOARD_IDS = [4815120249, 8783157722]
+TARGET_BOARD_IDS = [4814336467, 8783157722]
 TARGET_STATUSES = ["溫哥華收款", "未收款出貨", "台中收款"]
 
 # Column Keys (Titles) for Dynamic Mapping
@@ -807,7 +807,7 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id):
                     change_simple_column_value (board_id: $board_id, item_id: $item_id, column_id: $col_id, value: $val) { id }
                 }
                 """
-                _monday_request(mutation, {"board_id": int(subitem_board_id), "item_id": int(parent_id), "col_id": col_id, "val": str(amount)})
+                _monday_request(mutation, {"board_id": int(parent_board_id), "item_id": int(parent_id), "col_id": col_id, "val": str(amount)})
 
                 # B. 判斷是否全額支付 (邏輯：剩餘費用 <= 輸入金額)
                 # 注意：這裡的 subtotal 已經預扣過 parent_paid 了
