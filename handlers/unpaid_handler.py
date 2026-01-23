@@ -7,6 +7,7 @@ from utils.line_reply import reply_text
 from config import line_bot_api
 from linebot.models import TextSendMessage, QuickReply, QuickReplyButton, MessageAction, FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, SeparatorComponent
 from threading import Thread
+from redis_client import r
 import logging
 import json
 import re
@@ -190,7 +191,7 @@ def fetch_unpaid_items_globally():
 
             for item in items:
                 # ✅ 直接調用獨立出的處理函式
-                processed = _process_monday_item(item)
+                processed = _process_monday_item(item, subitem_board_id)
                 
                 # 如果符合條件 (折讓案或尺寸重量齊全)，就加入列表
                 if processed:
@@ -481,6 +482,11 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     parts = message_text.strip().split()
     text_lower = message_text.strip().lower()
 
+    # 如果輸入 unpaid [名稱]，記錄到 Redis
+    if len(parts) > 1 and parts[1].lower() != "today":
+        target_name = " ".join(parts[1:])
+        r.set(f"last_unpaid_client_{sender_id}", target_name, ex=3600) # 紀錄 1 小時
+
     # 處理 unpaid today
     if text_lower == "unpaid today":
         if not is_admin:
@@ -528,20 +534,22 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
         t.start()
         return
 
-    # If no args, Ask Question with Quick Reply, 如果都不符合 (例如私訊且沒帶參數)，才顯示 Quick Reply 選單
-    buttons = [
-        QuickReplyButton(action=MessageAction(label="All", text=f"{cmd} All")),
-        QuickReplyButton(action=MessageAction(label="Vicky", text=f"{cmd} Vicky")),
-        QuickReplyButton(action=MessageAction(label="Yumi", text=f"{cmd} Yumi")),
-        QuickReplyButton(action=MessageAction(label="Iris", text=f"{cmd} Lammond"))
-    ]
-    
-    text_message = TextSendMessage(
-        text="請輸入要查詢的名稱",
-        quick_reply=QuickReply(items=buttons)
-    )
-    
-    line_bot_api.reply_message(reply_token, text_message)
+    # 管理員點選 unpaid 時，動態顯示有欠款的客戶
+    if is_admin and len(parts) == 1:
+        reply_text(reply_token, "🔍 正在掃描所有欠款客戶...")
+        def _send_dynamic_buttons():
+            all_items = fetch_unpaid_items_globally()
+            clients = _group_items_by_client(all_items) 
+            
+            buttons = [QuickReplyButton(action=MessageAction(label="All", text="unpaid All"))]
+            # 取前 12 個有欠款的客人 (LINE 限制總數 13)
+            for name in list(clients.keys())[:12]:
+                buttons.append(QuickReplyButton(action=MessageAction(label=name, text=f"unpaid {name}")))
+            
+            line_bot_api.push_message(sender_id, TextSendMessage(text="請選擇或直接輸入客戶 ID：", quick_reply=QuickReply(items=buttons)))
+        
+        Thread(target=_send_dynamic_buttons).start()
+        return
 
 def fetch_items_by_bill_date(target_date_yyyymmdd):
     """
@@ -583,12 +591,12 @@ def fetch_items_by_bill_date(target_date_yyyymmdd):
         if res and "data" in res and res["data"]["items_page_by_column_values"]:
             for item in res["data"]["items_page_by_column_values"]["items"]:
                 # ✅ 直接調用共用的處理邏輯
-                processed = _process_monday_item(item)
+                processed = _process_monday_item(item, subitem_board_id)
                 if processed: items_found.append(processed)
                 
     return items_found
 
-def _process_monday_item(item):
+def _process_monday_item(item, subitem_board_id):
     """
     通用處理邏輯：將 Monday 的 Item 物件轉化為帳單資料格式
     """
@@ -610,6 +618,9 @@ def _process_monday_item(item):
         if rate <= 0: rate = 1.0
         
         return {
+            "id": item["id"],
+            "parent_id": parent_item["id"],
+            "board_id": subitem_board_id,
             "parent_name": parent_name,
             "sub_name": sub_name,
             "price_text": subitem_cols.get(COL_PRICE, "0"),
@@ -738,8 +749,80 @@ def fetch_and_tag_unpaid_today():
                     })
                     
                     # 🚀 B. 處理資料格式以便後續發送
-                    processed = _process_monday_item(item)
+                    processed = _process_monday_item(item, subitem_board_id)
                     if processed:
                         items_found.append(processed)
                 
     return items_found, today_display
+
+def handle_paid_event(sender_id, message_text, reply_token, user_id):
+    """處理實收金額錄入與狀態自動轉換邏輯"""
+    if user_id not in ADMIN_USER_IDS:
+        return reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
+
+    # 1. 解析指令 (例如：paid 42.41 ntd)
+    match = re.match(r"^(paid|Paid)\s*(\d+(?:\.\d+)?)\s*(ntd|twd)?$", message_text.strip(), re.IGNORECASE)
+    if not match:
+        return
+    
+    amount = float(match.group(2))
+    currency = (match.group(3) or "cad").lower()
+
+    # 2. 從 Redis 抓取最後查詢的客戶名稱
+    last_client = r.get(f"last_unpaid_client_{sender_id}")
+    if not last_client:
+        return reply_text(reply_token, "❌ 請先輸入 unpaid [名稱] 查詢帳單，再進行錄入。")
+
+    reply_text(reply_token, f"💰 正在為 {last_client} 錄入 {currency.upper()} ${amount}，請稍候...")
+
+    def _paid_worker():
+        try:
+            # 抓取該客戶所有未付項目
+            items = fetch_unpaid_items_globally()
+            grouped = _group_items_by_client(items, last_client)
+            if not grouped or last_client not in grouped:
+                return line_bot_api.push_message(sender_id, TextSendMessage(text="查無該客戶的未付項目。"))
+
+            client_data = grouped[last_client]
+            # 遍歷該客戶的所有出賬日期 (Parent Items)
+            for date_str, data in client_data["data"].items():
+                # 這裡隨便取一個子項目來獲取 Parent ID
+                sample_item = data["items"][0]
+                parent_id = sample_item.get("parent_id") # 需確保 _process_monday_item 有回傳 id
+                subitem_board_id = sample_item.get("board_id")
+
+                # A. 寫入金額
+                target_col = COL_TWD_PAID if currency in ["ntd", "twd"] else COL_CAD_PAID
+                col_id = _fetch_col_id_by_title(subitem_board_id, target_col)
+                
+                mutation = """
+                mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $val: String!) {
+                    change_simple_column_value (board_id: $board_id, item_id: $item_id, column_id: $col_id, value: $val) { id }
+                }
+                """
+                _monday_request(mutation, {"board_id": int(subitem_board_id), "item_id": int(parent_id), "col_id": col_id, "val": str(amount)})
+
+                # B. 判斷是否全額支付 (邏輯：剩餘費用 <= 輸入金額)
+                # 注意：這裡的 subtotal 已經預扣過 parent_paid 了
+                # 計算實際支付的加幣價值
+                rate = data["items"][0].get("parent_rate", 1.0) # 獲取該批次的匯率
+                actual_paid_cad = amount / rate if currency in ["ntd", "twd"] else amount
+                
+                # B. 判斷是否全額支付 (邏輯：剩餘加幣費用 <= 實際支付加幣價值)
+                if data["subtotal"] <= actual_paid_cad:
+                    status_col_id = _fetch_col_id_by_title(subitem_board_id, COL_STATUS)
+                    for sub in data["items"]:
+                        _monday_request(mutation, {
+                            "board_id": int(subitem_board_id), 
+                            "item_id": int(sub["id"]), 
+                            "col_id": status_col_id, 
+                            "val": "已收款出貨"
+                        })
+                    line_bot_api.push_message(sender_id, TextSendMessage(text=f"✅ {last_client} ({date_str}) 已全額收訖，狀態更新為：已收款出貨"))
+                else:
+                    line_bot_api.push_message(sender_id, TextSendMessage(text=f"📝 {last_client} ({date_str}) 已錄入金額，但仍有餘額 ${data['subtotal'] - amount:.2f}。"))
+
+        except Exception as e:
+            logging.error(f"Paid worker failed: {e}")
+
+    Thread(target=_paid_worker).start()

@@ -479,6 +479,17 @@ def webhook():
                     group_id=group_id
                 )
                 continue
+            
+        # 錄入實收金額指令 (Paid)
+        if text.lower().startswith("paid"):
+            from handlers.unpaid_handler import handle_paid_event
+            handle_paid_event(
+                sender_id=group_id if group_id else user_id,
+                message_text=text,
+                reply_token=event["replyToken"],
+                user_id=user_id
+            )
+            continue
 
         # 1) 處理 UPS 批量更新與單筆尺寸錄入
         from handlers.ups_handler import handle_ups_logic
