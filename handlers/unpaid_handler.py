@@ -230,13 +230,14 @@ def _group_items_by_client(items, filter_name=None):
         # 只要名稱中包含關鍵字，就統一歸類到該客戶下
         found_canonical = False
         for main_name in ["Vicky", "Yumi", "Lammond"]:
-            if main_name in client_name:
+            if main_name.lower() in client_name.lower():
                 canonical_name = main_name
                 found_canonical = True
                 break
         
         if not found_canonical:
-            canonical_name = _resolve_client_name(client_name)
+            # 不在名單的客人，只取第一個單詞或橫槓前的文字作為 Abowbow ID (Key)
+            canonical_name = client_name.split(" - ")[0].split()[0]
         
         # Filter Logic
         if filter_name and filter_name != "All":
@@ -545,6 +546,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
             buttons = [QuickReplyButton(action=MessageAction(label="All", text="unpaid All"))]
             # 取前 12 個有欠款的客人 (LINE 限制總數 13)
             for name in list(clients.keys())[:12]:
+                display_name = (name[:17] + "...") if len(name) > 20 else name
                 buttons.append(QuickReplyButton(action=MessageAction(label=name, text=f"unpaid {name}")))
             
             line_bot_api.push_message(sender_id, TextSendMessage(text="請選擇或直接輸入客戶 ID：", quick_reply=QuickReply(items=buttons)))
