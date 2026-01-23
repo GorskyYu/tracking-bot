@@ -192,7 +192,7 @@ def fetch_unpaid_items_globally():
 
             for item in items:
                 # ✅ 直接調用獨立出的處理函式
-                processed = _process_monday_item(item, subitem_board_id)
+                processed = _process_monday_item(item, subitem_board_id, parent_board_id)
                 
                 # 如果符合條件 (折讓案或尺寸重量齊全)，就加入列表
                 if processed:
@@ -595,12 +595,12 @@ def fetch_items_by_bill_date(target_date_yyyymmdd):
         if res and "data" in res and res["data"]["items_page_by_column_values"]:
             for item in res["data"]["items_page_by_column_values"]["items"]:
                 # ✅ 直接調用共用的處理邏輯
-                processed = _process_monday_item(item, subitem_board_id)
+                processed = _process_monday_item(item, subitem_board_id, parent_board_id)
                 if processed: items_found.append(processed)
                 
     return items_found
 
-def _process_monday_item(item, subitem_board_id):
+def _process_monday_item(item, subitem_board_id, parent_board_id):
     """
     通用處理邏輯：將 Monday 的 Item 物件轉化為帳單資料格式
     """
@@ -625,6 +625,7 @@ def _process_monday_item(item, subitem_board_id):
             "id": item["id"],
             "parent_id": parent_item["id"],
             "board_id": subitem_board_id,
+            "parent_board_id": parent_board_id,
             "parent_name": parent_name,
             "sub_name": sub_name,
             "price_text": subitem_cols.get(COL_PRICE, "0"),
@@ -754,7 +755,7 @@ def fetch_and_tag_unpaid_today():
                     })
                     
                     # 🚀 B. 處理資料格式以便後續發送
-                    processed = _process_monday_item(item, subitem_board_id)
+                    processed = _process_monday_item(item, subitem_board_id, parent_board_id)
                     if processed:
                         items_found.append(processed)
                 
@@ -794,11 +795,12 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id):
                 # 這裡隨便取一個子項目來獲取 Parent ID
                 sample_item = data["items"][0]
                 parent_id = sample_item.get("parent_id") # 需確保 _process_monday_item 有回傳 id
+                parent_board_id = sample_item.get("parent_board_id")
                 subitem_board_id = sample_item.get("board_id")
 
                 # A. 寫入金額
                 target_col = COL_TWD_PAID if currency in ["ntd", "twd"] else COL_CAD_PAID
-                col_id = _fetch_col_id_by_title(subitem_board_id, target_col)
+                col_id = _fetch_col_id_by_title(parent_board_id, target_col)
                 
                 mutation = """
                 mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $val: String!) {
