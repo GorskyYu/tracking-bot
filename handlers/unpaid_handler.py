@@ -35,6 +35,7 @@ CLIENT_ALIASES = {
 
 TARGET_BOARD_IDS = [4814336467, 8783157722]
 TARGET_STATUSES = ["溫哥華收款", "未收款出貨", "台中收款"]
+PAID_STATUSES = ["已收款出貨", "核實訂單", "已完成"]
 
 # Column Keys (Titles) for Dynamic Mapping
 COL_STATUS = "Status"
@@ -343,8 +344,10 @@ def _create_item_row(item):
     
     return BoxComponent(layout='vertical', margin='md', contents=row_contents)
 
-def _create_client_flex_message(client_obj):
-    """Builds a Flex Bubble for a single client."""
+def _create_client_flex_message(client_obj, is_paid_bill=False):
+    """Builds a Flex Bubble for a single client.
+    is_paid_bill: If True, displays total in green; if False, displays total in red
+    """
     display_name = client_obj["display_name"]
     total = client_obj["total"]
     dates_data = client_obj["data"]
@@ -409,6 +412,8 @@ def _create_client_flex_message(client_obj):
         )
 
     # Footer (Total)
+    # Use green color for paid bills, red for unpaid bills
+    total_color = '#1DB446' if is_paid_bill else '#FF4B4B'
     footer = BoxComponent(
         layout='vertical',
         spacing='sm',
@@ -419,7 +424,7 @@ def _create_client_flex_message(client_obj):
                 margin='md',
                 contents=[
                     TextComponent(text="Total Amount", flex=4, size='lg', weight='bold'),
-                    TextComponent(text=f"${total:.2f}", flex=3, align='end', size='lg', weight='bold', color='#FF4B4B')
+                    TextComponent(text=f"${total:.2f}", flex=3, align='end', size='lg', weight='bold', color=total_color)
                 ]
             )
         ]
@@ -433,7 +438,7 @@ def _create_client_flex_message(client_obj):
     
     return FlexSendMessage(alt_text=f"Bill for {display_name}", contents=bubble)
 
-def _unpaid_worker(destination_id, filter_name=None):
+def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None):
     """Background thread worker."""
     try:
         # ✅ 判斷是否為 today 模式
@@ -443,8 +448,8 @@ def _unpaid_worker(destination_id, filter_name=None):
             results, date_display = fetch_and_tag_unpaid_today()
             # 發送第一條訊息：YYMMDD出賬：
             line_bot_api.push_message(destination_id, TextSendMessage(text=f"{date_display}出賬："))
-            # today 模式下，我們針對所有客戶進行歸類發送，不再過濾單一客戶
-            final_filter = None 
+            # today 模式下，如果有指定客戶，則過濾該客戶；否則顯示所有客戶
+            final_filter = today_client_filter
         else:
             results = fetch_unpaid_items_globally()
             final_filter = filter_name
@@ -484,15 +489,34 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     parts = message_text.strip().split()
     text_lower = message_text.strip().lower()
 
+    # 處理 unpaid today [client_code] (帶客戶代號的 today 指令)
+    if len(parts) >= 3 and parts[1].lower() == "today":
+        if not is_admin:
+            reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
+            return
+        
+        # 提取客戶代號 (第三個詞之後的所有內容)
+        client_code = " ".join(parts[2:])
+        r.set(f"last_unpaid_client_{sender_id}", client_code, ex=3600)
+        
+        reply_text(reply_token, f"📅 正在掃描 {client_code} 的未出賬項目並標記日期，請稍候...")
+        Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today", client_code)).start()
+        return
+
     # 如果輸入 unpaid [名稱]，記錄到 Redis
     if len(parts) > 1 and parts[1].lower() != "today":
         target_name = " ".join(parts[1:])
         r.set(f"last_unpaid_client_{sender_id}", target_name, ex=3600) # 紀錄 1 小時
 
-    # 處理 unpaid today
+    # 處理 unpaid today (不帶客戶代號)
     if text_lower == "unpaid today":
         if not is_admin:
             reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
+            return
+        
+        # 如果在非指定群組，提示需要輸入客戶ID
+        if not auto_target_name:
+            reply_text(reply_token, "需要輸入Abowbow客戶ID\n例如：unpaid today Kit")
             return
         
         reply_text(reply_token, "📅 正在掃描未出賬項目並標記日期，請稍候...")
@@ -692,6 +716,118 @@ def handle_bill_event(sender_id, message_text, reply_token, user_id, group_id=No
                 client, date_val = parts[1], parts[2]
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {client} 的 {date_val} 賬單..."))
                 Thread(target=_bill_worker, args=(user_id, client, date_val)).start()
+
+def fetch_paid_items_by_bill_date(target_date_yyyymmdd):
+    """
+    依照「出賬日」和「已付款狀態」搜尋所有板塊的項目
+    """
+    items_found = []
+    # 轉換日期格式：260120 -> 2026-01-20 (以匹配 Monday Date 格式)
+    formatted_date = f"20{target_date_yyyymmdd[:2]}-{target_date_yyyymmdd[2:4]}-{target_date_yyyymmdd[4:]}"
+    
+    for parent_board_id in TARGET_BOARD_IDS:
+        subitem_board_id = SUBITEM_BOARD_MAPPING.get(parent_board_id) or get_subitem_board_id(parent_board_id)
+        if not subitem_board_id: continue
+
+        bill_date_col_id = _fetch_col_id_by_title(subitem_board_id, COL_BILL_DATE)
+        status_col_id = _fetch_col_id_by_title(subitem_board_id, COL_STATUS)
+        if not bill_date_col_id or not status_col_id: continue
+
+        # 先按日期搜尋
+        query = """
+        query ($board_id: ID!, $col_id: String!, $val: String!) {
+            items_page_by_column_values (
+                board_id: $board_id, 
+                columns: [{column_id: $col_id, column_values: [$val]}],
+                limit: 100
+            ) {
+                items {
+                    id name
+                    column_values { ... on FormulaValue { display_value } text column { title } }
+                    parent_item {
+                        id
+                        name
+                        column_values { ... on FormulaValue { display_value } text column { title } }
+                    }
+                }
+            }
+        }
+        """
+        res = _monday_request(query, {"board_id": int(subitem_board_id), "col_id": bill_date_col_id, "val": formatted_date})
+        
+        if res and "data" in res and res["data"]["items_page_by_column_values"]:
+            for item in res["data"]["items_page_by_column_values"]["items"]:
+                # 檢查狀態是否為已付款狀態
+                cols = _map_column_values(item.get("column_values", []))
+                item_status = cols.get(COL_STATUS, "")
+                
+                if item_status in PAID_STATUSES:
+                    processed = _process_monday_item(item, subitem_board_id, parent_board_id)
+                    if processed: 
+                        items_found.append(processed)
+                
+    return items_found
+
+def _paid_worker(destination_id, client_filter, date_val):
+    """查看已付款賬單的背景執行程序"""
+    try:
+        results = fetch_paid_items_by_bill_date(date_val)
+        if not results:
+            line_bot_api.push_message(destination_id, TextSendMessage(text="未找到賬單，請檢查日期、所在群組或Abowbow ID。"))
+            return
+
+        # 使用相同的分組和顯示邏輯（與 unpaid 一致）
+        grouped = _group_items_by_client(results, client_filter)
+        if not grouped:
+            line_bot_api.push_message(destination_id, TextSendMessage(text="未找到賬單，請檢查日期、所在群組或Abowbow ID。"))
+            return
+
+        for client_name, client_data in grouped.items():
+            # 使用相同的 Flex Message 格式，但標記為 paid bill (總額顯示綠色)
+            flex = _create_client_flex_message(client_data, is_paid_bill=True)
+            line_bot_api.push_message(destination_id, flex)
+            
+    except Exception as e:
+        logging.error(f"Paid worker failed: {e}")
+
+def handle_paid_bill_event(sender_id, message_text, reply_token, user_id, group_id=None):
+    """處理查看已付款賬單指令 (paid YYMMDD [AbowbowID])"""
+    if user_id not in ADMIN_USER_IDS:
+        reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
+        return
+
+    text = message_text.strip()
+    parts = text.split()
+    
+    # 檢查是否符合 paid 指令格式
+    if len(parts) < 2:
+        return
+    
+    # 解析日期 (第二個參數應該是 YYMMDD)
+    date_match = re.match(r"^\d{6}$", parts[1])
+    if not date_match:
+        return
+    
+    date_val = parts[1]
+    auto_client = GROUP_TO_CLIENT_MAP.get(group_id)
+    
+    # 情況 1: 在指定群組 (Vicky/Yumi/Iris)，格式：paid YYMMDD
+    if auto_client and len(parts) == 2:
+        reply_text(reply_token, f"🔍 正在抓取 {auto_client} 的 {date_val} 已付款賬單...")
+        Thread(target=_paid_worker, args=(group_id if group_id else sender_id, auto_client, date_val)).start()
+        return
+    
+    # 情況 2: 在非指定群組，格式：paid YYMMDD AbowbowID
+    if len(parts) >= 3:
+        client_code = " ".join(parts[2:])
+        reply_text(reply_token, f"🔍 正在抓取 {client_code} 的 {date_val} 已付款賬單...")
+        Thread(target=_paid_worker, args=(group_id if group_id else sender_id, client_code, date_val)).start()
+        return
+    
+    # 情況 3: 在非指定群組但沒有提供客戶ID
+    if not auto_client and len(parts) == 2:
+        reply_text(reply_token, "需要輸入Abowbow客戶ID\n例如：paid 260120 Kit")
+        return
 
 def fetch_and_tag_unpaid_today():
     """

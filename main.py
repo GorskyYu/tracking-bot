@@ -29,7 +29,7 @@ from handlers.handlers import (
     handle_ace_shipments,
     handle_soquick_full_notification
 )
-from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event
+from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event
 from handlers.vicky_handler import remind_vicky
 
 # 工作排程
@@ -480,15 +480,29 @@ def webhook():
                 )
                 continue
             
-        # 錄入實收金額指令 (Paid)
+        # Paid 指令處理：分為兩種情況
+        # 1. 查看已付款賬單：paid YYMMDD [AbowbowID]
+        # 2. 錄入實收金額：paid 金額 [ntd|twd]
         if text.lower().startswith("paid"):
-            from handlers.unpaid_handler import handle_paid_event
-            handle_paid_event(
-                sender_id=group_id if group_id else user_id,
-                message_text=text,
-                reply_token=event["replyToken"],
-                user_id=user_id
-            )
+            parts = text.split()
+            # 檢查是否為查看已付款賬單格式 (paid YYMMDD ...)
+            if len(parts) >= 2 and re.match(r"^\d{6}$", parts[1]):
+                handle_paid_bill_event(
+                    sender_id=group_id if group_id else user_id,
+                    message_text=text,
+                    reply_token=event["replyToken"],
+                    user_id=user_id,
+                    group_id=group_id
+                )
+            else:
+                # 錄入實收金額格式 (paid 金額 [ntd|twd])
+                from handlers.unpaid_handler import handle_paid_event
+                handle_paid_event(
+                    sender_id=group_id if group_id else user_id,
+                    message_text=text,
+                    reply_token=event["replyToken"],
+                    user_id=user_id
+                )
             continue
 
         # 1) 處理 UPS 批量更新與單筆尺寸錄入
