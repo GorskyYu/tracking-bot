@@ -874,9 +874,10 @@ def fetch_and_tag_unpaid_today():
         if res and "data" in res and res["data"]["items_page_by_column_values"]:
             for item in res["data"]["items_page_by_column_values"]["items"]:
                 cols = _map_column_values(item.get("column_values", []))
+                bill_date_value = cols.get(COL_BILL_DATE, "").strip()
                 
-                # ✅ 關鍵邏輯：只處理「出賬日」為空的項目
-                if not cols.get(COL_BILL_DATE):
+                # 處理兩種情況：1) 出賬日為空 2) 出賬日已經是今天
+                if not bill_date_value:
                     # 🚀 A. 在 Monday.com 寫上今日日期
                     mutation = """
                     mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $val: String!) {
@@ -891,6 +892,11 @@ def fetch_and_tag_unpaid_today():
                     })
                     
                     # 🚀 B. 處理資料格式以便後續發送
+                    processed = _process_monday_item(item, subitem_board_id, parent_board_id)
+                    if processed:
+                        items_found.append(processed)
+                elif bill_date_value == today_iso:
+                    # 🚀 C. 如果已經是今天的日期，也加入結果（不需要寫入）
                     processed = _process_monday_item(item, subitem_board_id, parent_board_id)
                     if processed:
                         items_found.append(processed)
