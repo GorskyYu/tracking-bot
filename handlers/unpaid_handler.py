@@ -17,7 +17,8 @@ from config import (
     line_bot_api, 
     IRIS_GROUP_ID, 
     VICKY_GROUP_ID, 
-    YUMI_GROUP_ID
+    YUMI_GROUP_ID,
+    ANGELA_GROUP_ID
 )
 
 # 建立對應表：只要指令來自這個群組，就自動查詢對應的名稱
@@ -25,6 +26,7 @@ GROUP_TO_CLIENT_MAP = {
     IRIS_GROUP_ID: "Lammond",
     VICKY_GROUP_ID: "Vicky",
     YUMI_GROUP_ID: "Yumi",
+    ANGELA_GROUP_ID: "Jeth",
     # 未來想加新的群組，直接在下面加一行即可
     # os.getenv("LINE_GROUP_ID_ABC"): "ABC_Client",
 }
