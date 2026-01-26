@@ -466,9 +466,9 @@ def webhook():
             
             if is_admin and not current_group_id:
                 handle_unpaid_event(
-                    sender_id=current_user_id,
-                    message_text=text,
-                    reply_token=event["replyToken"],
+                    current_user_id,  # sender_id (positional)
+                    text,             # message_text (positional)
+                    event["replyToken"],  # reply_token (positional)
                     user_id=current_user_id,
                     group_id=None
                 )
