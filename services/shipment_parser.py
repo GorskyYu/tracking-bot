@@ -44,13 +44,14 @@ class ShipmentParserService:
         }
 
         # 所有出現在訊息中的姓名都要查表單，以便找出寄件人
-        all_extracted_names = []
+        all_extracted_items = []  # List of (box_id, name) tuples
 
         # 1. 掃描文字並分流
         for l in text.splitlines():
             if self.cfg['CODE_TRIGGER_RE'].search(l):
                 parts = re.split(r"\s+", l.strip())
                 if len(parts) < 2: continue
+                box_id = parts[0]  # Box ID like ACE260122YL03
                 name = parts[1]
                 
                 if name in self.cfg['VICKY_NAMES']:
@@ -61,7 +62,7 @@ class ShipmentParserService:
                     bundled_names[self.cfg['IRIS_GROUP_ID']].append(name)
                 else:
                     # 只有不在上述清單的人，才需要去表單查 Sender
-                    all_extracted_names.append(name)
+                    all_extracted_items.append((box_id, name))
 
         # 2. 推送給各負責人群組
         for target_id, names in bundled_names.items():
@@ -71,7 +72,7 @@ class ShipmentParserService:
             self._safe_line_push(target_id, msg)
 
         # 3. 處理散客 Fallback 包含 Bundling 功能)
-        if all_extracted_names:
+        if all_extracted_items:
             try:
                 gs = self.get_gspread()
                 ss = gs.open_by_url(self.cfg['ACE_SHEET_URL'])
@@ -79,15 +80,17 @@ class ShipmentParserService:
                 all_rows = ws.get_all_values()
                 
                 sender_groups = defaultdict(list)
-                found_names = set()
+                found_items = set()  # Set of (box_id, name) tuples
 
-                for name in all_extracted_names:
+                for box_id, name in all_extracted_items:
                     for row in reversed(all_rows):
-                        if len(row) > 7 and row[6].strip() == name:
+                        row_box_id = row[1].strip() if len(row) > 1 else ""
+                        row_name = row[6].strip() if len(row) > 6 else ""
+                        if row_box_id == box_id and row_name == name:
                             sender = row[2].strip()
-                            phone = row[7].strip()
+                            phone = row[7].strip() if len(row) > 7 else ""
                             sender_groups[sender].append(f"{name} {phone}")
-                            found_names.add(name) # 標記為已找到
+                            found_items.add((box_id, name)) # 標記為已找到
                             break
                 
                 # 處理時間邏輯，確保與排程訊息一致
@@ -115,7 +118,7 @@ class ShipmentParserService:
                             self.line_push(admin_id, bundled_msg)
                             
                 # 新增：若有姓名不在表單內，仍發送給 Yves 避免漏掉
-                unfound = [n for n in all_extracted_names if n not in found_names]
+                unfound = [name for box_id, name in all_extracted_items if (box_id, name) not in found_items]
                 if unfound:
                     unfound_msg = f"{ship_day} (表單無資料)：\n\n" + "\n".join(unfound)
                     self._safe_line_push(self.cfg['YVES_USER_ID'], unfound_msg)
