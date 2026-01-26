@@ -611,10 +611,20 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     # If user used the Quick Reply, it might send "unpaid All" etc.
     if len(parts) > 1:
         # Check if parts[1] is a date (YYMMDD format)
-        if len(parts) >= 3 and re.match(r'^\d{6}$', parts[1]):
-            # Format: unpaid YYMMDD ClientID
+        if re.match(r'^\d{6}$', parts[1]):
             filter_date = parts[1]
-            target_name = " ".join(parts[2:])
+            
+            # If client name is provided explicitly (3+ parts)
+            if len(parts) >= 3:
+                target_name = " ".join(parts[2:])
+            # If in a mapped group, auto-detect client
+            elif auto_target_name:
+                target_name = auto_target_name
+            # Otherwise, require explicit client name
+            else:
+                reply_text(reply_token, f"❌ 請指定客戶名稱：unpaid {filter_date} [客戶名稱]")
+                return
+            
             r.set(f"last_unpaid_client_{sender_id}", target_name, ex=3600)
             reply_text(reply_token, f"🔍 正在搜尋 {target_name} 在 {filter_date} 的未付款項目，請稍候...")
             target_id = group_id if group_id else sender_id
