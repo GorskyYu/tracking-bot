@@ -330,22 +330,34 @@ def _create_item_row(item):
                 ]
             )
         )
-        # 2. 第二行：規格 (尺寸 | 重量) 
+        # 2. 第二行：運費單價 | 規格 (CAD rate | INTL rate | 尺寸 | 重量) 
+        cad_rate = item.get("cad_domestic_rate", 0)
+        intl_rate = item.get("intl_shipping_rate", 0)
         dims = item.get("dimensions", "").strip()
         weight = item.get("weight", "").strip()
-        if dims or weight:
-            dims_display = f"{dims} cm" if dims and not dims.lower().endswith("cm") else dims
-            weight_display = f"{weight} kg" if weight and not weight.lower().endswith("kg") else weight
-            # 使用分隔符結合，如果只有一個則不顯示符號
-            specs_text = " | ".join(filter(None, [dims_display, weight_display]))
-            row_contents.append(
-                BoxComponent(
-                    layout='horizontal',
-                    contents=[
-                        TextComponent(text=specs_text, size='xs', color='#aaaaaa', flex=1)
-                    ]
-                )
+        
+        # Build the specs text with shipping rates
+        cad_rate_display = f"{cad_rate} CAD/kg"
+        intl_rate_display = f"{intl_rate} CAD/kg"
+        dims_display = f"{dims} cm" if dims and not dims.lower().endswith("cm") else dims
+        weight_display = f"{weight} kg" if weight and not weight.lower().endswith("kg") else weight
+        
+        # Always show rates, then dimensions and weight
+        specs_parts = [cad_rate_display, intl_rate_display]
+        if dims:
+            specs_parts.append(dims_display)
+        if weight:
+            specs_parts.append(weight_display)
+        
+        specs_text = " | ".join(specs_parts)
+        row_contents.append(
+            BoxComponent(
+                layout='horizontal',
+                contents=[
+                    TextComponent(text=specs_text, size='xs', color='#aaaaaa', flex=1)
+                ]
             )
+        )
     
     return BoxComponent(layout='vertical', margin='md', contents=row_contents)
 
@@ -702,6 +714,10 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
         rate = _extract_float(parent_cols.get(COL_EXCHANGE, "1"))
         if rate <= 0: rate = 1.0
         
+        # Extract shipping rates from subitem columns
+        cad_price = _extract_float(subitem_cols.get(COL_CAD_PRICE, "0"))
+        intl_price = _extract_float(subitem_cols.get(COL_INTL_PRICE, "0"))
+        
         return {
             "id": item["id"],
             "parent_id": parent_item["id"],
@@ -713,6 +729,8 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
             "price_val": _extract_float(subitem_cols.get(COL_PRICE, "0")),
             "dimensions": dim_val,
             "weight": weight_val,
+            "cad_domestic_rate": cad_price,
+            "intl_shipping_rate": intl_price,
             "parent_cad_paid": _extract_float(parent_cols.get(COL_CAD_PAID, "0")),
             "parent_twd_paid": _extract_float(parent_cols.get(COL_TWD_PAID, "0")),
             "parent_rate": rate
