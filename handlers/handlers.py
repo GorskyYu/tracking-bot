@@ -46,8 +46,7 @@ from config import (
     line_bot_api,
 )
 
-# Sky's user ID (treat like Danny for auto-confirmation)
-SKY_USER_ID = "U0a92a6a032457ccfec9b4c5e76cd65cb"
+SKY_USER_ID = os.getenv("SKY_USER_ID")
 
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
@@ -468,25 +467,25 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                         senders.add(sender)
             
             log.info(f"[Missing Confirm] Found senders to notify: {senders}")
-                # 發送給所有管理員
-                if senders:
-                    for admin_id in ADMIN_USER_IDS:
+            # 發送給所有管理員
+            if senders:
+                for admin_id in ADMIN_USER_IDS:
+                    requests.post(
+                        LINE_PUSH_URL,
+                        headers=LINE_HEADERS,
+                        json={
+                            "to": admin_id,
+                            "messages": [{"type": "text", "text": "以下寄件人的收件人尚未按申報相符，再麻煩通知："}]
+                        }
+                    )
+                    for sender in sorted(senders):
                         requests.post(
                             LINE_PUSH_URL,
                             headers=LINE_HEADERS,
-                            json={
-                                "to": admin_id,
-                                "messages": [{"type": "text", "text": "以下寄件人的收件人尚未按申報相符，再麻煩通知："}]
-                            }
+                            json={"to": admin_id, "messages": [{"type": "text", "text": sender}]}
                         )
-                        for sender in sorted(senders):
-                            requests.post(
-                                LINE_PUSH_URL,
-                                headers=LINE_HEADERS,
-                                json={"to": admin_id, "messages": [{"type": "text", "text": sender}]}
-                            )
-                else:
-                    log.info("[Missing Confirm] No senders found or all senders are in excluded lists")
+            else:
+                log.info("[Missing Confirm] No senders found or all senders are in excluded lists")
 
 
 def handle_ace_schedule(event: Dict[str, Any]) -> None:
