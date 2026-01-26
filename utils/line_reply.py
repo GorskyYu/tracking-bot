@@ -2,11 +2,11 @@ import requests
 import os
 
 LINE_REPLY_ENDPOINT = "https://api.line.me/v2/bot/message/reply"
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_TOKEN = os.getenv("LINE_TOKEN")  # Changed from LINE_CHANNEL_ACCESS_TOKEN
 
 def reply_text(reply_token, text):
     headers = {
-        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+        "Authorization": f"Bearer {LINE_TOKEN}",
         "Content-Type": "application/json"
     }
     body = {
@@ -18,7 +18,7 @@ def reply_text(reply_token, text):
 
 def reply_message(reply_token, messages):
     headers = {
-        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+        "Authorization": f"Bearer {LINE_TOKEN}",
         "Content-Type": "application/json"
     }
     body = {

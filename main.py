@@ -462,8 +462,6 @@ def webhook():
             current_group_id = src.get("groupId")
             is_admin = (current_user_id == YVES_USER_ID or current_user_id == GORSKY_USER_ID)
             
-            print(f"[目前功能] user_id={current_user_id}, group_id={current_group_id}, is_admin={is_admin}, not group_id={not current_group_id}")
-            
             if is_admin and not current_group_id:
                 handle_unpaid_event(
                     current_user_id,  # sender_id (positional)
