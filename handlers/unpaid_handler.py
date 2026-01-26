@@ -551,8 +551,8 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
 - paid 指令支援多項目按比例分配付款，從最舊日期開始分配
 - 所有指令僅限管理員使用（除非在指定群組）"""
         print(f"[handle_unpaid_event] About to call reply_text with token: {reply_token}")
-        reply_text(reply_token, help_text)
-        print(f"[handle_unpaid_event] reply_text called successfully")
+        status_code, response_text = reply_text(reply_token, help_text)
+        print(f"[handle_unpaid_event] reply_text returned: status={status_code}, response={response_text}")
         return
 
     # 處理 unpaid today [client_code] (帶客戶代號的 today 指令)
