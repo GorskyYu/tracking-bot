@@ -48,6 +48,7 @@ COL_ADDT_CAD = "追加加幣支出"
 COL_ADDT_TWD = "追加台幣支出"
 COL_CAD_PAID ="加幣實收"
 COL_TWD_PAID ="台幣實收"
+COL_COLLECTOR = "收款人"
 COL_EXCHANGE = "匯率"
 COL_BILL_DATE = "出賬日"
 
@@ -1017,33 +1018,86 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id):
                 return line_bot_api.push_message(sender_id, TextSendMessage(text="查無該客戶的未付項目。"))
 
             client_data = grouped[client_key]
-            # 遍歷該客戶的所有出賬日期 (Parent Items)
-            for date_str, data in client_data["data"].items():
-                # 這裡隨便取一個子項目來獲取 Parent ID
+            
+            # Sort parent items by date (oldest first)
+            sorted_dates = sorted(client_data["data"].items(), key=lambda x: x[0])
+            
+            remaining_amount = amount  # Amount left to distribute
+            collector_name = "CY" if currency in ["ntd", "twd"] else "YL"
+            
+            # Track distribution results
+            distribution_log = []
+            
+            mutation = """
+            mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $val: String!) {
+                change_simple_column_value (board_id: $board_id, item_id: $item_id, column_id: $col_id, value: $val) { id }
+            }
+            """
+            
+            # Distribute payment across parent items (oldest to newest)
+            for date_str, data in sorted_dates:
+                if remaining_amount <= 0:
+                    break
+                    
                 sample_item = data["items"][0]
-                parent_id = sample_item.get("parent_id") # 需確保 _process_monday_item 有回傳 id
+                parent_id = sample_item.get("parent_id")
                 parent_board_id = sample_item.get("parent_board_id")
                 subitem_board_id = sample_item.get("board_id")
-
-                # A. 寫入金額
+                rate = sample_item.get("parent_rate", 1.0)
+                
+                # Calculate remaining balance for this parent item
+                remaining_balance_cad = data["subtotal"]
+                
+                # Get existing paid amounts
+                existing_cad_paid = sample_item.get("parent_cad_paid", 0)
+                existing_twd_paid = sample_item.get("parent_twd_paid", 0)
+                
+                # Check if already fully paid
+                if remaining_balance_cad <= 0:
+                    distribution_log.append(f"⏭️ {date_str}: 已全額付清，跳過")
+                    continue
+                
+                # Calculate how much to apply to this parent item (in CAD)
+                if currency in ["ntd", "twd"]:
+                    amount_to_apply_cad = remaining_amount / rate
+                else:
+                    amount_to_apply_cad = remaining_amount
+                
+                # Determine actual amount to apply (cannot exceed remaining balance)
+                actual_applied_cad = min(amount_to_apply_cad, remaining_balance_cad)
+                actual_applied_original = actual_applied_cad * rate if currency in ["ntd", "twd"] else actual_applied_cad
+                
+                # Calculate new total paid amount
                 target_col = COL_TWD_PAID if currency in ["ntd", "twd"] else COL_CAD_PAID
                 col_id = _fetch_col_id_by_title(parent_board_id, target_col)
                 
-                mutation = """
-                mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $val: String!) {
-                    change_simple_column_value (board_id: $board_id, item_id: $item_id, column_id: $col_id, value: $val) { id }
-                }
-                """
-                _monday_request(mutation, {"board_id": int(parent_board_id), "item_id": int(parent_id), "col_id": col_id, "val": str(amount)})
-
-                # B. 判斷是否全額支付 (邏輯：剩餘費用 <= 輸入金額)
-                # 注意：這裡的 subtotal 已經預扣過 parent_paid 了
-                # 計算實際支付的加幣價值
-                rate = data["items"][0].get("parent_rate", 1.0) # 獲取該批次的匯率
-                actual_paid_cad = amount / rate if currency in ["ntd", "twd"] else amount
+                if currency in ["ntd", "twd"]:
+                    new_paid_amount = existing_twd_paid + actual_applied_original
+                else:
+                    new_paid_amount = existing_cad_paid + actual_applied_original
                 
-                # B. 判斷是否全額支付 (邏輯：剩餘加幣費用 <= 實際支付加幣價值)
-                if data["subtotal"] <= actual_paid_cad:
+                # Write paid amount to Monday
+                _monday_request(mutation, {
+                    "board_id": int(parent_board_id), 
+                    "item_id": int(parent_id), 
+                    "col_id": col_id, 
+                    "val": str(new_paid_amount)
+                })
+                
+                # Write collector name to 收款人 column
+                collector_col_id = _fetch_col_id_by_title(parent_board_id, COL_COLLECTOR)
+                _monday_request(mutation, {
+                    "board_id": int(parent_board_id), 
+                    "item_id": int(parent_id), 
+                    "col_id": collector_col_id, 
+                    "val": collector_name
+                })
+                
+                # Update remaining amount
+                remaining_amount -= actual_applied_original
+                
+                # Check if fully paid and update status
+                if actual_applied_cad >= remaining_balance_cad:
                     status_col_id = _fetch_col_id_by_title(subitem_board_id, COL_STATUS)
                     for sub in data["items"]:
                         _monday_request(mutation, {
@@ -1052,9 +1106,16 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id):
                             "col_id": status_col_id, 
                             "val": "已收款出貨"
                         })
-                    line_bot_api.push_message(sender_id, TextSendMessage(text=f"✅ {last_client} ({date_str}) 已全額收訖，狀態更新為：已收款出貨"))
+                    distribution_log.append(f"✅ {date_str}: {currency.upper()} ${actual_applied_original:.2f} → 已全額收訖")
                 else:
-                    line_bot_api.push_message(sender_id, TextSendMessage(text=f"📝 {last_client} ({date_str}) 已錄入金額，但仍有餘額 ${data['subtotal'] - amount:.2f}。"))
+                    new_remaining = remaining_balance_cad - actual_applied_cad
+                    distribution_log.append(f"📝 {date_str}: {currency.upper()} ${actual_applied_original:.2f} → 仍欠 CAD ${new_remaining:.2f}")
+            
+            # Send summary message
+            summary = f"💰 {last_client} 付款分配完成 (收款人: {collector_name})：\n\n" + "\n".join(distribution_log)
+            if remaining_amount > 0.01:  # Small threshold for floating point comparison
+                summary += f"\n\n⚠️ 尚有 {currency.upper()} ${remaining_amount:.2f} 未分配（所有項目已付清）"
+            line_bot_api.push_message(sender_id, TextSendMessage(text=summary))
 
         except Exception as e:
             logging.error(f"Paid worker failed: {e}")
