@@ -463,6 +463,7 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                 log.info(f"[Missing Confirm] Closest date found: {closest_date}")
                 # 查找對應的寄件人
                 senders = set()
+                declarers_on_date = []  # Debug: collect all declarers on that date
                 for row_idx, row in enumerate(data[1:], start=2):
                     date_str = (row[0] or "").strip()
                     if not date_str:
@@ -477,6 +478,8 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                     
                     # Column G (index 6) is declarer
                     declarer = (row[6] if len(row) > 6 else "").strip()
+                    declarers_on_date.append(declarer)  # Debug
+                    
                     if declarer in declarer_names:
                         # Column C (index 2) is sender
                         sender = (row[2] if len(row) > 2 else "").strip()
@@ -484,6 +487,7 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                         if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
                             senders.add(sender)
                 
+                log.info(f"[Missing Confirm] All declarers on {closest_date}: {declarers_on_date[:20]}")  # Show first 20
                 log.info(f"[Missing Confirm] Found senders to notify: {senders}")
                 # 發送給所有管理員
                 if senders:
