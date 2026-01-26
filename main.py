@@ -501,7 +501,8 @@ def webhook():
                     sender_id=group_id if group_id else user_id,
                     message_text=text,
                     reply_token=event["replyToken"],
-                    user_id=user_id
+                    user_id=user_id,
+                    group_id=group_id
                 )
             continue
 

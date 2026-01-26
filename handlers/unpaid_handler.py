@@ -979,38 +979,50 @@ def fetch_and_tag_unpaid_today():
                 
     return items_found, today_display
 
-def handle_paid_event(sender_id, message_text, reply_token, user_id):
+def handle_paid_event(sender_id, message_text, reply_token, user_id, group_id=None):
     """處理實收金額錄入與狀態自動轉換邏輯"""
     if user_id not in ADMIN_USER_IDS:
         return reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
 
-    # 1. 解析指令 (例如：paid 42.41 ntd)
-    match = re.match(r"^(paid|Paid)\s*(\d+(?:\.\d+)?)\s*(ntd|twd)?$", message_text.strip(), re.IGNORECASE)
+    # 1. 解析指令 (例如：paid 42.41 ntd 或 paid 42.41 ntd Iris)
+    match = re.match(r"^(paid|Paid)\s*(\d+(?:\.\d+)?)\s*(ntd|twd|cad)?\s*(.+)?$", message_text.strip(), re.IGNORECASE)
     if not match:
         return
     
     amount = float(match.group(2))
     currency = (match.group(3) or "cad").lower()
+    client_name_from_cmd = match.group(4).strip() if match.group(4) else None
 
-    # 2. 從 Redis 抓取最後查詢的客戶名稱
-    last_client = r.get(f"last_unpaid_client_{sender_id}")
-    if not last_client:
-        return reply_text(reply_token, "❌ 請先輸入 unpaid [名稱] 查詢帳單，再進行錄入。")
+    # 2. 決定客戶名稱 (優先級：命令中的名稱 > 群組映射 > Redis緩存)
+    target_client = None
+    
+    # 優先使用命令中的客戶名稱
+    if client_name_from_cmd:
+        target_client = client_name_from_cmd
+    # 如果在特定群組中，自動映射客戶
+    elif group_id and group_id in GROUP_TO_CLIENT_MAP:
+        target_client = GROUP_TO_CLIENT_MAP[group_id]
+    # 最後才從 Redis 讀取
+    else:
+        target_client = r.get(f"last_unpaid_client_{sender_id}")
+    
+    if not target_client:
+        return reply_text(reply_token, "❌ 請指定客戶名稱：paid [金額] [ntd|twd] [客戶名稱]")
 
-    reply_text(reply_token, f"💰 正在為 {last_client} 錄入 {currency.upper()} ${amount}，請稍候...")
+    reply_text(reply_token, f"💰 正在為 {target_client} 錄入 {currency.upper()} ${amount}，請稍候...")
 
     def _paid_worker():
         try:
             # 抓取該客戶所有未付項目
             items = fetch_unpaid_items_globally()
-            grouped = _group_items_by_client(items, last_client)
+            grouped = _group_items_by_client(items, target_client)
             if not grouped:
                 return line_bot_api.push_message(sender_id, TextSendMessage(text="查無該客戶的未付項目。"))
 
             # Find the client in grouped dict (case-insensitive key match)
             client_key = None
             for key in grouped.keys():
-                if key.lower() == last_client.lower():
+                if key.lower() == target_client.lower():
                     client_key = key
                     break
             
@@ -1112,7 +1124,7 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id):
                     distribution_log.append(f"📝 {date_str}: {currency.upper()} ${actual_applied_original:.2f} → 仍欠 CAD ${new_remaining:.2f}")
             
             # Send summary message
-            summary = f"💰 {last_client} 付款分配完成 (收款人: {collector_name})：\n\n" + "\n".join(distribution_log)
+            summary = f"💰 {target_client} 付款分配完成 (收款人: {collector_name})：\n\n" + "\n".join(distribution_log)
             if remaining_amount > 0.01:  # Small threshold for floating point comparison
                 summary += f"\n\n⚠️ 尚有 {currency.upper()} ${remaining_amount:.2f} 未分配（所有項目已付清）"
             line_bot_api.push_message(sender_id, TextSendMessage(text=summary))
