@@ -417,12 +417,15 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
     
     # 新增：查詢 ACE 試算表找出寄件人，並通知管理員
     if unknown_found:
+        log.info(f"[Missing Confirm] Found unknown declarers: {unknown_found}")
         # 提取姓名（第二個欄位）
         declarer_names = set()
         for line in unknown_found:
             parts = re.split(r"\s+", line.strip())
             if len(parts) >= 2:
                 declarer_names.add(parts[1].strip())
+        
+        log.info(f"[Missing Confirm] Extracted declarer names: {declarer_names}")
         
         if declarer_names:
             # 查詢 ACE 試算表
@@ -434,6 +437,8 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
             gs = get_gspread_client()
             sheet = gs.open_by_url(ACE_SHEET_URL).sheet1
             data = sheet.get_all_values()
+            
+            log.info(f"[Missing Confirm] ACE sheet has {len(data)} rows")
             
             # 找出最接近今天的日期
             today = datetime.now(timezone.utc).date()
@@ -455,6 +460,7 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                     closest_date = row_date
             
             if closest_date:
+                log.info(f"[Missing Confirm] Closest date found: {closest_date}")
                 # 查找對應的寄件人
                 senders = set()
                 for row_idx, row in enumerate(data[1:], start=2):
@@ -474,9 +480,11 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                     if declarer in declarer_names:
                         # Column C (index 2) is sender
                         sender = (row[2] if len(row) > 2 else "").strip()
+                        log.info(f"[Missing Confirm] Row {row_idx}: declarer={declarer}, sender={sender}")
                         if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
                             senders.add(sender)
                 
+                log.info(f"[Missing Confirm] Found senders to notify: {senders}")
                 # 發送給所有管理員
                 if senders:
                     for admin_id in ADMIN_USER_IDS:
@@ -494,6 +502,8 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                                 headers=LINE_HEADERS,
                                 json={"to": admin_id, "messages": [{"type": "text", "text": sender}]}
                             )
+                else:
+                    log.info("[Missing Confirm] No senders found or all senders are in excluded lists")
 
 
 def handle_ace_schedule(event: Dict[str, Any]) -> None:
