@@ -231,8 +231,11 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
             client_name = raw_parent
         
         # Filter by date if specified
-        if filter_date and date_str != filter_date:
-            continue
+        if filter_date:
+            print(f"[DEBUG] Filtering: date_str='{date_str}', filter_date='{filter_date}', parent_name='{raw_parent}'")
+            if date_str != filter_date:
+                print(f"[DEBUG] Skipping item due to date mismatch")
+                continue
         
         # 只要名稱中包含關鍵字，就統一歸類到該客戶下
         found_canonical = False
