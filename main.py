@@ -456,6 +456,22 @@ def webhook():
             )
             continue
         
+        # 目前功能指令 (僅限管理員私訊)
+        if text.strip() == "目前功能":
+            user_id = src.get("userId")
+            group_id = src.get("groupId")
+            is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
+            
+            if is_admin and not group_id:
+                handle_unpaid_event(
+                    sender_id=user_id,
+                    message_text=text,
+                    reply_token=event["replyToken"],
+                    user_id=user_id,
+                    group_id=None
+                )
+                continue
+        
         # 新的 Unpaid 邏輯
         if text.lower().startswith("unpaid"):
             user_id = src.get("userId")
