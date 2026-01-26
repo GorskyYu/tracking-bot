@@ -221,22 +221,25 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
     raw_clients = {} 
 
     for item in items:
-        # Parse Parent Name
+        # Parse Parent Name to extract date and client name
         raw_parent = item["parent_name"]
         match = re.match(r'^(\d+)\s+(.*)$', raw_parent.strip())
         if match:
-            date_str = match.group(1)
+            date_str = match.group(1)  # Date from parent name for grouping/display
             client_name = match.group(2)
         else:
             date_str = ""
             client_name = raw_parent
         
-        # Filter by date if specified
-        if filter_date and date_str != filter_date:
-            continue
-        
-        # Item passed date filter
-        print(f"[DEBUG] Item passed date filter: date_str={date_str}, parent_name={raw_parent}")
+        # Filter by date using bill_date column (YYMMDD format like "260120")
+        if filter_date:
+            item_bill_date = item.get("bill_date", "").strip()
+            # Normalize filter_date from YYYYMMDD to YYMMDD for comparison with bill_date column
+            filter_date_short = filter_date[2:] if len(filter_date) == 8 else filter_date
+            print(f"[DEBUG] Comparing bill_date='{item_bill_date}' with filter_date_short='{filter_date_short}' for parent={raw_parent}")
+            if item_bill_date != filter_date_short:
+                continue
+            print(f"[DEBUG] Item passed date filter: bill_date={item_bill_date}, parent_name={raw_parent}")
         
         # 只要名稱中包含關鍵字，就統一歸類到該客戶下
         found_canonical = False
@@ -745,6 +748,9 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
         cad_price = _extract_float(subitem_cols.get(COL_CAD_PRICE, "0"))
         intl_price = _extract_float(subitem_cols.get(COL_INTL_PRICE, "0"))
         
+        # Extract bill_date from subitem columns
+        bill_date = subitem_cols.get(COL_BILL_DATE, "").strip()
+        
         return {
             "id": item["id"],
             "parent_id": parent_item["id"],
@@ -752,6 +758,7 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
             "parent_board_id": parent_board_id,
             "parent_name": parent_name,
             "sub_name": sub_name,
+            "bill_date": bill_date,
             "price_text": subitem_cols.get(COL_PRICE, "0"),
             "price_val": _extract_float(subitem_cols.get(COL_PRICE, "0")),
             "dimensions": dim_val,
