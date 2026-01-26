@@ -27,6 +27,9 @@ from config import (
     IRIS_USER_ID,
     VICKY_USER_ID,
     YVES_USER_ID,
+    
+# Sky's user ID (treat like Danny for auto-confirmation)
+SKY_USER_ID = "U0a92a6a032457ccfec9b4c5e76cd65cb"
 
     # names/filters
     IRIS_NAMES,
@@ -371,6 +374,7 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
     vicky_found = []
     yumi_found = []
     iris_found = []
+    unknown_found = []  # 新增：收集不在任何名單的人
 
     # 逐行找 ACE/250N 單號
     for l in text.splitlines():
@@ -389,6 +393,9 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                 yumi_found.append(name)
             elif name in IRIS_NAMES:
                 iris_found.append(name)
+            else:
+                # 不在任何名單中，記錄整行資訊
+                unknown_found.append(l.strip())
 
     # 彙整發送函式
     def push_summary(group_id: str, names: List[str]):
@@ -407,6 +414,86 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
     push_summary(VICKY_GROUP_ID, vicky_found)
     push_summary(YUMI_GROUP_ID, yumi_found)
     push_summary(IRIS_GROUP_ID, iris_found)
+    
+    # 新增：查詢 ACE 試算表找出寄件人，並通知管理員
+    if unknown_found:
+        # 提取姓名（第二個欄位）
+        declarer_names = set()
+        for line in unknown_found:
+            parts = re.split(r"\s+", line.strip())
+            if len(parts) >= 2:
+                declarer_names.add(parts[1].strip())
+        
+        if declarer_names:
+            # 查詢 ACE 試算表
+            ACE_SHEET_URL = __import__("os").getenv("ACE_SHEET_URL")
+            if not ACE_SHEET_URL:
+                log.error("[Missing Confirm] ACE_SHEET_URL not set")
+                return
+            
+            gs = get_gspread_client()
+            sheet = gs.open_by_url(ACE_SHEET_URL).sheet1
+            data = sheet.get_all_values()
+            
+            # 找出最接近今天的日期
+            today = datetime.now(timezone.utc).date()
+            closest_date = None
+            closest_diff = timedelta(days=9999)
+            
+            for row_idx, row in enumerate(data[1:], start=2):
+                date_str = (row[0] or "").strip()
+                if not date_str:
+                    continue
+                try:
+                    row_date = parse_date(date_str).date()
+                except Exception:
+                    continue
+                
+                diff = abs(row_date - today)
+                if diff < closest_diff:
+                    closest_diff = diff
+                    closest_date = row_date
+            
+            if closest_date:
+                # 查找對應的寄件人
+                senders = set()
+                for row_idx, row in enumerate(data[1:], start=2):
+                    date_str = (row[0] or "").strip()
+                    if not date_str:
+                        continue
+                    try:
+                        row_date = parse_date(date_str).date()
+                    except Exception:
+                        continue
+                    
+                    if row_date != closest_date:
+                        continue
+                    
+                    # Column G (index 6) is declarer
+                    declarer = (row[6] if len(row) > 6 else "").strip()
+                    if declarer in declarer_names:
+                        # Column C (index 2) is sender
+                        sender = (row[2] if len(row) > 2 else "").strip()
+                        if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
+                            senders.add(sender)
+                
+                # 發送給所有管理員
+                if senders:
+                    for admin_id in ADMIN_USER_IDS:
+                        requests.post(
+                            LINE_PUSH_URL,
+                            headers=LINE_HEADERS,
+                            json={
+                                "to": admin_id,
+                                "messages": [{"type": "text", "text": "以下寄件人的收件人尚未按申報相符，再麻煩通知："}]
+                            }
+                        )
+                        for sender in sorted(senders):
+                            requests.post(
+                                LINE_PUSH_URL,
+                                headers=LINE_HEADERS,
+                                json={"to": admin_id, "messages": [{"type": "text", "text": sender}]}
+                            )
 
 
 def handle_ace_schedule(event: Dict[str, Any]) -> None:
