@@ -27,9 +27,6 @@ from config import (
     IRIS_USER_ID,
     VICKY_USER_ID,
     YVES_USER_ID,
-    
-# Sky's user ID (treat like Danny for auto-confirmation)
-SKY_USER_ID = "U0a92a6a032457ccfec9b4c5e76cd65cb"
 
     # names/filters
     IRIS_NAMES,
@@ -48,6 +45,9 @@ SKY_USER_ID = "U0a92a6a032457ccfec9b4c5e76cd65cb"
     LINE_HEADERS,
     line_bot_api,
 )
+
+# Sky's user ID (treat like Danny for auto-confirmation)
+SKY_USER_ID = "U0a92a6a032457ccfec9b4c5e76cd65cb"
 
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
