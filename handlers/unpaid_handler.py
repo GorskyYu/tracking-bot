@@ -354,7 +354,7 @@ def _create_item_row(item):
             BoxComponent(
                 layout='horizontal',
                 contents=[
-                    TextComponent(text=specs_text, size='xs', color='#aaaaaa', flex=1)
+                    TextComponent(text=specs_text, size='xs', color='#aaaaaa', flex=1, wrap=True)
                 ]
             )
         )
