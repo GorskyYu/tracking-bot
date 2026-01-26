@@ -589,7 +589,7 @@ def webhook():
             "按" in text,
             "申報相符" in text,
         )        
-        if (group_id == SOQUICK_GROUP_ID
+        if (group_id in (SOQUICK_GROUP_ID, ACE_GROUP_ID)
             and "您好，請" in text
             and "按" in text
             and "申報相符" in text):
