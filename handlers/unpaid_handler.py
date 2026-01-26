@@ -231,13 +231,19 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
             date_str = ""
             client_name = raw_parent
         
-        # Filter by date using bill_date column (YYMMDD format like "260120")
+        # Filter by date using bill_date column
         if filter_date:
             item_bill_date = item.get("bill_date", "").strip()
-            # Normalize filter_date from YYYYMMDD to YYMMDD for comparison with bill_date column
-            filter_date_short = filter_date[2:] if len(filter_date) == 8 else filter_date
-            print(f"[DEBUG] Comparing bill_date='{item_bill_date}' with filter_date_short='{filter_date_short}' for parent={raw_parent}")
-            if item_bill_date != filter_date_short:
+            # bill_date format from Monday: "2026-01-20"
+            # filter_date format: "20260120" (YYYYMMDD)
+            # Convert filter_date to ISO format for comparison
+            if len(filter_date) == 8:  # YYYYMMDD
+                filter_date_iso = f"{filter_date[:4]}-{filter_date[4:6]}-{filter_date[6:8]}"
+            else:
+                filter_date_iso = filter_date
+            
+            print(f"[DEBUG] Comparing bill_date='{item_bill_date}' with filter_date_iso='{filter_date_iso}' for parent={raw_parent}")
+            if item_bill_date != filter_date_iso:
                 continue
             print(f"[DEBUG] Item passed date filter: bill_date={item_bill_date}, parent_name={raw_parent}")
         
