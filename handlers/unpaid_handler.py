@@ -231,11 +231,8 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
             client_name = raw_parent
         
         # Filter by date if specified
-        if filter_date:
-            print(f"[DEBUG] Filtering: date_str='{date_str}', filter_date='{filter_date}', parent_name='{raw_parent}'")
-            if date_str != filter_date:
-                print(f"[DEBUG] Skipping item due to date mismatch")
-                continue
+        if filter_date and date_str != filter_date:
+            continue
         
         # 只要名稱中包含關鍵字，就統一歸類到該客戶下
         found_canonical = False
@@ -621,7 +618,8 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     if len(parts) > 1:
         # Check if parts[1] is a date (YYMMDD format)
         if re.match(r'^\d{6}$', parts[1]):
-            filter_date = parts[1]
+            # Normalize YYMMDD to YYYYMMDD format for comparison
+            filter_date = "20" + parts[1]
             
             # If client name is provided explicitly (3+ parts)
             if len(parts) >= 3:
@@ -631,7 +629,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
                 target_name = auto_target_name
             # Otherwise, require explicit client name
             else:
-                reply_text(reply_token, f"❌ 請指定客戶名稱：unpaid {filter_date} [客戶名稱]")
+                reply_text(reply_token, f"❌ 請指定客戶名稱：unpaid {parts[1]} [客戶名稱]")
                 return
             
             r.set(f"last_unpaid_client_{sender_id}", target_name, ex=3600)
