@@ -235,6 +235,9 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
         if filter_date and date_str != filter_date:
             continue
         
+        # Item passed date filter
+        print(f"[DEBUG] Item passed date filter: date_str={date_str}, parent_name={raw_parent}")
+        
         # 只要名稱中包含關鍵字，就統一歸類到該客戶下
         found_canonical = False
         for main_name in ["Vicky", "Yumi", "Lammond"]:
@@ -249,7 +252,9 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
         
         # Filter Logic (case-insensitive)
         if filter_name and filter_name != "All":
+             print(f"[DEBUG] Checking client filter: filter_name={filter_name}, canonical_name={canonical_name}")
              if filter_name.lower() not in canonical_name.lower(): 
+                 print(f"[DEBUG] Item filtered out by client name")
                  continue
 
         if canonical_name not in raw_clients:
