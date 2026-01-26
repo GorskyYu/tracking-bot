@@ -418,12 +418,16 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
     # 新增：查詢 ACE 試算表找出寄件人，並通知管理員
     if unknown_found:
         log.info(f"[Missing Confirm] Found unknown declarers: {unknown_found}")
-        # 提取姓名（第二個欄位）
+        # 提取姓名（第二個欄位）和電話（第三個欄位）
         declarer_names = set()
+        declarer_info = {}  # {name: phone}
         for line in unknown_found:
             parts = re.split(r"\s+", line.strip())
             if len(parts) >= 2:
-                declarer_names.add(parts[1].strip())
+                name = parts[1].strip()
+                phone = parts[2].strip() if len(parts) >= 3 else ""
+                declarer_names.add(name)
+                declarer_info[name] = phone
         
         log.info(f"[Missing Confirm] Extracted declarer names: {declarer_names}")
         
@@ -471,20 +475,27 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
             # 發送給所有管理員
             if senders:
                 for admin_id in ADMIN_USER_IDS:
-                    requests.post(
-                        LINE_PUSH_URL,
-                        headers=LINE_HEADERS,
-                        json={
-                            "to": admin_id,
-                            "messages": [{"type": "text", "text": "以下寄件人的收件人尚未按申報相符，再麻煩通知："}]
-                        }
-                    )
+                    # First send sender names
                     for sender in sorted(senders):
                         requests.post(
                             LINE_PUSH_URL,
                             headers=LINE_HEADERS,
                             json={"to": admin_id, "messages": [{"type": "text", "text": sender}]}
                         )
+                    # Then send declarers with phone numbers
+                    declarer_lines = []
+                    for name in sorted(declarer_names):
+                        phone = declarer_info.get(name, "")
+                        if phone:
+                            declarer_lines.append(f"{name} {phone}")
+                        else:
+                            declarer_lines.append(name)
+                    declarer_text = "以下申報人尚未按申報相符，再麻煩通知：\n" + "\n".join(declarer_lines)
+                    requests.post(
+                        LINE_PUSH_URL,
+                        headers=LINE_HEADERS,
+                        json={"to": admin_id, "messages": [{"type": "text", "text": declarer_text}]}
+                    )
             else:
                 log.info("[Missing Confirm] No senders found or all senders are in excluded lists")
 
