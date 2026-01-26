@@ -17,6 +17,7 @@ from sheets import get_gspread_client
 from config import (
     # LINE & group ids
     ACE_GROUP_ID,
+    ANGELA_GROUP_ID,
     IRIS_GROUP_ID,
     SOQUICK_GROUP_ID,
     VICKY_GROUP_ID,
@@ -30,6 +31,7 @@ from config import (
     YVES_USER_ID,
 
     # names/filters
+    ANGELA_NAMES,
     IRIS_NAMES,
     VICKY_NAMES,
     YUMI_NAMES,
@@ -86,6 +88,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
     vicky: List[str] = []
     yumi: List[str] = []
     iris: List[str] = []
+    angela: List[str] = []
     fallback_map: Dict[str, List[str]] = {}
 
     # --- 1. 執行分流邏輯 ---
@@ -111,6 +114,8 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
                 yumi.append(full_msg)
             elif recipient in IRIS_NAMES:
                 iris.append(full_msg)
+            elif recipient in ANGELA_NAMES:
+                angela.append(full_msg)
             else:
                 # 按收件人收集單號
                 if recipient not in fallback_map: fallback_map[recipient] = []
@@ -142,6 +147,8 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
                 yumi.append(full_msg)
             elif recipient in IRIS_NAMES:
                 iris.append(full_msg)
+            elif recipient in ANGELA_NAMES:
+                angela.append(full_msg)
             else:
                 # 按收件人收集單號
                 if recipient not in fallback_map: fallback_map[recipient] = []
@@ -164,6 +171,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID, yumi)
     push(IRIS_GROUP_ID, iris)
+    push(ANGELA_GROUP_ID, angela)
 
     #--- 3. ACE 試算表反查與打包分組 (名字一條、內容一條) ---
     sender_to_bundles: Dict[str, List[str]] = {} # 儲存 寄件人 -> [單號1, 單號2...]
@@ -188,12 +196,12 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
                 sheet_recipient = row[6].strip() if len(row) > 6 else ""
                 if sheet_recipient in fallback_map and sheet_recipient not in matched_recipients:
                     sender = row[2].strip() if len(row) > 2 else "未知寄件人"
-                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
+                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
                         if sender not in sender_to_bundles:
                             sender_to_bundles[sender] = []
                         sender_to_bundles[sender].extend(fallback_map[sheet_recipient])
                         matched_recipients.add(sheet_recipient) # 標記已處理
-            
+
             # 處理查不到寄件人的項目
             for rec, msgs in fallback_map.items():
                 if rec not in matched_recipients: unmapped_blocks.extend(msgs)
@@ -374,6 +382,7 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
     vicky_found = []
     yumi_found = []
     iris_found = []
+    angela_found = []
     unknown_found = []  # 新增：收集不在任何名單的人
 
     # 逐行找 ACE/250N 單號
@@ -393,6 +402,8 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                 yumi_found.append(name)
             elif name in IRIS_NAMES:
                 iris_found.append(name)
+            elif name in ANGELA_NAMES:
+                angela_found.append(name)
             else:
                 # 不在任何名單中，記錄整行資訊
                 unknown_found.append(l.strip())
@@ -414,6 +425,7 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
     push_summary(VICKY_GROUP_ID, vicky_found)
     push_summary(YUMI_GROUP_ID, yumi_found)
     push_summary(IRIS_GROUP_ID, iris_found)
+    push_summary(ANGELA_GROUP_ID, angela_found)
     
     # 新增：查詢 ACE 試算表找出寄件人，並通知管理員
     if unknown_found:
@@ -468,7 +480,7 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                     # Column C (index 2) is sender
                     sender = (row[2] if len(row) > 2 else "").strip()
                     log.info(f"[Missing Confirm] Row {row_idx}: declarer={declarer}, sender={sender}")
-                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
+                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
                         senders.add(sender)
             
             log.info(f"[Missing Confirm] Found senders to notify: {senders}")
@@ -540,6 +552,7 @@ def handle_ace_schedule(event: Dict[str, Any]) -> None:
     vicky_batch = [c for c in cleaned if any(name in c for name in VICKY_NAMES)]
     yumi_batch = [c for c in cleaned if any(name in c for name in YUMI_NAMES)]
     iris_batch  = [c for c in cleaned if any(name in c for name in IRIS_NAMES)]
+    angela_batch = [c for c in cleaned if any(name in c for name in ANGELA_NAMES)]
 
     # extract just the name token (first word) from each cleaned line
     names_only = [c.split()[0] for c in cleaned]
@@ -550,6 +563,7 @@ def handle_ace_schedule(event: Dict[str, Any]) -> None:
         if nm not in VICKY_NAMES
         and nm not in YUMI_NAMES
         and nm not in IRIS_NAMES
+        and nm not in ANGELA_NAMES
         and nm not in YVES_NAMES
     ]
 
@@ -571,6 +585,7 @@ def handle_ace_schedule(event: Dict[str, Any]) -> None:
     push_to(VICKY_GROUP_ID, vicky_batch)
     push_to(YUMI_GROUP_ID, yumi_batch)
     push_to(IRIS_GROUP_ID, iris_batch)
+    push_to(ANGELA_GROUP_ID, angela_batch)
     # also push any “other” entries to your personal chat 改為迴圈發送給所有管理員
     if other_batch:
         for admin_id in ADMIN_USER_IDS:
@@ -600,6 +615,7 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
     vicky: List[str] = []
     yumi: List[str] = []
     iris: List[str] = []
+    angela: List[str] = []
     fallback_map: Dict[str, List[str]] = {}
 
     for blk in parts:
@@ -619,6 +635,8 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
             yumi.append(full_msg)
         elif recipient in IRIS_NAMES:
             iris.append(full_msg)
+        elif recipient in ANGELA_NAMES:
+            angela.append(full_msg)
         else:
             # 收集需要反查的收件人與對應內容
             if recipient not in fallback_map:
@@ -639,6 +657,7 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID, yumi)
     push(IRIS_GROUP_ID, iris)
+    push(ANGELA_GROUP_ID, angela)
 
     #--- 3. ACE 試算表反查與按寄件人分組發送 ---
     sender_to_bundles: Dict[str, List[str]] = {} # 儲存 寄件人 -> [單號1, 單號2...]
@@ -663,12 +682,12 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
                 # 確保每個收件人只會被 extend 一次
                 if sheet_recipient in fallback_map and sheet_recipient not in matched_recipients:
                     sender = row[2].strip() if len(row) > 2 else "未知寄件人"
-                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
+                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
                         if sender not in sender_to_bundles:
                             sender_to_bundles[sender] = []
                         sender_to_bundles[sender].extend(fallback_map[sheet_recipient])
                         matched_recipients.add(sheet_recipient)
-            
+
             for rec, msgs in fallback_map.items():
                 if rec not in matched_recipients:
                     unmapped_blocks.extend(msgs)
@@ -801,7 +820,7 @@ def handle_ace_ezway_check_and_push_to_yves(event: Dict[str, Any]) -> None:
             continue
 
         # Skip anyone already in VICKY_NAMES, YUMI_NAMES, or EXCLUDED_SENDERS
-        if sender in VICKY_NAMES or sender in YUMI_NAMES or sender in IRIS_NAMES or sender in EXCLUDED_SENDERS:
+        if sender in VICKY_NAMES or sender in YUMI_NAMES or sender in IRIS_NAMES or sender in ANGELA_NAMES or sender in EXCLUDED_SENDERS:
             continue
 
         results.add(sender)

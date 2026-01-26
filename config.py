@@ -19,7 +19,7 @@ SOQUICK_GROUP_ID = os.getenv("LINE_GROUP_ID_SQ")
 VICKY_GROUP_ID   = os.getenv("LINE_GROUP_ID_VICKY")
 YUMI_GROUP_ID    = os.getenv("LINE_GROUP_ID_YUMI")
 IRIS_GROUP_ID    = os.getenv("LINE_GROUP_ID_IRIS")
-ANGELA_GROUP_ID  = "Cdcc857a8f05b036c465b18d1dbbcfd5d"
+ANGELA_GROUP_ID  = os.getenv("LINE_GROUP_ID_ANGELA")
 JOYCE_GROUP_ID   = os.getenv("LINE_GROUP_ID_JOYCE")
 PDF_GROUP_ID     = os.getenv("LINE_GROUP_ID_PDF")
 
@@ -46,6 +46,7 @@ CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|\d+N)\d*[A-Z0-9]*\b")
 VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲","高懿欣","崔書鳳","周志明"}
 YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑","陳卉怡","洪瑜駿","李祈霈","邱啓倫","許霈珩"}
 IRIS_NAMES  = {"廖偉廷","廖本堂","李成艷"}
+ANGELA_NAMES = {"蕭仁富","呂鎰利","謝秀珠"}
 YVES_NAMES = {
     "梁穎琦",
     "張詠凱",
