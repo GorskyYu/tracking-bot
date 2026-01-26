@@ -440,55 +440,34 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
             
             log.info(f"[Missing Confirm] ACE sheet has {len(data)} rows")
             
-            # 找出最接近今天的日期
+            # 搜尋一個月內的資料
             today = datetime.now(timezone.utc).date()
-            closest_date = None
-            closest_diff = timedelta(days=9999)
+            one_month_ago = today - timedelta(days=30)
             
+            senders = set()
             for row_idx, row in enumerate(data[1:], start=2):
+                # Check date is within one month
                 date_str = (row[0] or "").strip()
-                if not date_str:
-                    continue
-                try:
-                    row_date = parse_date(date_str).date()
-                except Exception:
-                    continue
-                
-                diff = abs(row_date - today)
-                if diff < closest_diff:
-                    closest_diff = diff
-                    closest_date = row_date
-            
-            if closest_date:
-                log.info(f"[Missing Confirm] Closest date found: {closest_date}")
-                # 查找對應的寄件人
-                senders = set()
-                declarers_on_date = []  # Debug: collect all declarers on that date
-                for row_idx, row in enumerate(data[1:], start=2):
-                    date_str = (row[0] or "").strip()
-                    if not date_str:
-                        continue
+                if date_str:
                     try:
                         row_date = parse_date(date_str).date()
+                        # Skip if outside one month range
+                        if row_date < one_month_ago or row_date > today:
+                            continue
                     except Exception:
                         continue
-                    
-                    if row_date != closest_date:
-                        continue
-                    
-                    # Column G (index 6) is declarer
-                    declarer = (row[6] if len(row) > 6 else "").strip()
-                    declarers_on_date.append(declarer)  # Debug
-                    
-                    if declarer in declarer_names:
-                        # Column C (index 2) is sender
-                        sender = (row[2] if len(row) > 2 else "").strip()
-                        log.info(f"[Missing Confirm] Row {row_idx}: declarer={declarer}, sender={sender}")
-                        if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
-                            senders.add(sender)
                 
-                log.info(f"[Missing Confirm] All declarers on {closest_date}: {declarers_on_date[:20]}")  # Show first 20
-                log.info(f"[Missing Confirm] Found senders to notify: {senders}")
+                # Column G (index 6) is declarer
+                declarer = (row[6] if len(row) > 6 else "").strip()
+                
+                if declarer in declarer_names:
+                    # Column C (index 2) is sender
+                    sender = (row[2] if len(row) > 2 else "").strip()
+                    log.info(f"[Missing Confirm] Row {row_idx}: declarer={declarer}, sender={sender}")
+                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | EXCLUDED_SENDERS):
+                        senders.add(sender)
+            
+            log.info(f"[Missing Confirm] Found senders to notify: {senders}")
                 # 發送給所有管理員
                 if senders:
                     for admin_id in ADMIN_USER_IDS:
