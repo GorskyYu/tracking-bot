@@ -487,10 +487,6 @@ def _create_client_flex_message(client_obj, is_paid_bill=False):
                     ]
                 )
             )
-                    TextComponent(text=f"${group_data['subtotal']:.2f}", flex=2, align='end', size='sm', weight='bold')
-                ]
-            )
-        )
 
     # Footer (Total)
     # Use green color for paid bills, red for unpaid bills
