@@ -511,6 +511,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     
     # 處理目前功能指令 (僅限管理員私訊)
     if message_text.strip() == "目前功能" and is_admin and not group_id:
+        print(f"[handle_unpaid_event] Condition matched! is_admin={is_admin}, group_id={group_id}, reply_token={reply_token}")
         help_text = """📋 目前可用指令：
 
 【未付款相關】
@@ -549,7 +550,9 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
 - 在 Iris/Vicky/Yumi 群組中，unpaid 和 paid 指令會自動偵測客戶
 - paid 指令支援多項目按比例分配付款，從最舊日期開始分配
 - 所有指令僅限管理員使用（除非在指定群組）"""
+        print(f"[handle_unpaid_event] About to call reply_text with token: {reply_token}")
         reply_text(reply_token, help_text)
+        print(f"[handle_unpaid_event] reply_text called successfully")
         return
 
     # 處理 unpaid today [client_code] (帶客戶代號的 today 指令)
