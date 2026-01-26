@@ -210,10 +210,11 @@ def _resolve_client_name(name):
     clean = name.strip()
     return CLIENT_ALIASES.get(clean, clean)
 
-def _group_items_by_client(items, filter_name=None):
+def _group_items_by_client(items, filter_name=None, filter_date=None):
     """
     Groups items by Client -> Date.
     Returns: { canonical_name: { display, total, dates: { date: { items:[], subtotal } } } }
+    filter_date: Optional YYMMDD string to filter by specific date
     """
     raw_clients = {} 
 
@@ -228,6 +229,10 @@ def _group_items_by_client(items, filter_name=None):
             date_str = ""
             client_name = raw_parent
         
+        # Filter by date if specified
+        if filter_date and date_str != filter_date:
+            continue
+        
         # 只要名稱中包含關鍵字，就統一歸類到該客戶下
         found_canonical = False
         for main_name in ["Vicky", "Yumi", "Lammond"]:
@@ -240,9 +245,9 @@ def _group_items_by_client(items, filter_name=None):
             # 不在名單的客人，只取第一個單詞或橫槓前的文字作為 Abowbow ID (Key)
             canonical_name = client_name.split(" - ")[0].split()[0]
         
-        # Filter Logic
+        # Filter Logic (case-insensitive)
         if filter_name and filter_name != "All":
-             if filter_name not in canonical_name: 
+             if filter_name.lower() not in canonical_name.lower(): 
                  continue
 
         if canonical_name not in raw_clients:
@@ -438,8 +443,10 @@ def _create_client_flex_message(client_obj, is_paid_bill=False):
     
     return FlexSendMessage(alt_text=f"Bill for {display_name}", contents=bubble)
 
-def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None):
-    """Background thread worker."""
+def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, filter_date=None):
+    """Background thread worker.
+    filter_date: Optional YYMMDD string to filter by specific date
+    """
     try:
         # ✅ 判斷是否為 today 模式
         is_today_mode = (filter_name == "today")
@@ -459,7 +466,7 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None):
              return
 
         # Group Data 這裡要改用 final_filter，因為在 today 模式下 final_filter 會被設為 None
-        grouped_clients = _group_items_by_client(results, final_filter)
+        grouped_clients = _group_items_by_client(results, final_filter, filter_date)
         
         if not grouped_clients:
              line_bot_api.push_message(destination_id, TextSendMessage(text=f"在 '{filter_name}' 條件下未搜尋到符合結果。"))
@@ -488,6 +495,43 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     
     parts = message_text.strip().split()
     text_lower = message_text.strip().lower()
+    
+    # 處理目前功能指令 (僅限管理員私訊)
+    if message_text.strip() == "目前功能" and is_admin and not group_id:
+        help_text = """📋 目前可用指令：
+
+【未付款相關】
+• unpaid - 查詢所有未付款項目
+• unpaid [客戶ID] - 查詢特定客戶未付款項目
+  例如：unpaid Lorant
+• unpaid [日期] [客戶ID] - 查詢特定日期的未付款項目
+  例如：unpaid 260125 Lorant
+• unpaid today - 標記今日出賬並顯示
+• unpaid today [客戶ID] - 標記今日出賬並顯示特定客戶
+  例如：unpaid today Lorant
+
+【已付款相關】
+• paid [日期] - 查看特定日期已付款賬單（在指定群組）
+  例如：paid 260125
+• paid [日期] [客戶ID] - 查看特定日期已付款賬單
+  例如：paid 260125 Lorant
+• paid [金額] - 錄入實收金額（需先查詢未付款）
+  例如：paid 42.41
+• paid [金額] ntd/twd - 錄入台幣實收
+  例如：paid 1500 ntd
+
+【查看賬單】
+• 查看賬單 [日期] - 查看特定日期賬單（在指定群組）
+  例如：查看賬單 260125
+• 查看賬單 [客戶] [日期] - 查看特定客戶特定日期賬單
+  例如：查看賬單 Vicky 260125
+
+💡 提示：
+- 日期格式為 YYMMDD（例如：260125 代表 2026/01/25）
+- 客戶ID不區分大小寫
+- 所有指令僅限管理員使用（除非在指定群組）"""
+        reply_text(reply_token, help_text)
+        return
 
     # 處理 unpaid today [client_code] (帶客戶代號的 today 指令)
     if len(parts) >= 3 and parts[1].lower() == "today":
@@ -520,8 +564,8 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
             return
         
         reply_text(reply_token, "📅 正在掃描未出賬項目並標記日期，請稍候...")
-        # 啟動 Thread 執行，傳入 "today" 作為 filter_name
-        Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today")).start()
+        # 啟動 Thread 執行，傳入 "today" 作為 filter_name，並傳入 auto_target_name 進行過濾
+        Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today", auto_target_name)).start()
         return
     
     # 1. 如果是一般成員 (非管理員)
@@ -553,12 +597,25 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
  
     # If user used the Quick Reply, it might send "unpaid All" etc.
     if len(parts) > 1:
-        target_name = " ".join(parts[1:]) 
-        reply_text(reply_token, f"🔍 正在搜尋未付款項目 ({target_name})，請稍候...")
-        target_id = group_id if group_id else sender_id
-        t = Thread(target=_unpaid_worker, args=(target_id, target_name))
-        t.start()
-        return
+        # Check if parts[1] is a date (YYMMDD format)
+        if len(parts) >= 3 and re.match(r'^\d{6}$', parts[1]):
+            # Format: unpaid YYMMDD ClientID
+            filter_date = parts[1]
+            target_name = " ".join(parts[2:])
+            r.set(f"last_unpaid_client_{sender_id}", target_name, ex=3600)
+            reply_text(reply_token, f"🔍 正在搜尋 {target_name} 在 {filter_date} 的未付款項目，請稍候...")
+            target_id = group_id if group_id else sender_id
+            t = Thread(target=_unpaid_worker, args=(target_id, target_name, None, filter_date))
+            t.start()
+            return
+        else:
+            # Format: unpaid ClientID (original logic)
+            target_name = " ".join(parts[1:]) 
+            reply_text(reply_token, f"🔍 正在搜尋未付款項目 ({target_name})，請稍候...")
+            target_id = group_id if group_id else sender_id
+            t = Thread(target=_unpaid_worker, args=(target_id, target_name))
+            t.start()
+            return
 
     # 管理員點選 unpaid 時，動態顯示有欠款的客戶
     if is_admin and len(parts) == 1:
@@ -928,10 +985,20 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id):
             # 抓取該客戶所有未付項目
             items = fetch_unpaid_items_globally()
             grouped = _group_items_by_client(items, last_client)
-            if not grouped or last_client not in grouped:
+            if not grouped:
                 return line_bot_api.push_message(sender_id, TextSendMessage(text="查無該客戶的未付項目。"))
 
-            client_data = grouped[last_client]
+            # Find the client in grouped dict (case-insensitive key match)
+            client_key = None
+            for key in grouped.keys():
+                if key.lower() == last_client.lower():
+                    client_key = key
+                    break
+            
+            if not client_key:
+                return line_bot_api.push_message(sender_id, TextSendMessage(text="查無該客戶的未付項目。"))
+
+            client_data = grouped[client_key]
             # 遍歷該客戶的所有出賬日期 (Parent Items)
             for date_str, data in client_data["data"].items():
                 # 這裡隨便取一個子項目來獲取 Parent ID
