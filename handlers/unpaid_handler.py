@@ -217,6 +217,7 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
     Returns: { canonical_name: { display, total, dates: { date: { items:[], subtotal } } } }
     filter_date: Optional YYMMDD string to filter by specific date
     """
+    print(f"[DEBUG] _group_items_by_client called with: filter_name={filter_name}, filter_date={filter_date}, total_items={len(items)}")
     raw_clients = {} 
 
     for item in items:
@@ -479,6 +480,7 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
              return
 
         # Group Data 這裡要改用 final_filter，因為在 today 模式下 final_filter 會被設為 None
+        print(f"[DEBUG] _unpaid_worker calling _group_items_by_client with: final_filter={final_filter}, filter_date={filter_date}")
         grouped_clients = _group_items_by_client(results, final_filter, filter_date)
         
         if not grouped_clients:
@@ -605,6 +607,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     cmd = parts[0].lower()
     
     auto_target_name = GROUP_TO_CLIENT_MAP.get(group_id)
+    print(f"[DEBUG] group_id={group_id}, auto_target_name={auto_target_name}, GROUP_TO_CLIENT_MAP={GROUP_TO_CLIENT_MAP}")
  
     # 如果在特定群組發送且沒有帶參數 (例如只打 unpaid)
     if len(parts) == 1 and auto_target_name:
@@ -633,6 +636,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
                 return
             
             r.set(f"last_unpaid_client_{sender_id}", target_name, ex=3600)
+            print(f"[DEBUG] Calling _unpaid_worker with: target_name={target_name}, filter_date={filter_date}")
             reply_text(reply_token, f"🔍 正在搜尋 {target_name} 在 {filter_date} 的未付款項目，請稍候...")
             target_id = group_id if group_id else sender_id
             t = Thread(target=_unpaid_worker, args=(target_id, target_name, None, filter_date))
