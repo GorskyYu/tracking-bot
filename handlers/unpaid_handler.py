@@ -50,7 +50,7 @@ COL_CAD_PAID ="加幣實收"
 COL_TWD_PAID ="台幣實收"
 COL_COLLECTOR = "收款人"
 COL_EXCHANGE = "匯率"
-COL_BILL_DATE = "出賬日"
+COL_BILL_DATE = "出帳日"
 
 def _get_column_value(col_name, sources):
     """Helper to find value in a list of column data sources (priority order)."""
@@ -213,9 +213,9 @@ def _resolve_client_name(name):
 
 def _group_items_by_client(items, filter_name=None, filter_date=None):
     """
-    Groups items by Client -> Date.
-    Returns: { canonical_name: { display, total, dates: { date: { items:[], subtotal } } } }
-    filter_date: Optional YYMMDD string to filter by specific date
+    Groups items by Client -> Bill Date -> Parent Date.
+    Returns: { canonical_name: { display, total, data: { bill_date: { parent_dates: { parent_date: { items:[], subtotal, paid_amount } } } } } }
+    filter_date: Optional YYYYMMDD string to filter by specific date
     """
     print(f"[DEBUG] _group_items_by_client called with: filter_name={filter_name}, filter_date={filter_date}, total_items={len(items)}")
     raw_clients = {} 
@@ -225,15 +225,17 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
         raw_parent = item["parent_name"]
         match = re.match(r'^(\d+)\s+(.*)$', raw_parent.strip())
         if match:
-            date_str = match.group(1)  # Date from parent name for grouping/display
+            parent_date = match.group(1)  # Date from parent name
             client_name = match.group(2)
         else:
-            date_str = ""
+            parent_date = ""
             client_name = raw_parent
+        
+        # Get bill_date for grouping
+        item_bill_date = item.get("bill_date", "").strip()
         
         # Filter by date using bill_date column
         if filter_date:
-            item_bill_date = item.get("bill_date", "").strip()
             # bill_date format from Monday: "2026-01-20"
             # filter_date format: "20260120" (YYYYMMDD)
             # Convert filter_date to ISO format for comparison
@@ -275,23 +277,35 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
              
         client_data = raw_clients[canonical_name]
         
-        if date_str not in client_data["data"]:
-            # 紀錄母項目的實收總額
+        # Use bill_date as first level grouping key (or "未出帳" for empty bill_date)
+        bill_date_key = item_bill_date if item_bill_date else "未出帳"
+        
+        if bill_date_key not in client_data["data"]:
+            client_data["data"][bill_date_key] = {
+                "parent_dates": {}
+            }
+        
+        bill_date_group = client_data["data"][bill_date_key]
+        
+        # Use parent_date as second level grouping key
+        if parent_date not in bill_date_group["parent_dates"]:
+            # Calculate paid amount from parent item (only once per unique parent)
             rate = item.get("parent_rate", 1.0)
             if rate <= 0: rate = 1.0
             total_paid_cad = item.get("parent_cad_paid", 0) + (item.get("parent_twd_paid", 0) / rate)
             
-            client_data["data"][date_str] = {
+            bill_date_group["parent_dates"][parent_date] = {
                 "items": [], 
                 "subtotal": 0.0,
                 "paid_amount": total_paid_cad # 該筆貨物已付總額 (CAD)
             }
             # 預扣除實收
-            client_data["data"][date_str]["subtotal"] -= total_paid_cad
+            bill_date_group["parent_dates"][parent_date]["subtotal"] -= total_paid_cad
             client_data["total"] -= total_paid_cad
-            
-        client_data["data"][date_str]["items"].append(item)
-        client_data["data"][date_str]["subtotal"] += item["price_val"]
+        
+        parent_group = bill_date_group["parent_dates"][parent_date]
+        parent_group["items"].append(item)
+        parent_group["subtotal"] += item["price_val"]
         client_data["total"] += item["price_val"]
         
     return raw_clients
@@ -365,13 +379,23 @@ def _create_item_row(item):
         if weight:
             specs_parts.append(weight_display)
         
-        specs_text = " | ".join(specs_parts)
+        # Build specs as separate text components to prevent awkward line breaks
+        specs_components = []
+        specs_components.append(TextComponent(text=cad_rate_display, size='xs', color='#aaaaaa', flex=0))
+        specs_components.append(TextComponent(text=" | ", size='xs', color='#aaaaaa', flex=0))
+        specs_components.append(TextComponent(text=intl_rate_display, size='xs', color='#aaaaaa', flex=0))
+        if dims:
+            specs_components.append(TextComponent(text=" | ", size='xs', color='#aaaaaa', flex=0))
+            specs_components.append(TextComponent(text=dims_display, size='xs', color='#aaaaaa', flex=0))
+        if weight:
+            specs_components.append(TextComponent(text=" | ", size='xs', color='#aaaaaa', flex=0))
+            specs_components.append(TextComponent(text=weight_display, size='xs', color='#aaaaaa', flex=0))
+        
         row_contents.append(
             BoxComponent(
                 layout='horizontal',
-                contents=[
-                    TextComponent(text=specs_text, size='xs', color='#aaaaaa', flex=1, wrap=True)
-                ]
+                contents=specs_components,
+                wrap=True
             )
         )
     
@@ -396,49 +420,73 @@ def _create_client_flex_message(client_obj, is_paid_bill=False):
     # Body
     body_contents = []
     
-    sorted_dates = sorted(dates_data.keys())
-    for i, date_key in enumerate(sorted_dates):
-        group_data = dates_data[date_key]
+    sorted_bill_dates = sorted(dates_data.keys())
+    for bill_idx, bill_date_key in enumerate(sorted_bill_dates):
+        bill_date_group = dates_data[bill_date_key]
         
-        # Add Separator between dates
-        if i > 0:
+        # Add Separator between bill dates
+        if bill_idx > 0:
             body_contents.append(SeparatorComponent(margin='lg'))
 
-        # Date Header
-        if date_key:
+        # Bill Date Subheader
+        if bill_date_key:
+            # Format bill_date: "2026-01-20" -> "出帳日：260120" or show "未出帳" as is
+            if bill_date_key == "未出帳":
+                display_date = "未出帳"
+            elif len(bill_date_key) == 10 and bill_date_key[4] == '-' and bill_date_key[7] == '-':  # ISO format YYYY-MM-DD
+                # Convert to YYMMDD format: "2026-01-20" -> "260120"
+                display_date = f"出帳日：{bill_date_key[2:4]}{bill_date_key[5:7]}{bill_date_key[8:10]}"
+            else:
+                display_date = f"出帳日：{bill_date_key}"
+            
             body_contents.append(
-                TextComponent(text=date_key, weight='bold', margin='lg', size='md', color='#555555')
+                TextComponent(text=display_date, weight='bold', margin='lg', size='md', color='#1DB446')
             )
+        
+        # Loop through parent dates within this bill date
+        sorted_parent_dates = sorted(bill_date_group["parent_dates"].keys())
+        for parent_idx, parent_date in enumerate(sorted_parent_dates):
+            parent_group = bill_date_group["parent_dates"][parent_date]
             
-        # Items
-        for item in group_data["items"]:
-            body_contents.append(_create_item_row(item))
+            # Parent Date Section Header
+            if parent_date:
+                body_contents.append(
+                    TextComponent(text=parent_date, weight='bold', margin='md', size='sm', color='#555555')
+                )
             
-        # 只要實收不為 0 就顯示，並根據母項目名稱判定是否顯示 "Discount"
-        if group_data["paid_amount"] != 0:
-            # 檢查該組包裹中是否包含「折讓」母項目
-            is_discount = any("折讓" in item.get("parent_name", "") for item in group_data["items"])
-            label_text = "Discount" if is_discount else "Paid (Already Received)"
+            # Items under this parent date
+            for item in parent_group["items"]:
+                body_contents.append(_create_item_row(item))
+                
+            # Paid amount for this parent section (if any)
+            if parent_group["paid_amount"] != 0:
+                # 檢查該組包裹中是否包含「折讓」母項目
+                is_discount = any("折讓" in item.get("parent_name", "") for item in parent_group["items"])
+                label_text = "Discount" if is_discount else "Paid (Already Received)"
 
+                body_contents.append(
+                    BoxComponent(
+                        layout='horizontal',
+                        margin='md',
+                        contents=[
+                            TextComponent(text=label_text, flex=4, size='sm', color='#1DB446'),
+                            TextComponent(text=f"-${parent_group['paid_amount']:.2f}", flex=2, align='end', size='sm', color='#1DB446', weight='bold')
+                        ]
+                    )
+                )
+                
+            # Parent Date Subtotal
+            body_contents.append(SeparatorComponent(margin='sm'))
             body_contents.append(
                 BoxComponent(
                     layout='horizontal',
-                    margin='md',
+                    margin='sm',
                     contents=[
-                        TextComponent(text=label_text, flex=4, size='sm', color='#1DB446'),
-                        TextComponent(text=f"-${group_data['paid_amount']:.2f}", flex=2, align='end', size='sm', color='#1DB446', weight='bold')
+                        TextComponent(text="Subtotal", flex=4, size='sm', color='#555555'),
+                        TextComponent(text=f"${parent_group['subtotal']:.2f}", flex=2, align='end', size='sm', weight='bold')
                     ]
                 )
             )
-            
-        # Date Subtotal
-        body_contents.append(SeparatorComponent(margin='sm'))
-        body_contents.append(
-            BoxComponent(
-                layout='horizontal',
-                margin='sm',
-                contents=[
-                    TextComponent(text="Subtotal", flex=4, size='sm', color='#555555'),
                     TextComponent(text=f"${group_data['subtotal']:.2f}", flex=2, align='end', size='sm', weight='bold')
                 ]
             )
@@ -481,8 +529,8 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
         
         if is_today_mode:
             results, date_display = fetch_and_tag_unpaid_today()
-            # 發送第一條訊息：YYMMDD出賬：
-            line_bot_api.push_message(destination_id, TextSendMessage(text=f"{date_display}出賬："))
+            # 發送第一條訊息：YYMMDD出帳：
+            line_bot_api.push_message(destination_id, TextSendMessage(text=f"{date_display}出帳："))
             # today 模式下，如果有指定客戶，則過濾該客戶；否則顯示所有客戶
             final_filter = today_client_filter
         else:
@@ -537,14 +585,14 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
   例如：在 Vicky 群組輸入 unpaid 260125
 • unpaid [日期] [客戶ID] - 查詢特定日期的未付款項目（指定客戶）
   例如：unpaid 260125 Lorant
-• unpaid today - 標記今日出賬並顯示
-• unpaid today [客戶ID] - 標記今日出賬並顯示特定客戶
+• unpaid today - 標記今日出帳並顯示
+• unpaid today [客戶ID] - 標記今日出帳並顯示特定客戶
   例如：unpaid today Lorant
 
 【已付款相關】
-• paid [日期] - 查看特定日期已付款賬單（在指定群組）
+• paid [日期] - 查看特定日期已付款帳單（在指定群組）
   例如：paid 260125
-• paid [日期] [客戶ID] - 查看特定日期已付款賬單
+• paid [日期] [客戶ID] - 查看特定日期已付款帳單
   例如：paid 260125 Lorant
 • paid [金額] - 錄入實收金額（在群組自動偵測客戶，或使用上次查詢）
   例如：在 Iris 群組輸入 paid 152.99
@@ -553,16 +601,17 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
 • paid [金額] ntd/twd [客戶ID] - 錄入實收金額（指定客戶）
   例如：paid 1500 ntd Iris
 
-【查看賬單】
-• 查看賬單 [日期] - 查看特定日期賬單（在指定群組）
-  例如：查看賬單 260125
-• 查看賬單 [客戶] [日期] - 查看特定客戶特定日期賬單
-  例如：查看賬單 Vicky 260125
+【查看帳單】
+• 查看帳單 [日期] - 查看特定日期帳單（在指定群組）
+  例如：查看帳單 260125
+• 查看帳單 [客戶] [日期] - 查看特定客戶特定日期帳單（任何群組）
+  例如：查看帳單 Vicky 260125
 
 💡 提示：
 - 日期格式為 YYMMDD（例如：260125 代表 2026/01/25）
 - 客戶ID不區分大小寫
 - 在 Iris/Vicky/Yumi 群組中，unpaid 和 paid 指令會自動偵測客戶
+- 帳單顯示按「出帳日」分組，每組再按母項目日期細分
 - paid 指令支援多項目按比例分配付款，從最舊日期開始分配
 - 所有指令僅限管理員使用（除非在指定群組）"""
         reply_text(reply_token, help_text)
@@ -578,7 +627,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
         client_code = " ".join(parts[2:])
         r.set(f"last_unpaid_client_{sender_id}", client_code, ex=3600)
         
-        reply_text(reply_token, f"📅 正在掃描 {client_code} 的未出賬項目並標記日期，請稍候...")
+        reply_text(reply_token, f"📅 正在掃描 {client_code} 的未出帳項目並標記日期，請稍候...")
         Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today", client_code)).start()
         return
 
@@ -598,7 +647,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
             reply_text(reply_token, "需要輸入Abowbow客戶ID\n例如：unpaid today Kit")
             return
         
-        reply_text(reply_token, "📅 正在掃描未出賬項目並標記日期，請稍候...")
+        reply_text(reply_token, "📅 正在掃描未出帳項目並標記日期，請稍候...")
         # 啟動 Thread 執行，傳入 "today" 作為 filter_name，並傳入 auto_target_name 進行過濾
         Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today", auto_target_name)).start()
         return
@@ -685,7 +734,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
 
 def fetch_items_by_bill_date(target_date_yyyymmdd):
     """
-    依照「出賬日」搜尋所有板塊的項目
+    依照「出帳日」搜尋所有板塊的項目
     """
     items_found = []
     # 轉換日期格式：260120 -> 2026-01-20 (以匹配 Monday Date 格式)
@@ -695,11 +744,11 @@ def fetch_items_by_bill_date(target_date_yyyymmdd):
         subitem_board_id = SUBITEM_BOARD_MAPPING.get(parent_board_id) or get_subitem_board_id(parent_board_id)
         if not subitem_board_id: continue
 
-        # 這裡沿用你的 _fetch_col_id_by_title 邏輯，但改為抓取「出賬日」的 ID
+        # 這裡沿用你的 _fetch_col_id_by_title 邏輯，但改為抓取「出帳日」的 ID
         bill_date_col_id = _fetch_col_id_by_title(subitem_board_id, COL_BILL_DATE)
         if not bill_date_col_id: continue
 
-        # 搜尋 Query：篩選出賬日等於目標日期的項目
+        # 搜尋 Query：篩選出帳日等於目標日期的項目
         query = """
         query ($board_id: ID!, $col_id: String!, $val: String!) {
             items_page_by_column_values (
@@ -778,11 +827,11 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
     return None
 
 def _bill_worker(destination_id, client_filter, date_val):
-    """查看賬單的背景執行程序"""
+    """查看帳單的背景執行程序"""
     try:
         results = fetch_items_by_bill_date(date_val)
         if not results:
-            line_bot_api.push_message(destination_id, TextSendMessage(text=f"📅 {date_val} 沒有找到任何出賬項目。"))
+            line_bot_api.push_message(destination_id, TextSendMessage(text=f"📅 {date_val} 沒有找到任何出帳項目。"))
             return
 
         # ✅ 直接複用原本的群組邏輯 (會自動按 Parent 分類並計算實收)
@@ -803,38 +852,50 @@ def handle_bill_event(sender_id, message_text, reply_token, user_id, group_id=No
     is_admin = user_id in ADMIN_USER_IDS
     auto_client = GROUP_TO_CLIENT_MAP.get(group_id)
 
-    # 1. 群組模式：查看賬單YYMMDD
-    group_match = re.search(r"查看賬單.*?(\d{6})", text)
-    if group_id and group_match:
-        date_val = group_match.group(1)
+    # Parse the command to check for explicit client name and date
+    # Format: 查看帳單 [客戶] [日期] or 查看帳單 [日期]
+    parts = text.split()
+    
+    # Check if there's a date (YYMMDD format) in the command
+    date_val = None
+    client_name = None
+    
+    for part in parts[1:]:  # Skip "查看帳單"
+        if re.match(r'^\d{6}$', part):
+            date_val = part
+        elif not date_val:  # Client name comes before date
+            client_name = part
+    
+    # If explicit client name and date provided (works anywhere)
+    if client_name and date_val:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {client_name} 的 {date_val} 帳單..."))
+        Thread(target=_bill_worker, args=(group_id if group_id else user_id, client_name, date_val)).start()
+        return
+    
+    # 1. 群組模式：查看帳單YYMMDD (only date, use auto_client)
+    if group_id and date_val and not client_name:
         if not auto_client:
             line_bot_api.reply_message(reply_token, TextSendMessage(text="⛔ 此群組未對應客戶。"))
             return
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {auto_client} 的 {date_val} 賬單..."))
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {auto_client} 的 {date_val} 帳單..."))
         Thread(target=_bill_worker, args=(group_id, auto_client, date_val)).start()
         return
 
     # 2. 私訊模式 (僅限管理員)
     if not group_id and is_admin:
-        if text == "查看賬單":
+        if text == "查看帳單":
             buttons = [
-                QuickReplyButton(action=MessageAction(label="Vicky", text="查看賬單 Vicky")),
-                QuickReplyButton(action=MessageAction(label="Yumi", text="查看賬單 Yumi")),
-                QuickReplyButton(action=MessageAction(label="Iris", text="查看賬單 Lammond"))
+                QuickReplyButton(action=MessageAction(label="Vicky", text="查看帳單 Vicky")),
+                QuickReplyButton(action=MessageAction(label="Yumi", text="查看帳單 Yumi")),
+                QuickReplyButton(action=MessageAction(label="Iris", text="查看帳單 Lammond"))
             ]
             line_bot_api.reply_message(reply_token, TextSendMessage(text="請選擇客戶：", quick_reply=QuickReply(items=buttons)))
-        elif text.startswith("查看賬單 "):
-            parts = text.split()
-            if len(parts) == 2: # 點選了客戶，提示輸入日期
-                line_bot_api.reply_message(reply_token, TextSendMessage(text=f"請補上日期 (YYMMDD)\n例如：查看賬單 {parts[1]} 260120"))
-            elif len(parts) == 3: # 完整指令
-                client, date_val = parts[1], parts[2]
-                line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {client} 的 {date_val} 賬單..."))
-                Thread(target=_bill_worker, args=(user_id, client, date_val)).start()
+        elif client_name and not date_val:  # 點選了客戶，提示輸入日期
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"請補上日期 (YYMMDD)\n例如：查看帳單 {client_name} 260120"))
 
 def fetch_paid_items_by_bill_date(target_date_yyyymmdd):
     """
-    依照「出賬日」和「已付款狀態」搜尋所有板塊的項目
+    依照「出帳日」和「已付款狀態」搜尋所有板塊的項目
     """
     items_found = []
     # 轉換日期格式：260120 -> 2026-01-20 (以匹配 Monday Date 格式)
@@ -884,17 +945,17 @@ def fetch_paid_items_by_bill_date(target_date_yyyymmdd):
     return items_found
 
 def _paid_worker(destination_id, client_filter, date_val):
-    """查看已付款賬單的背景執行程序"""
+    """查看已付款帳單的背景執行程序"""
     try:
         results = fetch_paid_items_by_bill_date(date_val)
         if not results:
-            line_bot_api.push_message(destination_id, TextSendMessage(text="未找到賬單，請檢查日期、所在群組或Abowbow ID。"))
+            line_bot_api.push_message(destination_id, TextSendMessage(text="未找到帳單，請檢查日期、所在群組或Abowbow ID。"))
             return
 
         # 使用相同的分組和顯示邏輯（與 unpaid 一致）
         grouped = _group_items_by_client(results, client_filter)
         if not grouped:
-            line_bot_api.push_message(destination_id, TextSendMessage(text="未找到賬單，請檢查日期、所在群組或Abowbow ID。"))
+            line_bot_api.push_message(destination_id, TextSendMessage(text="未找到帳單，請檢查日期、所在群組或Abowbow ID。"))
             return
 
         for client_name, client_data in grouped.items():
@@ -906,7 +967,7 @@ def _paid_worker(destination_id, client_filter, date_val):
         logging.error(f"Paid worker failed: {e}")
 
 def handle_paid_bill_event(sender_id, message_text, reply_token, user_id, group_id=None):
-    """處理查看已付款賬單指令 (paid YYMMDD [AbowbowID])"""
+    """處理查看已付款帳單指令 (paid YYMMDD [AbowbowID])"""
     if user_id not in ADMIN_USER_IDS:
         reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
         return
@@ -928,14 +989,14 @@ def handle_paid_bill_event(sender_id, message_text, reply_token, user_id, group_
     
     # 情況 1: 在指定群組 (Vicky/Yumi/Iris)，格式：paid YYMMDD
     if auto_client and len(parts) == 2:
-        reply_text(reply_token, f"🔍 正在抓取 {auto_client} 的 {date_val} 已付款賬單...")
+        reply_text(reply_token, f"🔍 正在抓取 {auto_client} 的 {date_val} 已付款帳單...")
         Thread(target=_paid_worker, args=(group_id if group_id else sender_id, auto_client, date_val)).start()
         return
     
     # 情況 2: 在非指定群組，格式：paid YYMMDD AbowbowID
     if len(parts) >= 3:
         client_code = " ".join(parts[2:])
-        reply_text(reply_token, f"🔍 正在抓取 {client_code} 的 {date_val} 已付款賬單...")
+        reply_text(reply_token, f"🔍 正在抓取 {client_code} 的 {date_val} 已付款帳單...")
         Thread(target=_paid_worker, args=(group_id if group_id else sender_id, client_code, date_val)).start()
         return
     
@@ -946,7 +1007,7 @@ def handle_paid_bill_event(sender_id, message_text, reply_token, user_id, group_
 
 def fetch_and_tag_unpaid_today():
     """
-    抓取未出賬項目，並自動填入今日日期 (溫哥華時間)
+    抓取未出帳項目，並自動填入今日日期 (溫哥華時間)
     """
     items_found = []
     
@@ -991,7 +1052,7 @@ def fetch_and_tag_unpaid_today():
                 cols = _map_column_values(item.get("column_values", []))
                 bill_date_value = cols.get(COL_BILL_DATE, "").strip()
                 
-                # 處理兩種情況：1) 出賬日為空 2) 出賬日已經是今天
+                # 處理兩種情況：1) 出帳日為空 2) 出帳日已經是今天
                 if not bill_date_value:
                     # 🚀 A. 在 Monday.com 寫上今日日期
                     mutation = """

@@ -443,8 +443,8 @@ def webhook():
                     continue
 
 
-        # ─── 查看賬單觸發入口 ───
-        if text.startswith("查看賬單"):
+        # ─── 查看帳單觸發入口 ───
+        if text.startswith("查看帳單"):
             # 確保有從 handlers.unpaid_handler 匯入 handle_bill_event
             from handlers.unpaid_handler import handle_bill_event
             handle_bill_event(
@@ -497,11 +497,11 @@ def webhook():
                 continue
             
         # Paid 指令處理：分為兩種情況
-        # 1. 查看已付款賬單：paid YYMMDD [AbowbowID]
+        # 1. 查看已付款帳單：paid YYMMDD [AbowbowID]
         # 2. 錄入實收金額：paid 金額 [ntd|twd]
         if text.lower().startswith("paid"):
             parts = text.split()
-            # 檢查是否為查看已付款賬單格式 (paid YYMMDD ...)
+            # 檢查是否為查看已付款帳單格式 (paid YYMMDD ...)
             if len(parts) >= 2 and re.match(r"^\d{6}$", parts[1]):
                 handle_paid_bill_event(
                     sender_id=group_id if group_id else user_id,
