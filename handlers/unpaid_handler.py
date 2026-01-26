@@ -217,7 +217,6 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
     Returns: { canonical_name: { display, total, data: { bill_date: { parent_dates: { parent_date: { items:[], subtotal, paid_amount } } } } } }
     filter_date: Optional YYYYMMDD string to filter by specific date
     """
-    print(f"[DEBUG] _group_items_by_client called with: filter_name={filter_name}, filter_date={filter_date}, total_items={len(items)}")
     raw_clients = {} 
 
     for item in items:
@@ -244,10 +243,8 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
             else:
                 filter_date_iso = filter_date
             
-            print(f"[DEBUG] Comparing bill_date='{item_bill_date}' with filter_date_iso='{filter_date_iso}' for parent={raw_parent}")
             if item_bill_date != filter_date_iso:
                 continue
-            print(f"[DEBUG] Item passed date filter: bill_date={item_bill_date}, parent_name={raw_parent}")
         
         # 只要名稱中包含關鍵字，就統一歸類到該客戶下
         found_canonical = False
@@ -263,9 +260,7 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
         
         # Filter Logic (case-insensitive)
         if filter_name and filter_name != "All":
-             print(f"[DEBUG] Checking client filter: filter_name={filter_name}, canonical_name={canonical_name}")
              if filter_name.lower() not in canonical_name.lower(): 
-                 print(f"[DEBUG] Item filtered out by client name")
                  continue
 
         if canonical_name not in raw_clients:
@@ -538,7 +533,6 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
              return
 
         # Group Data 這裡要改用 final_filter，因為在 today 模式下 final_filter 會被設為 None
-        print(f"[DEBUG] _unpaid_worker calling _group_items_by_client with: final_filter={final_filter}, filter_date={filter_date}")
         grouped_clients = _group_items_by_client(results, final_filter, filter_date)
         
         if not grouped_clients:
@@ -666,7 +660,6 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     cmd = parts[0].lower()
     
     auto_target_name = GROUP_TO_CLIENT_MAP.get(group_id)
-    print(f"[DEBUG] group_id={group_id}, auto_target_name={auto_target_name}, GROUP_TO_CLIENT_MAP={GROUP_TO_CLIENT_MAP}")
  
     # 如果在特定群組發送且沒有帶參數 (例如只打 unpaid)
     if len(parts) == 1 and auto_target_name:
@@ -695,7 +688,6 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
                 return
             
             r.set(f"last_unpaid_client_{sender_id}", target_name, ex=3600)
-            print(f"[DEBUG] Calling _unpaid_worker with: target_name={target_name}, filter_date={filter_date}")
             reply_text(reply_token, f"🔍 正在搜尋 {target_name} 在 {filter_date} 的未付款項目，請稍候...")
             target_id = group_id if group_id else sender_id
             t = Thread(target=_unpaid_worker, args=(target_id, target_name, None, filter_date))
