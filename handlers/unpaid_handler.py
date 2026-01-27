@@ -185,11 +185,11 @@ def fetch_unpaid_items_globally():
             }
             
             res = _monday_request(query, variables)
-            if not res or "data" not in res or not res["data"]["items_page_by_column_values"]:
+            if not res or "data" not in res or not res["data"].get("items_page_by_column_values"):
                  break
                  
             page_data = res["data"]["items_page_by_column_values"]
-            items = page_data["items"]
+            items = page_data.get("items", [])
             cursor = page_data.get("cursor")
             
             logging.info(f"Fetched {len(items)} items from board {subitem_board_id}. Next Cursor: {bool(cursor)}")
@@ -760,8 +760,9 @@ def fetch_items_by_bill_date(target_date_yyyymmdd):
         """
         res = _monday_request(query, {"board_id": int(subitem_board_id), "col_id": bill_date_col_id, "val": formatted_date})
         
-        if res and "data" in res and res["data"]["items_page_by_column_values"]:
-            for item in res["data"]["items_page_by_column_values"]["items"]:
+        if res and "data" in res and res["data"].get("items_page_by_column_values"):
+            items_data = res["data"]["items_page_by_column_values"].get("items", [])
+            for item in items_data:
                 # ✅ 直接調用共用的處理邏輯
                 processed = _process_monday_item(item, subitem_board_id, parent_board_id)
                 if processed: items_found.append(processed)
@@ -1038,8 +1039,9 @@ def fetch_and_tag_unpaid_today():
         """
         res = _monday_request(query, {"board_id": int(subitem_board_id), "col_id": status_col_id, "vals": TARGET_STATUSES})
         
-        if res and "data" in res and res["data"]["items_page_by_column_values"]:
-            for item in res["data"]["items_page_by_column_values"]["items"]:
+        if res and "data" in res and res["data"].get("items_page_by_column_values"):
+            items_data = res["data"]["items_page_by_column_values"].get("items", [])
+            for item in items_data:
                 cols = _map_column_values(item.get("column_values", []))
                 bill_date_value = cols.get(COL_BILL_DATE, "").strip()
                 
