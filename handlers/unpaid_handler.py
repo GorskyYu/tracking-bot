@@ -370,30 +370,21 @@ def _create_item_row(item):
         dims_display = f"{dims} cm" if dims and not dims.lower().endswith("cm") else dims
         weight_display = f"{weight} kg" if weight and not weight.lower().endswith("kg") else weight
         
-        # Always show rates, then dimensions and weight
+        # Build specs as a single joined string for proper wrapping on mobile
         specs_parts = [cad_rate_display, intl_rate_display]
         if dims:
             specs_parts.append(dims_display)
         if weight:
             specs_parts.append(weight_display)
         
-        # Build specs as separate text components to prevent awkward line breaks
-        specs_components = []
-        specs_components.append(TextComponent(text=cad_rate_display, size='xs', color='#aaaaaa', flex=0))
-        specs_components.append(TextComponent(text=" | ", size='xs', color='#aaaaaa', flex=0))
-        specs_components.append(TextComponent(text=intl_rate_display, size='xs', color='#aaaaaa', flex=0))
-        if dims:
-            specs_components.append(TextComponent(text=" | ", size='xs', color='#aaaaaa', flex=0))
-            specs_components.append(TextComponent(text=dims_display, size='xs', color='#aaaaaa', flex=0))
-        if weight:
-            specs_components.append(TextComponent(text=" | ", size='xs', color='#aaaaaa', flex=0))
-            specs_components.append(TextComponent(text=weight_display, size='xs', color='#aaaaaa', flex=0))
+        specs_text = " | ".join(specs_parts)
         
         row_contents.append(
             BoxComponent(
                 layout='horizontal',
-                contents=specs_components,
-                wrap=True
+                contents=[
+                    TextComponent(text=specs_text, size='xs', color='#aaaaaa', wrap=True)
+                ]
             )
         )
     
