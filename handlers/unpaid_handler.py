@@ -921,8 +921,9 @@ def fetch_paid_items_by_bill_date(target_date_yyyymmdd):
         """
         res = _monday_request(query, {"board_id": int(subitem_board_id), "col_id": bill_date_col_id, "val": formatted_date})
         
-        if res and "data" in res and res["data"]["items_page_by_column_values"]:
-            for item in res["data"]["items_page_by_column_values"]["items"]:
+        if res and "data" in res and res["data"].get("items_page_by_column_values"):
+            items_data = res["data"]["items_page_by_column_values"].get("items", [])
+            for item in items_data:
                 # 檢查狀態是否為已付款狀態
                 cols = _map_column_values(item.get("column_values", []))
                 item_status = cols.get(COL_STATUS, "")
