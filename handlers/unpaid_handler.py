@@ -1141,81 +1141,91 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id, group_id=No
             """
             
             # Distribute payment across parent items (oldest to newest)
-            for date_str, data in sorted_dates:
+            # Flatten the nested structure: bill_date -> parent_dates -> items
+            for bill_date_str, bill_data in sorted_dates:
                 if remaining_amount <= 0:
                     break
+                
+                # Iterate through parent_dates within each bill_date
+                for parent_date_str, parent_group in sorted(bill_data.get("parent_dates", {}).items()):
+                    if remaining_amount <= 0:
+                        break
                     
-                sample_item = data["items"][0]
-                parent_id = sample_item.get("parent_id")
-                parent_board_id = sample_item.get("parent_board_id")
-                subitem_board_id = sample_item.get("board_id")
-                rate = sample_item.get("parent_rate", 1.0)
-                
-                # Calculate remaining balance for this parent item
-                remaining_balance_cad = data["subtotal"]
-                
-                # Get existing paid amounts
-                existing_cad_paid = sample_item.get("parent_cad_paid", 0)
-                existing_twd_paid = sample_item.get("parent_twd_paid", 0)
-                
-                # Check if already fully paid
-                if remaining_balance_cad <= 0:
-                    distribution_log.append(f"⏭️ {date_str}: 已全額付清，跳過")
-                    continue
-                
-                # Calculate how much to apply to this parent item (in CAD)
-                if currency in ["ntd", "twd"]:
-                    amount_to_apply_cad = remaining_amount / rate
-                else:
-                    amount_to_apply_cad = remaining_amount
-                
-                # Determine actual amount to apply (cannot exceed remaining balance)
-                actual_applied_cad = min(amount_to_apply_cad, remaining_balance_cad)
-                actual_applied_original = actual_applied_cad * rate if currency in ["ntd", "twd"] else actual_applied_cad
-                
-                # Calculate new total paid amount
-                target_col = COL_TWD_PAID if currency in ["ntd", "twd"] else COL_CAD_PAID
-                col_id = _fetch_col_id_by_title(parent_board_id, target_col)
-                
-                if currency in ["ntd", "twd"]:
-                    new_paid_amount = existing_twd_paid + actual_applied_original
-                else:
-                    new_paid_amount = existing_cad_paid + actual_applied_original
-                
-                # Write paid amount to Monday
-                _monday_request(mutation, {
-                    "board_id": int(parent_board_id), 
-                    "item_id": int(parent_id), 
-                    "col_id": col_id, 
-                    "val": str(new_paid_amount)
-                })
-                
-                # Write collector name to 收款人 column
-                collector_col_id = _fetch_col_id_by_title(parent_board_id, COL_COLLECTOR)
-                _monday_request(mutation, {
-                    "board_id": int(parent_board_id), 
-                    "item_id": int(parent_id), 
-                    "col_id": collector_col_id, 
-                    "val": collector_name
-                })
-                
-                # Update remaining amount
-                remaining_amount -= actual_applied_original
-                
-                # Check if fully paid and update status
-                if actual_applied_cad >= remaining_balance_cad:
-                    status_col_id = _fetch_col_id_by_title(subitem_board_id, COL_STATUS)
-                    for sub in data["items"]:
-                        _monday_request(mutation, {
-                            "board_id": int(subitem_board_id), 
-                            "item_id": int(sub["id"]), 
-                            "col_id": status_col_id, 
-                            "val": "已收款出貨"
-                        })
-                    distribution_log.append(f"✅ {date_str}: {currency.upper()} ${actual_applied_original:.2f} → 已全額收訖")
-                else:
-                    new_remaining = remaining_balance_cad - actual_applied_cad
-                    distribution_log.append(f"📝 {date_str}: {currency.upper()} ${actual_applied_original:.2f} → 仍欠 CAD ${new_remaining:.2f}")
+                    items_list = parent_group.get("items", [])
+                    if not items_list:
+                        continue
+                        
+                    sample_item = items_list[0]
+                    parent_id = sample_item.get("parent_id")
+                    parent_board_id = sample_item.get("parent_board_id")
+                    subitem_board_id = sample_item.get("board_id")
+                    rate = sample_item.get("parent_rate", 1.0)
+                    
+                    # Calculate remaining balance for this parent item
+                    remaining_balance_cad = parent_group.get("subtotal", 0)
+                    
+                    # Get existing paid amounts
+                    existing_cad_paid = sample_item.get("parent_cad_paid", 0)
+                    existing_twd_paid = sample_item.get("parent_twd_paid", 0)
+                    
+                    # Check if already fully paid
+                    if remaining_balance_cad <= 0:
+                        distribution_log.append(f"⏭️ {bill_date_str}/{parent_date_str}: 已全額付清，跳過")
+                        continue
+                    
+                    # Calculate how much to apply to this parent item (in CAD)
+                    if currency in ["ntd", "twd"]:
+                        amount_to_apply_cad = remaining_amount / rate
+                    else:
+                        amount_to_apply_cad = remaining_amount
+                    
+                    # Determine actual amount to apply (cannot exceed remaining balance)
+                    actual_applied_cad = min(amount_to_apply_cad, remaining_balance_cad)
+                    actual_applied_original = actual_applied_cad * rate if currency in ["ntd", "twd"] else actual_applied_cad
+                    
+                    # Calculate new total paid amount
+                    target_col = COL_TWD_PAID if currency in ["ntd", "twd"] else COL_CAD_PAID
+                    col_id = _fetch_col_id_by_title(parent_board_id, target_col)
+                    
+                    if currency in ["ntd", "twd"]:
+                        new_paid_amount = existing_twd_paid + actual_applied_original
+                    else:
+                        new_paid_amount = existing_cad_paid + actual_applied_original
+                    
+                    # Write paid amount to Monday
+                    _monday_request(mutation, {
+                        "board_id": int(parent_board_id), 
+                        "item_id": int(parent_id), 
+                        "col_id": col_id, 
+                        "val": str(new_paid_amount)
+                    })
+                    
+                    # Write collector name to 收款人 column
+                    collector_col_id = _fetch_col_id_by_title(parent_board_id, COL_COLLECTOR)
+                    _monday_request(mutation, {
+                        "board_id": int(parent_board_id), 
+                        "item_id": int(parent_id), 
+                        "col_id": collector_col_id, 
+                        "val": collector_name
+                    })
+                    
+                    # Update remaining amount
+                    remaining_amount -= actual_applied_original
+                    
+                    # Check if fully paid and update status
+                    if actual_applied_cad >= remaining_balance_cad:
+                        status_col_id = _fetch_col_id_by_title(subitem_board_id, COL_STATUS)
+                        for sub in items_list:
+                            _monday_request(mutation, {
+                                "board_id": int(subitem_board_id), 
+                                "item_id": int(sub["id"]), 
+                                "col_id": status_col_id, 
+                                "val": "已收款出貨"
+                            })
+                        distribution_log.append(f"✅ {bill_date_str}/{parent_date_str}: {currency.upper()} ${actual_applied_original:.2f} → 已全額收訖")
+                    else:
+                        new_remaining = remaining_balance_cad - actual_applied_cad
+                        distribution_log.append(f"📝 {bill_date_str}/{parent_date_str}: {currency.upper()} ${actual_applied_original:.2f} → 仍欠 CAD ${new_remaining:.2f}")
             
             # Send summary message
             summary = f"💰 {target_client} 付款分配完成 (收款人: {collector_name})：\n\n" + "\n".join(distribution_log)
