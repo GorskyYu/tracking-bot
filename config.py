@@ -1,52 +1,84 @@
 import os
 import re
+from typing import Dict, Set, Pattern, Optional
 
-TIMEZONE = os.getenv("TIMEZONE", "America/Vancouver")
+# ─── Timezone ─────────────────────────────────────────────────────────────────
+TIMEZONE: str = os.getenv("TIMEZONE", "America/Vancouver")
 
-# LINE
-LINE_TOKEN  = os.getenv("LINE_TOKEN")         # Channel access token
-LINE_PUSH_URL  = "https://api.line.me/v2/bot/message/push"
-LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
-LINE_HEADERS = {
-    "Content-Type":  "application/json",
+# ─── LINE API ─────────────────────────────────────────────────────────────────
+LINE_TOKEN: Optional[str] = os.getenv("LINE_TOKEN")
+LINE_PUSH_URL: str = "https://api.line.me/v2/bot/message/push"
+LINE_REPLY_URL: str = "https://api.line.me/v2/bot/message/reply"
+LINE_HEADERS: Dict[str, str] = {
+    "Content-Type": "application/json",
     "Authorization": f"Bearer {LINE_TOKEN}"
 }
 
-# Groups / Users / Sheets
-# ─── LINE & ACE/SQ 設定 ──────────────────────────────────────────────────────
-ACE_GROUP_ID     = os.getenv("LINE_GROUP_ID_ACE")
-SOQUICK_GROUP_ID = os.getenv("LINE_GROUP_ID_SQ")
-VICKY_GROUP_ID   = os.getenv("LINE_GROUP_ID_VICKY")
-YUMI_GROUP_ID    = os.getenv("LINE_GROUP_ID_YUMI")
-IRIS_GROUP_ID    = os.getenv("LINE_GROUP_ID_IRIS")
-ANGELA_GROUP_ID  = os.getenv("LINE_GROUP_ID_ANGELA")
-JOYCE_GROUP_ID   = os.getenv("LINE_GROUP_ID_JOYCE")
-PDF_GROUP_ID     = os.getenv("LINE_GROUP_ID_PDF")
+# ─── Monday.com API ───────────────────────────────────────────────────────────
+MONDAY_API_URL: str = "https://api.monday.com/v2"
+MONDAY_TOKEN: Optional[str] = os.getenv("MONDAY_TOKEN")
+MONDAY_API_TOKEN: Optional[str] = os.getenv("MONDAY_API_TOKEN")
 
-YVES_USER_ID     = os.getenv("YVES_USER_ID")
-GORSKY_USER_ID   = os.getenv("GORSKY_USER_ID")
-DANNY_USER_ID    = os.getenv("DANNY_USER_ID")
-VICKY_USER_ID    = os.getenv("VICKY_USER_ID")
-IRIS_USER_ID     = os.getenv("IRIS_USER_ID")
+# ─── Redis ────────────────────────────────────────────────────────────────────
+REDIS_URL: Optional[str] = os.getenv("REDIS_URL")
 
-ACE_SHEET_URL    = os.getenv("ACE_SHEET_URL")
-SQ_SHEET_URL     = os.getenv("SQ_SHEET_URL")
+# ─── TE API ───────────────────────────────────────────────────────────────────
+APP_ID: Optional[str] = os.getenv("TE_APP_ID")
+APP_SECRET: Optional[str] = os.getenv("TE_SECRET")
 
-# Monday / OpenAI / TE API…
-MONDAY_TOKEN     = os.getenv("MONDAY_TOKEN")
-OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL     = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# ─── OpenAI ───────────────────────────────────────────────────────────────────
+OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-APP_ID     = os.getenv("TE_APP_ID")
-APP_SECRET = os.getenv("TE_SECRET")          # your TE App Secret
+# ─── LINE Group IDs ───────────────────────────────────────────────────────────
+ACE_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_ACE")
+SOQUICK_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_SQ")
+VICKY_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_VICKY")
+YUMI_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_YUMI")
+IRIS_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_IRIS")
+ANGELA_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_ANGELA")
+JOYCE_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_JOYCE")
+PDF_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_PDF")
 
-# Regex / Names
-CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|\d+N)\d*[A-Z0-9]*\b")
-# Names to look for in each group’s list
-VICKY_NAMES = {"顧家琪","顧志忠","周佩樺","顧郭蓮梅","廖芯儀","林寶玲","高懿欣","崔書鳳","周志明"}
-YUMI_NAMES  = {"劉淑燕","竇永裕","劉淑玫","劉淑茹","陳富美","劉福祥","郭淨崑","陳卉怡","洪瑜駿","李祈霈","邱啓倫","許霈珩"}
-IRIS_NAMES  = {"廖偉廷","廖本堂","李成艷"}
-ANGELA_NAMES = {"蕭仁富","呂鎰利","謝秀珠"}
+# ─── LINE User IDs ────────────────────────────────────────────────────────────
+YVES_USER_ID: Optional[str] = os.getenv("YVES_USER_ID")
+GORSKY_USER_ID: Optional[str] = os.getenv("GORSKY_USER_ID")
+DANNY_USER_ID: Optional[str] = os.getenv("DANNY_USER_ID")
+VICKY_USER_ID: Optional[str] = os.getenv("VICKY_USER_ID")
+IRIS_USER_ID: Optional[str] = os.getenv("IRIS_USER_ID")
+
+# ─── Google Sheet URLs ────────────────────────────────────────────────────────
+ACE_SHEET_URL: Optional[str] = os.getenv("ACE_SHEET_URL")
+SQ_SHEET_URL: Optional[str] = os.getenv("SQ_SHEET_URL")
+VICKY_SHEET_URL: Optional[str] = os.getenv("VICKY_SHEET_URL")
+
+# ─── Monday Board IDs ─────────────────────────────────────────────────────────
+AIR_BOARD_ID: Optional[str] = os.getenv("AIR_BOARD_ID")
+AIR_PARENT_BOARD_ID: Optional[str] = os.getenv("AIR_PARENT_BOARD_ID")
+VICKY_SUBITEM_BOARD_ID: int = 4815120249
+VICKY_STATUS_COLUMN_ID: str = "status__1"
+
+# ─── Client → LINE Group Mapping ──────────────────────────────────────────────
+CLIENT_TO_GROUP: Dict[str, Optional[str]] = {
+    "yumi": YUMI_GROUP_ID,
+    "vicky": VICKY_GROUP_ID,
+}
+
+# ─── Customer Filters (for tracking) ──────────────────────────────────────────
+CUSTOMER_FILTERS: Dict[Optional[str], list] = {
+    YUMI_GROUP_ID: ["yumi", "shu-yen"],
+    VICKY_GROUP_ID: ["vicky", "chia-chi"]
+}
+
+# ─── Regex Patterns ───────────────────────────────────────────────────────────
+CODE_TRIGGER_RE: Pattern[str] = re.compile(r"\b(?:ACE|\d+N)\d*[A-Z0-9]*\b")
+MISSING_CONFIRM: str = "這幾位還沒有按申報相符"
+
+# ─── Name Sets ────────────────────────────────────────────────────────────────
+VICKY_NAMES: Set[str] = {"顧家琪", "顧志忠", "周佩樺", "顧郭蓮梅", "廖芯儀", "林寶玲", "高懿欣", "崔書鳳", "周志明"}
+YUMI_NAMES: Set[str] = {"劉淑燕", "竇永裕", "劉淑玫", "劉淑茹", "陳富美", "劉福祥", "郭淨崑", "陳卉怡", "洪瑜駿", "李祈霈", "邱啓倫", "許霈珩"}
+IRIS_NAMES: Set[str] = {"廖偉廷", "廖本堂", "李成艷"}
+ANGELA_NAMES: Set[str] = {"蕭仁富", "呂鎰利", "謝秀珠"}
 YVES_NAMES = {
     "梁穎琦",
     "張詠凱",

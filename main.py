@@ -1,4 +1,4 @@
-import os
+﻿import os
 import requests
 import json
 import redis
@@ -9,9 +9,37 @@ from flask import Flask, request, jsonify
 from datetime import datetime, timezone, timedelta
 import pytz
 import openai
+from apscheduler.schedulers.background import BackgroundScheduler
+import atexit
+from collections import defaultdict
+from typing import Optional, List, Dict, Any
+import base64
 
 # 基礎配置與工具
 import config
+from config import (
+    # LINE API
+    LINE_TOKEN, LINE_PUSH_URL, LINE_REPLY_URL, LINE_HEADERS,
+    # Monday API
+    MONDAY_API_URL, MONDAY_API_TOKEN,
+    # Redis
+    REDIS_URL,
+    # Group IDs
+    ACE_GROUP_ID, SOQUICK_GROUP_ID, VICKY_GROUP_ID, YUMI_GROUP_ID,
+    IRIS_GROUP_ID, JOYCE_GROUP_ID, PDF_GROUP_ID,
+    # User IDs
+    YVES_USER_ID, GORSKY_USER_ID, VICKY_USER_ID,
+    # Sheet URLs
+    ACE_SHEET_URL, SQ_SHEET_URL, VICKY_SHEET_URL,
+    # Board IDs
+    AIR_BOARD_ID, AIR_PARENT_BOARD_ID, VICKY_SUBITEM_BOARD_ID, VICKY_STATUS_COLUMN_ID,
+    # Mappings
+    CLIENT_TO_GROUP, CUSTOMER_FILTERS,
+    # Patterns & Constants
+    CODE_TRIGGER_RE, MISSING_CONFIRM, TIMEZONE,
+    # OpenAI
+    OPENAI_API_KEY, OPENAI_MODEL,
+)
 from redis_client import r
 from log import log
 
@@ -27,88 +55,28 @@ from services.shipment_parser import ShipmentParserService
 from handlers.handlers import (
     handle_soquick_and_ace_shipments,
     handle_ace_shipments,
-    handle_soquick_full_notification
+    handle_soquick_full_notification,
+    dispatch_confirmation_notification
 )
-from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event
+from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event, handle_paid_event
 from handlers.vicky_handler import remind_vicky
+from handlers.ups_handler import handle_ups_logic
 
 # 工作排程
 from jobs.ace_tasks import push_ace_today_shipments
 from jobs.sq_tasks import push_sq_weekly_shipments
 
 from sheets import get_gspread_client
-
-from collections import defaultdict
-from typing import Optional, List, Dict, Any
+from holiday_reminder import get_next_holiday
 
 
-# ─── Client → LINE Group Mapping ───────────────────────────────────────────────
-CLIENT_TO_GROUP = {
-    "yumi":  os.getenv("LINE_GROUP_ID_YUMI"),
-    "vicky": os.getenv("LINE_GROUP_ID_VICKY"),
-}
-
-# ─── Environment Variables ────────────────────────────────────────────────────
-APP_ID      = os.getenv("TE_APP_ID")          # e.g. "584"
-APP_SECRET  = os.getenv("TE_SECRET")          # your TE App Secret
-
-# ─── LINE & ACE/SQ 設定 ──────────────────────────────────────────────────────
-ACE_GROUP_ID     = os.getenv("LINE_GROUP_ID_ACE")
-GORSKY_USER_ID   = os.getenv("GORSKY_USER_ID")
-SOQUICK_GROUP_ID = os.getenv("LINE_GROUP_ID_SQ")
-VICKY_GROUP_ID   = os.getenv("LINE_GROUP_ID_VICKY")
-VICKY_USER_ID    = os.getenv("VICKY_USER_ID") 
-YVES_USER_ID     = os.getenv("YVES_USER_ID") 
-YUMI_GROUP_ID    = os.getenv("LINE_GROUP_ID_YUMI")
-JOYCE_GROUP_ID   = os.getenv("LINE_GROUP_ID_JOYCE")
-IRIS_GROUP_ID    = os.getenv("LINE_GROUP_ID_IRIS")
-PDF_GROUP_ID     = os.getenv("LINE_GROUP_ID_PDF")
-
-SQ_SHEET_URL     = os.getenv("SQ_SHEET_URL")
-ACE_SHEET_URL = os.getenv("ACE_SHEET_URL")
-
-# --- Timezone (used by schedulers) ---
-TIMEZONE = os.getenv("TIMEZONE", "America/Vancouver")
-
-# Trigger when you see “週四出貨”/“週日出貨” + “麻煩請” + an ACE or 250N code,
-# or when you see the exact phrase “這幾位還沒有按申報相符”
-CODE_TRIGGER_RE = re.compile(r"\b(?:ACE|\d+N)\d*[A-Z0-9]*\b")
-MISSING_CONFIRM = "這幾位還沒有按申報相符"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ACE「今日出貨」：排程 + 手動觸發
-# - 來源：ACE_SHEET_URL 指向的 Google Sheet
-# - 規則：找出「今天」在欄 A 的所有列 → 取該列的欄 B（Box ID），組成訊息推播
-# - 時間：每週四、週日下午 4:00（America/Vancouver）
-# - 手動：在 ACE 群組輸入「已上傳資料可出貨」立即觸發（不受每日防重複限制）
-# ──────────────────────────────────────────────────────────────────────────────
-
-# ─── Redis for state persistence ───────────────────────────────────────────────
-REDIS_URL = os.getenv("REDIS_URL")
+# ─── Redis Client ─────────────────────────────────────────────────────────────
 if not REDIS_URL:
     raise RuntimeError("REDIS_URL environment variable is required for state persistence")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-r = redis_client
 
-# pull your sheet URL / ID from env
-VICKY_SHEET_URL = os.getenv("VICKY_SHEET_URL")
-
-MONDAY_API_TOKEN = os.getenv("MONDAY_API_TOKEN")
-
-AIR_BOARD_ID = os.getenv("AIR_BOARD_ID")
-AIR_PARENT_BOARD_ID = os.getenv("AIR_PARENT_BOARD_ID")
-
-#STATE_FILE = os.getenv("STATE_FILE", "last_seen.json")
-LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
-LINE_HEADERS = {
-    "Content-Type":  "application/json",
-    "Authorization": f"Bearer {config.LINE_TOKEN}"
-}
-LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
-
-
-from apscheduler.schedulers.background import BackgroundScheduler
-import atexit
+# ─── OpenAI Configuration ─────────────────────────────────────────────────────
+openai.api_key = OPENAI_API_KEY
 
 # ── APScheduler 註冊：每週六 09:00 America/Vancouver 觸發 ────────────────
 _sq_scheduler = None
@@ -145,7 +113,7 @@ def _ensure_scheduler_for_sq_weekly():
 
 # --- Debug: print SA client_email once on startup (safe) ---
 try:
-    import os, json, base64
+    import base64
     sa_json = None
     if os.getenv("GCP_SA_JSON_BASE64"):
         sa_json = base64.b64decode(os.getenv("GCP_SA_JSON_BASE64")).decode("utf-8", "ignore")
@@ -163,7 +131,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger(__name__)
+# Note: 'log' is imported from log.py - don't redefine it
 
 # ─── Customer Mapping ──────────────────────────────────────────────────────────
 # Map each LINE group to the list of lowercase keywords you filter on
@@ -219,19 +187,17 @@ try:
 except Exception as _e:
     log.error(f"[ACE Today] Scheduler init failed: {_e}")
 
-# ─── ADDED: Configure OpenAI API key ───────────────────────────────────────────
-openai.api_key = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# ─── In-memory buffers for batch updates ──────────────────────────────────────
+_pending: Dict[str, List[str]] = defaultdict(list)
+_scheduled: set = set()
 
-# keep an in-memory buffer of successfully updated tracking IDs per group
-_pending = defaultdict(list)
-_scheduled = set()
 
-def strip_mention(line):
-    # Remove an @mention at the very start of the line (e.g. "@Gorsky ")
+def strip_mention(line: str) -> str:
+    """Remove an @mention at the very start of the line (e.g. '@Gorsky ')."""
     return re.sub(r"^@\S+\s*", "", line)
 
-def _schedule_summary(group_id):
+
+def _schedule_summary(group_id: str) -> None:
     """Called once per 30m window to send the summary and clear the buffer."""
     ids = _pending.pop(group_id, [])
     _scheduled.discard(group_id)
@@ -246,38 +212,8 @@ def _schedule_summary(group_id):
     }
     requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
 
-MONDAY_API_URL    = "https://api.monday.com/v2"
-MONDAY_TOKEN      = os.getenv("MONDAY_TOKEN")
-VICKY_SUBITEM_BOARD_ID = 4815120249    # 請填你 Vicky 子任務所在的 Board ID
-VICKY_STATUS_COLUMN_ID = "status__1"   # 請填溫哥華收款那個欄位的 column_id
 
-
-
-# def vicky_sheet_recently_edited():
-    ##1) build a credentials object from your SERVICE_ACCOUNT JSON
-    # creds = Credentials.from_service_account_info(
-        # json.loads(os.environ["GOOGLE_SVCKEY_JSON"]),
-        # scopes=SCOPES
-    # )
-
-    ##2) fetch the spreadsheet’s Drive metadata
-    # drive = build("drive", "v3", credentials=creds)
-    # sheet_url = os.environ["VICKY_SHEET_URL"]
-    # file_id = sheet_url.split("/")[5]            # extract the ID from the URL
-    # meta = drive.files().get(
-        # fileId=file_id,
-        # fields="modifiedTime"
-    # ).execute()
-
-    ##3) parse the ISO timestamp into a datetime
-    # last_edit = datetime.fromisoformat(meta["modifiedTime"].replace("Z","+00:00"))
-
-    ##4) compare against now (UTC)
-    # age = datetime.now(timezone.utc) - last_edit
-    # return age.days < 3
-  
-
-def _line_push(target_id, text):
+def _line_push(target_id: str, text: str) -> requests.Response:
     """通用 LINE PUSH 函式"""
     payload = {
         "to": target_id,
@@ -287,16 +223,17 @@ def _line_push(target_id, text):
     log.info(f"[_line_push] to {target_id}: {resp.status_code}")
     return resp
 
-# CLI entrypoint
-def main():
-    pdf_path = "U110252577.pdf"
-    dpi = 300
-    prompt = OCR_SHIPPING_PROMPT
 
-    # Convert and extract
-    images = pdf_to_image(pdf_path, dpi=dpi)
-    text = extract_text_from_images(images, prompt=prompt)
-    print(text)
+def _line_reply(reply_token: str, text: str) -> requests.Response:
+    """Reply to a LINE message using reply token."""
+    payload = {
+        "replyToken": reply_token,
+        "messages": [{"type": "text", "text": text}]
+    }
+    resp = requests.post(LINE_REPLY_URL, headers=LINE_HEADERS, json=payload)
+    log.info(f"[_line_reply] status: {resp.status_code}")
+    return resp
+
 
 # ─── Flask Webhook ────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -327,8 +264,6 @@ monday_service = MondaySyncService(
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-
-    import re
     # Log incoming methods
     # print(f"[Webhook] Received {request.method} to /webhook")
     # log.info(f"Received {request.method} to /webhook")
@@ -380,7 +315,6 @@ def webhook():
                 log.info(f"[PDF OCR] Extracted data: {full_data}")
 
                 # 3) Run Monday.com sync in a background thread to prevent timeouts
-                import threading
                 threading.Thread(
                     target=monday_service.run_sync,
                     args=(full_data, pdf_bytes, original_filename, r, group_id),
@@ -445,8 +379,6 @@ def webhook():
 
         # ─── 查看帳單觸發入口 ───
         if text.startswith("查看帳單"):
-            # 確保有從 handlers.unpaid_handler 匯入 handle_bill_event
-            from handlers.unpaid_handler import handle_bill_event
             handle_bill_event(
                 sender_id=group_id if group_id else user_id,
                 message_text=text,
@@ -512,7 +444,6 @@ def webhook():
                 )
             else:
                 # 錄入實收金額格式 (paid 金額 [ntd|twd])
-                from handlers.unpaid_handler import handle_paid_event
                 handle_paid_event(
                     sender_id=group_id if group_id else user_id,
                     message_text=text,
@@ -523,7 +454,6 @@ def webhook():
             continue
 
         # 1) 處理 UPS 批量更新與單筆尺寸錄入
-        from handlers.ups_handler import handle_ups_logic
         if handle_ups_logic(event, text, group_id, redis_client):
             continue
  
@@ -535,14 +465,12 @@ def webhook():
             continue
 
         # 4) 處理「申報相符」通知分流 (包含 Danny 自動觸發與管理員手動觸發)
-        from handlers.handlers import dispatch_confirmation_notification
         if dispatch_confirmation_notification(event, text, user_id):
             continue
         
         # 5) Richmond-arrival triggers content-request to Vicky —————————
         if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
             # extract the tracking ID inside parentheses
-            import re
             m = re.search(r"\(([^)]+)\)", text)
             if m:
                 tracking_id = m.group(1)
@@ -580,15 +508,7 @@ def webhook():
             continue
 
         # 7) Soquick “請通知…申報相符” messages ——————————————
-        log.info(
-            "[SOQ DEBUG] group_id=%r, SOQUICK_GROUP_ID=%r, "
-            "has_您好=%r, has_按=%r, has_申報相符=%r",
-            group_id,
-            SOQUICK_GROUP_ID,
-            "您好，請" in text,
-            "按" in text,
-            "申報相符" in text,
-        )        
+
         if (group_id in (SOQUICK_GROUP_ID, ACE_GROUP_ID)
             and "您好，請" in text
             and "按" in text
@@ -596,54 +516,22 @@ def webhook():
             shipment_parser.handle_soquick_full_notification(event)
             continue          
 
-        # 8) Your existing “追蹤包裹” logic
+        # 8) Your existing "追蹤包裹" logic
         if text == "追蹤包裹":
             keywords = CUSTOMER_FILTERS.get(group_id)
             if not keywords:
-                print(f"[Webhook] No keywords configured for group {group_id}, skipping.")
+                log.warning(f"[Webhook] No keywords configured for group {group_id}, skipping.")
                 continue
 
-            # Now safe to extract reply_token
-            reply_token = event["replyToken"]
-            print("[Webhook] Trigger matched, fetching statuses…")
+            log.info("[Webhook] Trigger matched, fetching statuses…")
             messages = get_statuses_for(keywords)
-            print("[Webhook] Reply messages:", messages)
-
-            # Combine lines into one multi-line text
             combined = "\n\n".join(messages)
-            payload = {
-                "replyToken": reply_token,
-                "messages": [{"type": "text", "text": combined}]
-            }
-
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {config.LINE_TOKEN}"
-            }
-            resp = requests.post(
-                "https://api.line.me/v2/bot/message/reply",
-                headers=headers,
-                json=payload
-            )
-            print(f"[Webhook] LINE reply status: {resp.status_code}, body: {resp.text}")
-            log.info(f"LINE reply status={resp.status_code}, body={resp.text}")
+            _line_reply(event["replyToken"], combined)
 
         # 9) Your existing “下個國定假日” logic
         if text == "下個國定假日":
-            from holiday_reminder import get_next_holiday
             msg = get_next_holiday()
-            reply_token = event["replyToken"]
-            requests.post(
-                "https://api.line.me/v2/bot/message/reply",
-                headers={
-                    "Authorization": f"Bearer {config.LINE_TOKEN}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "replyToken": reply_token,
-                    "messages": [{"type": "text", "text": msg}]
-                }
-            )
+            _line_reply(event["replyToken"], msg)
 
         # 🟢 NEW: ACE manual trigger “已上傳資料可出貨”
         if (
@@ -728,16 +616,7 @@ def monday_webhook():
     return "OK", 200
  
 # ─── Poller State Helpers & Job ───────────────────────────────────────────────
-# ─── Helpers for parsing batch lines ─────────────────────────────────────────
 
-##——— Vicky reminders (Wed & Fri at 18:00) ——————————————————————
-# sched.add_job(lambda: remind_vicky("星期四"),
-              # trigger="cron", day_of_week="wed", hour=18, minute=00)
-# sched.add_job(lambda: remind_vicky("週末"),
-              # trigger="cron", day_of_week="fri", hour=17, minute=00)
-
-# sched.start()
-# log.info("Scheduler started")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
