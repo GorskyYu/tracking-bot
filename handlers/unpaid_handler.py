@@ -308,8 +308,10 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
         
     return raw_clients
 
-def _create_item_row(item):
-    """Creates a vertical box component for a single item row."""
+def _create_item_row(item, currency="cad"):
+    """Creates a vertical box component for a single item row.
+    currency: 'cad' or 'twd' - determines which currency to display
+    """
     # 折讓案顯示母項目全名，其餘顯示子項目名
     parent_name = item.get("parent_name", "N/A")
     sub_name = item.get("sub_name", "").strip()
@@ -319,7 +321,15 @@ def _create_item_row(item):
 
     # 不論原始文字為何，統一由 price_val 轉為兩位小數
     price_val = item.get("price_val", 0.0)
-    formatted_price = f"${price_val:.2f}"
+    rate = item.get("parent_rate", 1.0)
+    if rate <= 0: rate = 1.0
+    
+    # Convert to TWD if requested
+    if currency.lower() == "twd":
+        display_price = price_val * rate
+        formatted_price = f"NT${display_price:.0f}"
+    else:
+        formatted_price = f"${price_val:.2f}"
 
     # 準備顯示內容容器
     row_contents = []
@@ -390,13 +400,27 @@ def _create_item_row(item):
     
     return BoxComponent(layout='vertical', margin='md', contents=row_contents)
 
-def _create_client_flex_message(client_obj, is_paid_bill=False):
+def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     """Builds a Flex Bubble for a single client.
     is_paid_bill: If True, displays total in green; if False, displays total in red
+    currency: 'cad' or 'twd' - determines which currency to display
     """
     display_name = client_obj["display_name"]
     total = client_obj["total"]
     dates_data = client_obj["data"]
+    
+    # Get exchange rate from first item for TWD conversion
+    default_rate = 1.0
+    for bill_data in dates_data.values():
+        for parent_data in bill_data.get("parent_dates", {}).values():
+            items = parent_data.get("items", [])
+            if items:
+                default_rate = items[0].get("parent_rate", 1.0)
+                if default_rate > 0:
+                    break
+        if default_rate > 1:
+            break
+    if default_rate <= 0: default_rate = 1.0
     
     # Header
     header = BoxComponent(
@@ -445,13 +469,20 @@ def _create_client_flex_message(client_obj, is_paid_bill=False):
             
             # Items under this parent date
             for item in parent_group["items"]:
-                body_contents.append(_create_item_row(item))
+                body_contents.append(_create_item_row(item, currency))
                 
             # Paid amount for this parent section (if any)
             if parent_group["paid_amount"] != 0:
                 # 檢查該組包裹中是否包含「折讓」母項目
                 is_discount = any("折讓" in item.get("parent_name", "") for item in parent_group["items"])
                 label_text = "Discount" if is_discount else "Paid (Already Received)"
+                
+                # Format paid amount based on currency
+                paid_amt = parent_group['paid_amount']
+                if currency.lower() == "twd":
+                    paid_display = f"-NT${paid_amt * default_rate:.0f}"
+                else:
+                    paid_display = f"-${paid_amt:.2f}"
 
                 body_contents.append(
                     BoxComponent(
@@ -459,20 +490,25 @@ def _create_client_flex_message(client_obj, is_paid_bill=False):
                         margin='md',
                         contents=[
                             TextComponent(text=label_text, flex=4, size='sm', color='#1DB446'),
-                            TextComponent(text=f"-${parent_group['paid_amount']:.2f}", flex=2, align='end', size='sm', color='#1DB446', weight='bold')
+                            TextComponent(text=paid_display, flex=2, align='end', size='sm', color='#1DB446', weight='bold')
                         ]
                     )
                 )
                 
             # Parent Date Subtotal
             body_contents.append(SeparatorComponent(margin='sm'))
+            subtotal = parent_group['subtotal']
+            if currency.lower() == "twd":
+                subtotal_display = f"NT${subtotal * default_rate:.0f}"
+            else:
+                subtotal_display = f"${subtotal:.2f}"
             body_contents.append(
                 BoxComponent(
                     layout='horizontal',
                     margin='sm',
                     contents=[
                         TextComponent(text="Subtotal", flex=4, size='sm', color='#555555'),
-                        TextComponent(text=f"${parent_group['subtotal']:.2f}", flex=2, align='end', size='sm', weight='bold')
+                        TextComponent(text=subtotal_display, flex=2, align='end', size='sm', weight='bold')
                     ]
                 )
             )
@@ -480,6 +516,13 @@ def _create_client_flex_message(client_obj, is_paid_bill=False):
     # Footer (Total)
     # Use green color for paid bills, red for unpaid bills
     total_color = '#1DB446' if is_paid_bill else '#FF4B4B'
+    
+    # Format total based on currency
+    if currency.lower() == "twd":
+        total_display = f"NT${total * default_rate:.0f}"
+    else:
+        total_display = f"${total:.2f}"
+    
     footer = BoxComponent(
         layout='vertical',
         spacing='sm',
@@ -490,7 +533,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False):
                 margin='md',
                 contents=[
                     TextComponent(text="Total Amount", flex=4, size='lg', weight='bold'),
-                    TextComponent(text=f"${total:.2f}", flex=3, align='end', size='lg', weight='bold', color=total_color)
+                    TextComponent(text=total_display, flex=3, align='end', size='lg', weight='bold', color=total_color)
                 ]
             )
         ]
@@ -809,8 +852,10 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
         }
     return None
 
-def _bill_worker(destination_id, client_filter, date_val):
-    """查看帳單的背景執行程序"""
+def _bill_worker(destination_id, client_filter, date_val, currency="cad"):
+    """查看帳單的背景執行程序
+    currency: 'cad' or 'twd' - determines which currency to display
+    """
     try:
         results = fetch_items_by_bill_date(date_val)
         if not results:
@@ -824,7 +869,7 @@ def _bill_worker(destination_id, client_filter, date_val):
             return
 
         for client_name, client_data in grouped.items():
-            flex = _create_client_flex_message(client_data)
+            flex = _create_client_flex_message(client_data, currency=currency)
             line_bot_api.push_message(destination_id, flex)
             
     except Exception as e:
@@ -835,24 +880,30 @@ def handle_bill_event(sender_id, message_text, reply_token, user_id, group_id=No
     is_admin = user_id in ADMIN_USER_IDS
     auto_client = GROUP_TO_CLIENT_MAP.get(group_id)
 
-    # Parse the command to check for explicit client name and date
-    # Format: 查看帳單 [客戶] [日期] or 查看帳單 [日期]
+    # Parse the command to check for explicit client name, date, and currency
+    # Format: 查看帳單 [客戶] [日期] [twd] or 查看帳單 [日期] [twd]
     parts = text.split()
     
-    # Check if there's a date (YYMMDD format) in the command
+    # Check if there's a date (YYMMDD format), currency, in the command
     date_val = None
     client_name = None
+    currency = "cad"  # Default currency
     
     for part in parts[1:]:  # Skip "查看帳單"
         if re.match(r'^\d{6}$', part):
             date_val = part
+        elif part.lower() in ["twd", "ntd", "tw"]:
+            currency = "twd"
         elif not date_val:  # Client name comes before date
             client_name = part
     
+    # Currency display text
+    currency_label = " (TWD)" if currency == "twd" else ""
+    
     # If explicit client name and date provided (works anywhere)
     if client_name and date_val:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {client_name} 的 {date_val} 帳單..."))
-        Thread(target=_bill_worker, args=(group_id if group_id else user_id, client_name, date_val)).start()
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {client_name} 的 {date_val} 帳單{currency_label}..."))
+        Thread(target=_bill_worker, args=(group_id if group_id else user_id, client_name, date_val, currency)).start()
         return
     
     # 1. 群組模式：查看帳單YYMMDD (only date, use auto_client)
@@ -860,8 +911,8 @@ def handle_bill_event(sender_id, message_text, reply_token, user_id, group_id=No
         if not auto_client:
             line_bot_api.reply_message(reply_token, TextSendMessage(text="⛔ 此群組未對應客戶。"))
             return
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {auto_client} 的 {date_val} 帳單..."))
-        Thread(target=_bill_worker, args=(group_id, auto_client, date_val)).start()
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🔍 正在抓取 {auto_client} 的 {date_val} 帳單{currency_label}..."))
+        Thread(target=_bill_worker, args=(group_id, auto_client, date_val, currency)).start()
         return
 
     # 2. 私訊模式 (僅限管理員)
