@@ -1224,6 +1224,6 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id, group_id=No
             line_bot_api.push_message(sender_id, TextSendMessage(text=summary))
 
         except Exception as e:
-            logging.error(f"Paid worker failed: {e}")
+            logging.error(f"Paid worker failed: {e}\n{traceback.format_exc()}")
 
     Thread(target=_paid_worker).start()
