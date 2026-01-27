@@ -1,4 +1,5 @@
 ﻿import pytz
+import traceback
 from datetime import datetime
 
 from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD_MAPPING
@@ -956,7 +957,7 @@ def _paid_worker(destination_id, client_filter, date_val):
             line_bot_api.push_message(destination_id, flex)
             
     except Exception as e:
-        logging.error(f"Paid worker failed: {e}")
+        logging.error(f"Paid worker failed: {e}\n{traceback.format_exc()}")
 
 def handle_paid_bill_event(sender_id, message_text, reply_token, user_id, group_id=None):
     """處理查看已付款帳單指令 (paid YYMMDD [AbowbowID])"""
