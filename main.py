@@ -7,15 +7,12 @@ import re
 import threading
 from flask import Flask, request, jsonify
 from datetime import datetime, timezone, timedelta
-import pytz
 import openai
-from apscheduler.schedulers.background import BackgroundScheduler
-import atexit
 from collections import defaultdict
 from typing import Optional, List, Dict, Any
 import base64
 
-# ???????
+# 基礎配置與工具
 import config
 from config import (
     # LINE API (LINE_TOKEN used via config.LINE_TOKEN for file downloads)
@@ -63,15 +60,16 @@ from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, hand
 from handlers.vicky_handler import remind_vicky
 from handlers.ups_handler import handle_ups_logic
 
-# ????
+# 工作排程
 from jobs.ace_tasks import push_ace_today_shipments
 from jobs.sq_tasks import push_sq_weekly_shipments
+from jobs.scheduler import init_all_schedulers
 
 from sheets import get_gspread_client
 from holiday_reminder import get_next_holiday
 
 
-# --- Redis Client -------------------------------------------------------------
+# ─── Redis Client ─────────────────────────────────────────────────────────────
 if not REDIS_URL:
     raise RuntimeError("REDIS_URL environment variable is required for state persistence")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -79,114 +77,9 @@ redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 # --- OpenAI Configuration -----------------------------------------------------
 openai.api_key = OPENAI_API_KEY
 
-# -- APScheduler ??:??? 09:00 America/Vancouver ?? ----------------
-_sq_scheduler = None
-def _ensure_scheduler_for_sq_weekly():
-    """
-    ???????,????? 09:00(America/Vancouver)??
-    push_sq_weekly_shipments(force=False)?
-    """
-    global _sq_scheduler
-    if _sq_scheduler is not None:
-        return _sq_scheduler
+#  Initialize Background Schedulers 
+init_all_schedulers()
 
-    tz = pytz.timezone(TIMEZONE)
-    sched = BackgroundScheduler(timezone=tz)
-    sched.add_job(
-        push_sq_weekly_shipments,
-        trigger="cron",
-        day_of_week="sat",
-        hour=9,
-        minute=0,
-        kwargs={"force": False},
-        id="sq_weekly_shipments_sat_9am",
-        replace_existing=True,
-        misfire_grace_time=600,
-        coalesce=True,
-        max_instances=1,
-    )
-    sched.start()
-    atexit.register(lambda: sched.shutdown(wait=False))
-    log.info("[SQ Weekly] Scheduler started (Sat 09:00 America/Vancouver).")
-
-    _sq_scheduler = sched
-    return _sq_scheduler
-
-# --- Debug: print SA client_email once on startup (safe) ---
-try:
-    import base64
-    sa_json = None
-    if os.getenv("GCP_SA_JSON_BASE64"):
-        sa_json = base64.b64decode(os.getenv("GCP_SA_JSON_BASE64")).decode("utf-8", "ignore")
-    elif os.getenv("GOOGLE_SVCKEY_JSON"):
-        sa_json = os.getenv("GOOGLE_SVCKEY_JSON")
-    if sa_json:
-        client_email = json.loads(sa_json).get("client_email")
-        if client_email:
-            print(f"[GSHEET] service account email = {client_email}")
-except Exception as _e:
-    print("[GSHEET] could not print service account email:", _e)
-
-# --- Structured Logging Setup -------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-# Note: 'log' is imported from log.py - don't redefine it
-
-# --- Customer Mapping ----------------------------------------------------------
-# Map each LINE group to the list of lowercase keywords you filter on
-CUSTOMER_FILTERS = {
-    os.getenv("LINE_GROUP_ID_YUMI"):   ["yumi", "shu-yen"],
-    os.getenv("LINE_GROUP_ID_VICKY"):  ["vicky","chia-chi"]
-}
-
-# ???????? SQ ????(? ACE ? _ensure_scheduler_for_ace_today ??)
-try:
-    _ensure_scheduler_for_sq_weekly()
-except Exception as _e:
-    log.error(f"[SQ Weekly] Scheduler init failed: {_e}")
-
-# -- APScheduler ??:???&?? 16:00 America/Vancouver ?? ----------------
-_scheduler = None
-def _ensure_scheduler_for_ace_today():
-    """
-    ???????,?????????? 16:00(America/Vancouver)??
-    push_ace_today_shipments(force=False)?
-    - ?? coalesce / max_instances ????????????
-    - ?? misfire_grace_time ????????
-    """
-    global _scheduler
-    if _scheduler is not None:
-        return _scheduler
-
-    tz = pytz.timezone(TIMEZONE)
-    sched = BackgroundScheduler(timezone=tz)
-    sched.add_job(
-        push_ace_today_shipments,
-        trigger="cron",
-        day_of_week="thu,sun",
-        hour=16,
-        minute=0,
-        kwargs={"force": False},  # ????,??? force
-        id="ace_today_shipments_thu_sun_4pm",
-        replace_existing=True,
-        misfire_grace_time=600,
-        coalesce=True,
-        max_instances=1,
-    )
-    sched.start()
-    atexit.register(lambda: sched.shutdown(wait=False))
-    log.info("[ACE Today] Scheduler started (Thu/Sun 16:00 America/Vancouver).")
-
-    _scheduler = sched
-    return _scheduler
-
-# ????????????(???????)
-try:
-    _ensure_scheduler_for_ace_today()
-except Exception as _e:
-    log.error(f"[ACE Today] Scheduler init failed: {_e}")
 
 # --- In-memory buffers for batch updates --------------------------------------
 _pending: Dict[str, List[str]] = defaultdict(list)
