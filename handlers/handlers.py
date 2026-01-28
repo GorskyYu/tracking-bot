@@ -180,21 +180,31 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
     if fallback_map:
         from utils.permissions import ADMIN_USER_IDS
         from config import ACE_SHEET_URL, EXCLUDED_SENDERS
-        
+
         try:
             gs = get_gspread_client()
             ss = gs.open_by_url(ACE_SHEET_URL)
-            target_date = datetime.fromtimestamp(event["timestamp"]/1000, tz=timezone(timedelta(hours=8))).strftime("%y%m%d")
             
+            # 從出貨單號提取日期 (ACE260125YL... -> 260125)，而非使用事件時間戳
+            ace_date_match = re.search(r'ACE(\d{6})', raw)
+            if ace_date_match:
+                target_date = ace_date_match.group(1)
+            else:
+                # fallback 到事件時間戳
+                target_date = datetime.fromtimestamp(event["timestamp"]/1000, tz=timezone(timedelta(hours=8))).strftime("%y%m%d")
+
             worksheets = ss.worksheets()
-            ws = next((w for w in worksheets if w.title == target_date), worksheets[0]) 
-            rows = ws.get_all_values()[1:] 
+            ws = next((w for w in worksheets if w.title == target_date), worksheets[0])
+            log.info(f"[ACE Fallback] 使用分頁 {ws.title} (target_date={target_date})")
+            rows = ws.get_all_values()[1:]
 
             matched_recipients = set()
             # 加入 matched_recipients 判定，避免同一收件人重複匹配多行
             for row in rows:
-                sheet_recipient = row[6].strip() if len(row) > 6 else ""
+                # Column I (index 8) = 收件人 (recipient)
+                sheet_recipient = row[8].strip() if len(row) > 8 else ""
                 if sheet_recipient in fallback_map and sheet_recipient not in matched_recipients:
+                    # Column C (index 2) = 寄件人 (sender)
                     sender = row[2].strip() if len(row) > 2 else "未知寄件人"
                     if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
                         if sender not in sender_to_bundles:
