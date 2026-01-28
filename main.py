@@ -15,11 +15,11 @@ from collections import defaultdict
 from typing import Optional, List, Dict, Any
 import base64
 
-# 基礎配置與工具
+# ???????
 import config
 from config import (
-    # LINE API
-    LINE_TOKEN, LINE_PUSH_URL, LINE_REPLY_URL, LINE_HEADERS,
+    # LINE API (LINE_TOKEN used via config.LINE_TOKEN for file downloads)
+    LINE_TOKEN,
     # Monday API
     MONDAY_API_URL, MONDAY_API_TOKEN,
     # Redis
@@ -43,15 +43,16 @@ from config import (
 from redis_client import r
 from log import log
 
-# 核心服務層
+# ?????
 from services.ocr_engine import OCRAgent
 from services.monday_service import MondaySyncService
 from services.te_api_service import get_statuses_for, call_api
 from services.barcode_service import handle_barcode_image
 from services.twws_service import get_twws_value_by_name
 from services.shipment_parser import ShipmentParserService
+from services.line_service import line_push, line_reply, line_push_mention
 
-# 業務邏輯處理器
+# ???????
 from handlers.handlers import (
     handle_soquick_and_ace_shipments,
     handle_ace_shipments,
@@ -62,7 +63,7 @@ from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, hand
 from handlers.vicky_handler import remind_vicky
 from handlers.ups_handler import handle_ups_logic
 
-# 工作排程
+# ????
 from jobs.ace_tasks import push_ace_today_shipments
 from jobs.sq_tasks import push_sq_weekly_shipments
 
@@ -70,20 +71,20 @@ from sheets import get_gspread_client
 from holiday_reminder import get_next_holiday
 
 
-# ─── Redis Client ─────────────────────────────────────────────────────────────
+# --- Redis Client -------------------------------------------------------------
 if not REDIS_URL:
     raise RuntimeError("REDIS_URL environment variable is required for state persistence")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-# ─── OpenAI Configuration ─────────────────────────────────────────────────────
+# --- OpenAI Configuration -----------------------------------------------------
 openai.api_key = OPENAI_API_KEY
 
-# ── APScheduler 註冊：每週六 09:00 America/Vancouver 觸發 ────────────────
+# -- APScheduler ??:??? 09:00 America/Vancouver ?? ----------------
 _sq_scheduler = None
 def _ensure_scheduler_for_sq_weekly():
     """
-    以背景排程方式，固定每週六 09:00（America/Vancouver）執行
-    push_sq_weekly_shipments(force=False)。
+    ???????,????? 09:00(America/Vancouver)??
+    push_sq_weekly_shipments(force=False)?
     """
     global _sq_scheduler
     if _sq_scheduler is not None:
@@ -126,34 +127,34 @@ try:
 except Exception as _e:
     print("[GSHEET] could not print service account email:", _e)
 
-# ─── Structured Logging Setup ─────────────────────────────────────────────────
+# --- Structured Logging Setup -------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
 # Note: 'log' is imported from log.py - don't redefine it
 
-# ─── Customer Mapping ──────────────────────────────────────────────────────────
+# --- Customer Mapping ----------------------------------------------------------
 # Map each LINE group to the list of lowercase keywords you filter on
 CUSTOMER_FILTERS = {
     os.getenv("LINE_GROUP_ID_YUMI"):   ["yumi", "shu-yen"],
     os.getenv("LINE_GROUP_ID_VICKY"):  ["vicky","chia-chi"]
 }
 
-# 模組載入時就確保 SQ 排程啟動（與 ACE 的 _ensure_scheduler_for_ace_today 並存）
+# ???????? SQ ????(? ACE ? _ensure_scheduler_for_ace_today ??)
 try:
     _ensure_scheduler_for_sq_weekly()
 except Exception as _e:
     log.error(f"[SQ Weekly] Scheduler init failed: {_e}")
 
-# ── APScheduler 註冊：每週四＆週日 16:00 America/Vancouver 觸發 ────────────────
+# -- APScheduler ??:???&?? 16:00 America/Vancouver ?? ----------------
 _scheduler = None
 def _ensure_scheduler_for_ace_today():
     """
-    以背景排程方式，固定在每週四與週日的 16:00（America/Vancouver）執行
-    push_ace_today_shipments(force=False)。
-    - 使用 coalesce / max_instances 來避免重啟造成的堆疊觸發
-    - 使用 misfire_grace_time 允許短暫喚醒延遲
+    ???????,?????????? 16:00(America/Vancouver)??
+    push_ace_today_shipments(force=False)?
+    - ?? coalesce / max_instances ????????????
+    - ?? misfire_grace_time ????????
     """
     global _scheduler
     if _scheduler is not None:
@@ -167,7 +168,7 @@ def _ensure_scheduler_for_ace_today():
         day_of_week="thu,sun",
         hour=16,
         minute=0,
-        kwargs={"force": False},  # 排程呼叫，一律非 force
+        kwargs={"force": False},  # ????,??? force
         id="ace_today_shipments_thu_sun_4pm",
         replace_existing=True,
         misfire_grace_time=600,
@@ -181,13 +182,13 @@ def _ensure_scheduler_for_ace_today():
     _scheduler = sched
     return _scheduler
 
-# 模組匯入時就確保排程啟動（多次匯入也安全）
+# ????????????(???????)
 try:
     _ensure_scheduler_for_ace_today()
 except Exception as _e:
     log.error(f"[ACE Today] Scheduler init failed: {_e}")
 
-# ─── In-memory buffers for batch updates ──────────────────────────────────────
+# --- In-memory buffers for batch updates --------------------------------------
 _pending: Dict[str, List[str]] = defaultdict(list)
 _scheduled: set = set()
 
@@ -205,37 +206,11 @@ def _schedule_summary(group_id: str) -> None:
         return
     # dedupe and format
     uniq = sorted(set(ids))
-    text = "✅ Updated packages:\n" + "\n".join(f"- {tid}" for tid in uniq)
-    payload = {
-        "to": group_id,
-        "messages": [{"type": "text", "text": text}]
-    }
-    requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+    text = "? Updated packages:\n" + "\n".join(f"- {tid}" for tid in uniq)
+    line_push(group_id, text)
 
 
-def _line_push(target_id: str, text: str) -> requests.Response:
-    """通用 LINE PUSH 函式"""
-    payload = {
-        "to": target_id,
-        "messages": [{"type": "text", "text": text}]
-    }
-    resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-    log.info(f"[_line_push] to {target_id}: {resp.status_code}")
-    return resp
-
-
-def _line_reply(reply_token: str, text: str) -> requests.Response:
-    """Reply to a LINE message using reply token."""
-    payload = {
-        "replyToken": reply_token,
-        "messages": [{"type": "text", "text": text}]
-    }
-    resp = requests.post(LINE_REPLY_URL, headers=LINE_HEADERS, json=payload)
-    log.info(f"[_line_reply] status: {resp.status_code}")
-    return resp
-
-
-# ─── Flask Webhook ────────────────────────────────────────────────────────────
+# --- Flask Webhook ------------------------------------------------------------
 app = Flask(__name__)
 
 ocr_helper = OCRAgent()
@@ -254,12 +229,12 @@ CONFIG = {
     'ACE_SHEET_URL': ACE_SHEET_URL
 }
 
-shipment_parser = ShipmentParserService(CONFIG, get_gspread_client, _line_push)
+shipment_parser = ShipmentParserService(CONFIG, get_gspread_client, line_push)
 
 monday_service = MondaySyncService(
     api_token=MONDAY_API_TOKEN,
     gspread_client_func=get_gspread_client,
-    line_push_func=_line_push
+    line_push_func=line_push
 )
 
 @app.route("/webhook", methods=["GET", "POST"])
@@ -275,18 +250,18 @@ def webhook():
     # log.info(f"Payload: {json.dumps(data, ensure_ascii=False)}")
 
     for event in data.get("events", []):
-        # ignore non‐message events (eg. unsend)
+        # ignore non-message events (eg. unsend)
         if event.get("type") != "message":
             continue
             
-        # 立刻抓 source / group_id
+        # ??? source / group_id
         src = event["source"]
         group_id = src.get("groupId")
         msg      = event["message"]
         text     = msg.get("text", "").strip()
         mtype    = msg.get("type")
     
-        # ─── NEW & CLEANED PDF OCR Trigger ────────────────────────────────────
+        # --- NEW & CLEANED PDF OCR Trigger ------------------------------------
         if (
             msg.get("type") == "file"
             and msg.get("fileName", "").lower().endswith(".pdf")
@@ -323,62 +298,62 @@ def webhook():
 
             except Exception as e:
                 log.error(f"[PDF OCR] Critical failure: {e}", exc_info=True)
-                _line_push(YVES_USER_ID, f"⚠️ PDF System Error: {str(e)}")
+                line_push(YVES_USER_ID, f"?? PDF System Error: {str(e)}")
 
             return "OK", 200
 
-        # 🟢 新增：圖片條碼辨識邏輯
+        # ?? ??:????????
         if mtype == "image":
-            # 呼叫 barcode_service 處理，傳入所需的緩存與回呼函式
+            # ?? barcode_service ??,????????????
             if handle_barcode_image(event, group_id, r, _pending, _scheduled, _schedule_summary):
-                continue # 如果處理成功（是條碼圖片），則跳過後續邏輯
+                continue # ??????(?????),???????
 
-        # 🟢 NEW: TWWS 兩段式互動邏輯 (限定個人私訊且限定 Yves 使用)
+        # ?? NEW: TWWS ??????? (????????? Yves ??)
         user_id = src.get("userId")
-        twws_state_key = f"twws_wait_{user_id}" # 使用 userId 確保狀態唯一
+        twws_state_key = f"twws_wait_{user_id}" # ?? userId ??????
         
-        # 檢查是否為「個人私訊」且為「指定的管理員 (Yves)」
+        # ???????????????????? (Yves)?
         if src.get("type") == "user" and user_id == YVES_USER_ID:
-            # 檢查是否正在等待使用者輸入「子項目名稱」
+            # ????????????????????
             if r.get(twws_state_key):
-                # 如果有狀態存在，把這次輸入的 text 當作名稱去查
+                # ???????,?????? text ??????
                 amount = get_twws_value_by_name(text)
-                # 使用 user_id 作為推播對象，確保私訊回傳
-                _line_push(user_id, f"🔍 查詢結果 ({text}):\n💰 應付金額: {amount}")
-                r.delete(twws_state_key) # 查完後刪除狀態
+                # ?? user_id ??????,??????
+                line_push(user_id, f"?? ???? ({text}):\n?? ????: {amount}")
+                r.delete(twws_state_key) # ???????
                 continue
 
-            # 觸發第一階段：使用者輸入 twws
+            # ??????:????? twws
             if text.lower() == "twws":
-                # 設定狀態並給予 5 分鐘 (300秒) 的時限
+                # ??????? 5 ?? (300?) ???
                 r.set(twws_state_key, "active", ex=300)
-                _line_push(user_id, "好的，請輸入子項目名稱：")
+                line_push(user_id, "??,????????:")
                 continue
 
-        # --- 金額自動錄入邏輯：僅限 PDF Scanning 群組觸發 ---
+        # --- ????????:?? PDF Scanning ???? ---
         if group_id == PDF_GROUP_ID:
-            # 檢查是否為純數字金額 (如 43.10)
+            # ?????????? (? 43.10)
             if re.match(r'^\d+(\.\d{1,2})?$', text):
-                # 從全局 Key 抓取最後一次上傳的 PDF 項目 ID, 取得包含 ID 與 Board 的組合字串
+                # ??? Key ????????? PDF ?? ID, ???? ID ? Board ?????
                 redis_val = r.get("global_last_pdf_parent")
 
                 if redis_val and "|" in redis_val:
-                    # 拆分出項目 ID 與板塊 ID
+                    # ????? ID ??? ID
                     last_pid, last_bid = redis_val.split("|")
 
-                    # 呼叫時多傳入板塊 ID
+                    # ???????? ID
                     ok, msg, item_name = monday_service.update_domestic_expense(last_pid, text, group_id, last_bid)
 
                     if ok:
-                        _line_push(group_id, f"✅ 已成功登記境內支出: ${text}\n📌 項目: {item_name}")
+                        line_push(group_id, f"? ?????????: ${text}\n?? ??: {item_name}")
                         r.delete("global_last_pdf_parent")
                     else:
-                        _line_push(group_id, f"❌ 登記失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
+                        line_push(group_id, f"? ????: {msg}\n?? ??: {item_name if item_name else '??'}")
                     continue
 
 
-        # ─── 查看帳單觸發入口 ───
-        if text.startswith("查看帳單"):
+        # --- ???????? ---
+        if text.startswith("????"):
             handle_bill_event(
                 sender_id=group_id if group_id else user_id,
                 message_text=text,
@@ -388,8 +363,8 @@ def webhook():
             )
             continue
         
-        # 目前功能指令 (僅限管理員私訊)
-        if text.strip() == "目前功能":
+        # ?????? (???????)
+        if text.strip() == "????":
             current_user_id = src.get("userId")
             current_group_id = src.get("groupId")
             is_admin = (current_user_id == YVES_USER_ID or current_user_id == GORSKY_USER_ID)
@@ -404,18 +379,18 @@ def webhook():
                 )
                 continue
         
-        # 新的 Unpaid 邏輯
+        # ?? Unpaid ??
         if text.lower().startswith("unpaid"):
             user_id = src.get("userId")
             group_id = src.get("groupId")
 
-            # 1. 判斷是否為管理員
+            # 1. ????????
             is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
             
-            # 2. 判斷是否為有效的自動查詢群組
+            # 2. ??????????????
             is_valid_group = group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, IRIS_GROUP_ID}
 
-            # 🟢 新邏輯：管理員隨時可用；一般成員僅限在指定群組內輸入 "unpaid"
+            # ?? ???:???????;?????????????? "unpaid"
             can_trigger = is_admin or (is_valid_group and text.lower() == "unpaid")
 
             if can_trigger:
@@ -428,12 +403,12 @@ def webhook():
                 )
                 continue
             
-        # Paid 指令處理：分為兩種情況
-        # 1. 查看已付款帳單：paid YYMMDD [AbowbowID]
-        # 2. 錄入實收金額：paid 金額 [ntd|twd]
+        # Paid ????:??????
+        # 1. ???????:paid YYMMDD [AbowbowID]
+        # 2. ??????:paid ?? [ntd|twd]
         if text.lower().startswith("paid"):
             parts = text.split()
-            # 檢查是否為查看已付款帳單格式 (paid YYMMDD ...)
+            # ?????????????? (paid YYMMDD ...)
             if len(parts) >= 2 and re.match(r"^\d{6}$", parts[1]):
                 handle_paid_bill_event(
                     sender_id=group_id if group_id else user_id,
@@ -443,7 +418,7 @@ def webhook():
                     group_id=group_id
                 )
             else:
-                # 錄入實收金額格式 (paid 金額 [ntd|twd])
+                # ???????? (paid ?? [ntd|twd])
                 handle_paid_event(
                     sender_id=group_id if group_id else user_id,
                     message_text=text,
@@ -453,23 +428,23 @@ def webhook():
                 )
             continue
 
-        # 1) 處理 UPS 批量更新與單筆尺寸錄入
+        # 1) ?? UPS ???????????
         if handle_ups_logic(event, text, group_id, redis_client):
             continue
  
-        # 3) Ace schedule (週四／週日出貨) & ACE EZ-Way check
-        if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
-            # 使用 ShipmentParserService 實例呼叫邏輯
-            shipment_parser.handle_ace_schedule(event)      # 負責發送到各負責人小群
-            shipment_parser.handle_missing_confirm(event)   # 負責 Iris 分流與發送 Sender 給 Yves
+        # 3) Ace schedule (??/????) & ACE EZ-Way check
+        if group_id == ACE_GROUP_ID and ("????" in text or "????" in text):
+            # ?? ShipmentParserService ??????
+            shipment_parser.handle_ace_schedule(event)      # ???????????
+            shipment_parser.handle_missing_confirm(event)   # ?? Iris ????? Sender ? Yves
             continue
 
-        # 4) 處理「申報相符」通知分流 (包含 Danny 自動觸發與管理員手動觸發)
+        # 4) ???????????? (?? Danny ????????????)
         if dispatch_confirmation_notification(event, text, user_id):
             continue
         
-        # 5) Richmond-arrival triggers content-request to Vicky —————————
-        if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
+        # 5) Richmond-arrival triggers content-request to Vicky ���������
+        if group_id == VICKY_GROUP_ID and "[Richmond, Canada] ???????" in text:
             # extract the tracking ID inside parentheses
             m = re.search(r"\(([^)]+)\)", text)
             if m:
@@ -478,66 +453,48 @@ def webhook():
                 # no ID found, skip
                 continue
 
-            # build the mention message
-            placeholder = "{user1}"
-            msg = f"{placeholder} 請提供此包裹的內容物清單：{tracking_id}"
-            substitution = {
-                "user1": {
-                    "type": "mention",
-                    "mentionee": {
-                        "type":   "user",
-                        "userId": VICKY_USER_ID
-                    }
-                }
-            }
-            payload = {
-                "to": VICKY_GROUP_ID,
-                "messages": [{
-                    "type":        "textV2",
-                    "text":        msg,
-                    "substitution": substitution
-                }]
-            }
-            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+            # build the mention message using line_push_mention helper
+            msg = "{user1} ?????????????" + tracking_id
+            line_push_mention(VICKY_GROUP_ID, msg, {"user1": VICKY_USER_ID})
             log.info(f"Requested contents list from Vicky for {tracking_id}")
             continue
                 
-        # 6) Soquick “上周六出貨包裹的派件單號” & Ace "出貨單號" blocks ——————————————
-        if (group_id == SOQUICK_GROUP_ID and "上周六出貨包裹的派件單號" in text) or (group_id == ACE_GROUP_ID and "出貨單號" in text and "宅配單號" in text):
+        # 6) Soquick �????????????� & Ace "????" blocks ��������������
+        if (group_id == SOQUICK_GROUP_ID and "????????????" in text) or (group_id == ACE_GROUP_ID and "????" in text and "????" in text):
             handle_soquick_and_ace_shipments(event)
             continue
 
-        # 7) Soquick “請通知…申報相符” messages ——————————————
+        # 7) Soquick �???�????� messages ��������������
 
         if (group_id in (SOQUICK_GROUP_ID, ACE_GROUP_ID)
-            and "您好，請" in text
-            and "按" in text
-            and "申報相符" in text):
+            and "??,?" in text
+            and "?" in text
+            and "????" in text):
             shipment_parser.handle_soquick_full_notification(event)
             continue          
 
-        # 8) Your existing "追蹤包裹" logic
-        if text == "追蹤包裹":
+        # 8) Your existing "????" logic
+        if text == "????":
             keywords = CUSTOMER_FILTERS.get(group_id)
             if not keywords:
                 log.warning(f"[Webhook] No keywords configured for group {group_id}, skipping.")
                 continue
 
-            log.info("[Webhook] Trigger matched, fetching statuses…")
+            log.info("[Webhook] Trigger matched, fetching statuses�")
             messages = get_statuses_for(keywords)
             combined = "\n\n".join(messages)
-            _line_reply(event["replyToken"], combined)
+            line_reply(event["replyToken"], combined)
 
-        # 9) Your existing “下個國定假日” logic
-        if text == "下個國定假日":
+        # 9) Your existing "??????" logic
+        if text == "??????":
             msg = get_next_holiday()
-            _line_reply(event["replyToken"], msg)
+            line_reply(event["replyToken"], msg)
 
-        # 🟢 NEW: ACE manual trigger “已上傳資料可出貨”
+        # ?? NEW: ACE manual trigger �????????�
         if (
             event.get("source", {}).get("type") == "group"
             and event["source"].get("groupId") == ACE_GROUP_ID
-            and text.strip() == "已上傳資料可出貨"
+            and text.strip() == "????????"
         ):
             reply_token = event.get("replyToken")
             push_ace_today_shipments(force=True, reply_token=reply_token)
@@ -545,7 +502,7 @@ def webhook():
 
     return "OK", 200
     
-# ─── Monday.com Webhook ────────────────────────────────────────────────────────
+# --- Monday.com Webhook --------------------------------------------------------
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
     if request.method == "GET":
@@ -553,7 +510,7 @@ def monday_webhook():
 
     data = request.get_json()
     evt  = data.get("event", data)
-    # respond to Monday’s handshake
+    # respond to Monday�s handshake
     if "challenge" in data:
         return jsonify({"challenge": data["challenge"]}), 200
 
@@ -562,8 +519,8 @@ def monday_webhook():
     lookup_id = parent_id or sub_id
     new_txt   = evt.get("value", {}).get("label", {}).get("text")
 
-    # only act when Location flips to 國際運輸
-    if new_txt != "國際運輸" or not lookup_id:
+    # only act when Location flips to ????
+    if new_txt != "????" or not lookup_id:
         return "OK", 200
 
     # fetch just the formula column:
@@ -595,27 +552,19 @@ def monday_webhook():
 
     group_id = CLIENT_TO_GROUP.get(key)
     if not group_id:
-        print(f"[Monday→LINE] no mapping for “{client}” → {key}, skipping.")
+        print(f"[Monday?LINE] no mapping for �{client}� ? {key}, skipping.")
         log.warning(f"No mapping for client={client} key={key}, skipping.")
         return "OK", 200
 
     item_name = evt.get("pulseName") or str(lookup_id)
-    message   = f"📦 {item_name} 已送往機場，準備進行國際運輸。"
+    message   = f"?? {item_name} ?????,?????????"
 
-    push = requests.post(
-      "https://api.line.me/v2/bot/message/push",
-      headers={
-        "Authorization": f"Bearer {config.LINE_TOKEN}",
-        "Content-Type":  "application/json"
-      },
-      json={"to": group_id, "messages":[{"type":"text","text":message}]}
-    )
-    print(f"[Monday→LINE] sent to {client}: {push.status_code}", push.text)
-    log.info(f"Monday→LINE push status={push.status_code}, body={push.text}")
+    line_push(group_id, message)
+    log.info(f"MondayLINE push sent to {client}")
 
     return "OK", 200
  
-# ─── Poller State Helpers & Job ───────────────────────────────────────────────
+# --- Poller State Helpers & Job -----------------------------------------------
 
 
 if __name__ == "__main__":
