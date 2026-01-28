@@ -49,7 +49,7 @@ from services.twws_service import get_twws_value_by_name
 from services.shipment_parser import ShipmentParserService
 from services.line_service import line_push, line_reply, line_push_mention
 
-# ???????
+# 業務邏輯處理器
 from handlers.handlers import (
     handle_soquick_and_ace_shipments,
     handle_ace_shipments,
@@ -100,7 +100,7 @@ def _schedule_summary(group_id: str) -> None:
         return
     # dedupe and format
     uniq = sorted(set(ids))
-    text = "? Updated packages:\n" + "\n".join(f"- {tid}" for tid in uniq)
+    text = " Updated packages:\n" + "\n".join(f"- {tid}" for tid in uniq)
     line_push(group_id, text)
 
 
@@ -148,7 +148,7 @@ def webhook():
         if event.get("type") != "message":
             continue
             
-        # ??? source / group_id
+        # 立刻抓 source / group_id
         src = event["source"]
         group_id = src.get("groupId")
         msg      = event["message"]
@@ -192,62 +192,62 @@ def webhook():
 
             except Exception as e:
                 log.error(f"[PDF OCR] Critical failure: {e}", exc_info=True)
-                line_push(YVES_USER_ID, f"?? PDF System Error: {str(e)}")
+                line_push(YVES_USER_ID, f" PDF System Error: {str(e)}")
 
             return "OK", 200
 
-        # ?? ??:????????
+        # 🟢 新增：圖片條碼辨識邏輯
         if mtype == "image":
-            # ?? barcode_service ??,????????????
+            # 呼叫 barcode_service 處理，傳入所需的緩存與回呼函式
             if handle_barcode_image(event, group_id, r, _pending, _scheduled, _schedule_summary):
-                continue # ??????(?????),???????
+                continue  # 如果處理成功（是條碼圖片），則跳過後續邏輯
 
-        # ?? NEW: TWWS ??????? (????????? Yves ??)
+        # 🟢 NEW: TWWS 兩段式互動邏輯 (限定個人私訊且限定 Yves 使用)
         user_id = src.get("userId")
-        twws_state_key = f"twws_wait_{user_id}" # ?? userId ??????
+        twws_state_key = f"twws_wait_{user_id}" # 使用 userId 確保狀態唯一
         
-        # ???????????????????? (Yves)?
+        # 檢查是否為「個人私訊」且為「指定的管理員 (Yves)」
         if src.get("type") == "user" and user_id == YVES_USER_ID:
-            # ????????????????????
+            # 檢查是否正在等待使用者輸入「子項目名稱」
             if r.get(twws_state_key):
-                # ???????,?????? text ??????
+                # 如果有狀態存在，把這次輸入的 text 當作名稱去查
                 amount = get_twws_value_by_name(text)
-                # ?? user_id ??????,??????
-                line_push(user_id, f"?? ???? ({text}):\n?? ????: {amount}")
-                r.delete(twws_state_key) # ???????
+                # 使用 user_id 作為推播對象，確保私訊回傳
+                line_push(user_id, f"🔍 查詢結果 ({text}):\n💰 應付金額: {amount}")
+                r.delete(twws_state_key)  # 查完後刪除狀態
                 continue
 
-            # ??????:????? twws
+            # 觸發第一階段：使用者輸入 twws
             if text.lower() == "twws":
-                # ??????? 5 ?? (300?) ???
+                # 設定狀態並給予 5 分鐘 (300秒) 的時限
                 r.set(twws_state_key, "active", ex=300)
-                line_push(user_id, "??,????????:")
+                line_push(user_id, "好的，請輸入子項目名稱：")
                 continue
 
-        # --- ????????:?? PDF Scanning ???? ---
+        # --- 金額自動錄入邏輯：僅限 PDF Scanning 群組觸發 ---
         if group_id == PDF_GROUP_ID:
-            # ?????????? (? 43.10)
+            # 檢查是否為純數字金額 (如 43.10)
             if re.match(r'^\d+(\.\d{1,2})?$', text):
-                # ??? Key ????????? PDF ?? ID, ???? ID ? Board ?????
+                # 從全局 Key 抓取最後一次上傳的 PDF 項目 ID
                 redis_val = r.get("global_last_pdf_parent")
 
                 if redis_val and "|" in redis_val:
-                    # ????? ID ??? ID
+                    # 拆分出項目 ID 與板塊 ID
                     last_pid, last_bid = redis_val.split("|")
 
-                    # ???????? ID
+                    # 呼叫時多傳入板塊 ID
                     ok, msg, item_name = monday_service.update_domestic_expense(last_pid, text, group_id, last_bid)
 
                     if ok:
-                        line_push(group_id, f"? ?????????: ${text}\n?? ??: {item_name}")
+                        line_push(group_id, f"✅ 已成功登記境內支出: ${text}\n📌 項目: {item_name}")
                         r.delete("global_last_pdf_parent")
                     else:
-                        line_push(group_id, f"? ????: {msg}\n?? ??: {item_name if item_name else '??'}")
+                        line_push(group_id, f"❌ 登記失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
                     continue
 
 
-        # --- ???????? ---
-        if text.startswith("????"):
+        # ─── 查看帳單觸發入口 ───
+        if text.startswith("查看帳單"):
             handle_bill_event(
                 sender_id=group_id if group_id else user_id,
                 message_text=text,
@@ -257,8 +257,8 @@ def webhook():
             )
             continue
         
-        # ?????? (???????)
-        if text.strip() == "????":
+        # 目前功能指令 (僅限管理員私訊)
+        if text.strip() == "目前功能":
             current_user_id = src.get("userId")
             current_group_id = src.get("groupId")
             is_admin = (current_user_id == YVES_USER_ID or current_user_id == GORSKY_USER_ID)
@@ -273,18 +273,18 @@ def webhook():
                 )
                 continue
         
-        # ?? Unpaid ??
+        # 新的 Unpaid 邏輯
         if text.lower().startswith("unpaid"):
             user_id = src.get("userId")
             group_id = src.get("groupId")
 
-            # 1. ????????
+            # 1. 判斷是否為管理員
             is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
             
-            # 2. ??????????????
+            # 2. 判斷是否為有效的自動查詢群組
             is_valid_group = group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, IRIS_GROUP_ID}
 
-            # ?? ???:???????;?????????????? "unpaid"
+            # 🟢 新邏輯：管理員隨時可用；一般成員僅限在指定群組內輸入 "unpaid"
             can_trigger = is_admin or (is_valid_group and text.lower() == "unpaid")
 
             if can_trigger:
@@ -297,12 +297,12 @@ def webhook():
                 )
                 continue
             
-        # Paid ????:??????
-        # 1. ???????:paid YYMMDD [AbowbowID]
-        # 2. ??????:paid ?? [ntd|twd]
+        # Paid 指令處理：分為兩種情況
+        # 1. 查看已付款帳單：paid YYMMDD [AbowbowID]
+        # 2. 錄入實收金額：paid 金額 [ntd|twd]
         if text.lower().startswith("paid"):
             parts = text.split()
-            # ?????????????? (paid YYMMDD ...)
+            # 檢查是否為查看已付款帳單格式 (paid YYMMDD ...)
             if len(parts) >= 2 and re.match(r"^\d{6}$", parts[1]):
                 handle_paid_bill_event(
                     sender_id=group_id if group_id else user_id,
@@ -312,7 +312,7 @@ def webhook():
                     group_id=group_id
                 )
             else:
-                # ???????? (paid ?? [ntd|twd])
+                # 錄入實收金額格式 (paid 金額 [ntd|twd])
                 handle_paid_event(
                     sender_id=group_id if group_id else user_id,
                     message_text=text,
@@ -322,23 +322,23 @@ def webhook():
                 )
             continue
 
-        # 1) ?? UPS ???????????
+        # 1) 處理 UPS 批量更新與單筆尺寸錄入
         if handle_ups_logic(event, text, group_id, redis_client):
             continue
  
-        # 3) Ace schedule (??/????) & ACE EZ-Way check
-        if group_id == ACE_GROUP_ID and ("????" in text or "????" in text):
-            # ?? ShipmentParserService ??????
-            shipment_parser.handle_ace_schedule(event)      # ???????????
-            shipment_parser.handle_missing_confirm(event)   # ?? Iris ????? Sender ? Yves
+        # 3) Ace schedule (週四/週日出貨) & ACE EZ-Way check
+        if group_id == ACE_GROUP_ID and ("週四出貨" in text or "週日出貨" in text):
+            # 使用 ShipmentParserService 實例呼叫邏輯
+            shipment_parser.handle_ace_schedule(event)      # 負責發送到各負責人小群
+            shipment_parser.handle_missing_confirm(event)   # 負責 Iris 分流與發送 Sender 給 Yves
             continue
 
-        # 4) ???????????? (?? Danny ????????????)
+        # 4) 處理「申報相符」通知分流 (包含 Danny 自動觸發與管理員手動觸發)
         if dispatch_confirmation_notification(event, text, user_id):
             continue
         
         # 5) Richmond-arrival triggers content-request to Vicky ���������
-        if group_id == VICKY_GROUP_ID and "[Richmond, Canada] ???????" in text:
+        if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
             # extract the tracking ID inside parentheses
             m = re.search(r"\(([^)]+)\)", text)
             if m:
@@ -348,27 +348,27 @@ def webhook():
                 continue
 
             # build the mention message using line_push_mention helper
-            msg = "{user1} ?????????????" + tracking_id
+            msg = "{user1} 請提供此包裹的內容物清單：" + tracking_id
             line_push_mention(VICKY_GROUP_ID, msg, {"user1": VICKY_USER_ID})
             log.info(f"Requested contents list from Vicky for {tracking_id}")
             continue
                 
-        # 6) Soquick �????????????� & Ace "????" blocks ��������������
-        if (group_id == SOQUICK_GROUP_ID and "????????????" in text) or (group_id == ACE_GROUP_ID and "????" in text and "????" in text):
+        # 6) Soquick "上周六出貨包裹的派件單號" & Ace "出貨單號" blocks
+        if (group_id == SOQUICK_GROUP_ID and "上周六出貨包裹的派件單號" in text) or (group_id == ACE_GROUP_ID and "出貨單號" in text and "宅配單號" in text):
             handle_soquick_and_ace_shipments(event)
             continue
 
-        # 7) Soquick �???�????� messages ��������������
+        # 7) Soquick "請通知…申報相符" messages
 
         if (group_id in (SOQUICK_GROUP_ID, ACE_GROUP_ID)
-            and "??,?" in text
-            and "?" in text
-            and "????" in text):
+            and "您好，請" in text
+            and "按" in text
+            and "申報相符" in text):
             shipment_parser.handle_soquick_full_notification(event)
             continue          
 
-        # 8) Your existing "????" logic
-        if text == "????":
+        # 8) Your existing "追蹤包裹" logic
+        if text == "追蹤包裹":
             keywords = CUSTOMER_FILTERS.get(group_id)
             if not keywords:
                 log.warning(f"[Webhook] No keywords configured for group {group_id}, skipping.")
@@ -379,16 +379,16 @@ def webhook():
             combined = "\n\n".join(messages)
             line_reply(event["replyToken"], combined)
 
-        # 9) Your existing "??????" logic
-        if text == "??????":
+        # 9) Your existing "下個國定假日" logic
+        if text == "下個國定假日":
             msg = get_next_holiday()
             line_reply(event["replyToken"], msg)
 
-        # ?? NEW: ACE manual trigger �????????�
+        # 🟢 NEW: ACE manual trigger "已上傳資料可出貨"
         if (
             event.get("source", {}).get("type") == "group"
             and event["source"].get("groupId") == ACE_GROUP_ID
-            and text.strip() == "????????"
+            and text.strip() == "已上傳資料可出貨"
         ):
             reply_token = event.get("replyToken")
             push_ace_today_shipments(force=True, reply_token=reply_token)
@@ -396,7 +396,7 @@ def webhook():
 
     return "OK", 200
     
-#  Monday.com Webhook 
+# ─── Monday.com Webhook ────────────────────────────────────────────────────────
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
     return handle_monday_webhook()
