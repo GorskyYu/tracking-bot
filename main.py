@@ -31,7 +31,7 @@ from config import (
     # Board IDs
     AIR_BOARD_ID, AIR_PARENT_BOARD_ID, VICKY_SUBITEM_BOARD_ID, VICKY_STATUS_COLUMN_ID,
     # Mappings
-    CLIENT_TO_GROUP, CUSTOMER_FILTERS,
+    CUSTOMER_FILTERS,
     # Patterns & Constants
     CODE_TRIGGER_RE, MISSING_CONFIRM, TIMEZONE,
     # OpenAI
@@ -40,7 +40,7 @@ from config import (
 from redis_client import r
 from log import log
 
-# ?????
+# 核心服務層
 from services.ocr_engine import OCRAgent
 from services.monday_service import MondaySyncService
 from services.te_api_service import get_statuses_for, call_api
@@ -59,6 +59,7 @@ from handlers.handlers import (
 from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event, handle_paid_event
 from handlers.vicky_handler import remind_vicky
 from handlers.ups_handler import handle_ups_logic
+from handlers.monday_webhook_handler import handle_monday_webhook
 
 # 工作排程
 from jobs.ace_tasks import push_ace_today_shipments
@@ -395,68 +396,11 @@ def webhook():
 
     return "OK", 200
     
-# --- Monday.com Webhook --------------------------------------------------------
+#  Monday.com Webhook 
 @app.route("/monday-webhook", methods=["GET", "POST"])
 def monday_webhook():
-    if request.method == "GET":
-        return "OK", 200
+    return handle_monday_webhook()
 
-    data = request.get_json()
-    evt  = data.get("event", data)
-    # respond to Monday�s handshake
-    if "challenge" in data:
-        return jsonify({"challenge": data["challenge"]}), 200
-
-    sub_id    = evt.get("pulseId") or evt.get("itemId")
-    parent_id = evt.get("parentItemId")
-    lookup_id = parent_id or sub_id
-    new_txt   = evt.get("value", {}).get("label", {}).get("text")
-
-    # only act when Location flips to ????
-    if new_txt != "????" or not lookup_id:
-        return "OK", 200
-
-    # fetch just the formula column:
-    gql = '''
-    query ($itemIds: [ID!]!) {
-      items(ids: $itemIds) {
-        column_values(ids: ["formula8__1"]) {
-          id
-          text
-          ... on FormulaValue { display_value }
-        }
-      }
-    }'''
-    variables = {"itemIds": [str(lookup_id)]}
-    resp = requests.post(
-      "https://api.monday.com/v2",
-      json={"query": gql, "variables": variables},
-      headers={
-        "Authorization": MONDAY_API_TOKEN,
-        "Content-Type":  "application/json"
-      }
-    )
-    data2 = resp.json()
-
-    # grab that single column_value
-    cv = data2["data"]["items"][0]["column_values"][0]
-    client = (cv.get("text") or cv.get("display_value") or "").strip()
-    key    = client.lower()     # e.g. "yumi" or "vicky"
-
-    group_id = CLIENT_TO_GROUP.get(key)
-    if not group_id:
-        print(f"[Monday?LINE] no mapping for �{client}� ? {key}, skipping.")
-        log.warning(f"No mapping for client={client} key={key}, skipping.")
-        return "OK", 200
-
-    item_name = evt.get("pulseName") or str(lookup_id)
-    message   = f"?? {item_name} ?????,?????????"
-
-    line_push(group_id, message)
-    log.info(f"MondayLINE push sent to {client}")
-
-    return "OK", 200
- 
 # --- Poller State Helpers & Job -----------------------------------------------
 
 
