@@ -42,7 +42,7 @@ def init_ace_scheduler() -> BackgroundScheduler:
         push_ace_today_shipments,
         trigger="cron",
         day_of_week="thu,sun",
-        hour=16,
+        hour=15,
         minute=0,
         kwargs={"force": False},
         id="ace_today_shipments_thu_sun_4pm",

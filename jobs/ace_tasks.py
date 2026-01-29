@@ -113,6 +113,7 @@ def push_ace_today_shipments(*, force: bool = False, reply_token: str | None = N
     tz = pytz.timezone(TIMEZONE)
     today_str = datetime.now(tz).strftime("%Y-%m-%d")
     guard_key = f"ace_today_shipments_pushed_{today_str}"
+    lock_key = f"lock:{guard_key}"
 
     # 手動測試時，先回一則短訊讓操作者知道已觸發
     if reply_token:
@@ -127,16 +128,21 @@ def push_ace_today_shipments(*, force: bool = False, reply_token: str | None = N
             log.warning(f"[ACE Today] reply (pre-ack) failed: {e}")
 
     # 非 force（排程）→ 開啟每日防重複
-    if not force and r.get(guard_key):
-        log.info("[ACE Today] Already pushed for today; skipping.")
-        return
+    if not force:
+        if r.get(guard_key):
+            log.info("[ACE Today] Already pushed for today; skipping.")
+            return
+        # 嘗試取得鎖，避免多重執行緒/進程同時執行
+        if not r.set(lock_key, "locked", nx=True, ex=300):
+            log.info("[ACE Today] Another process is running this task; skipping.")
+            return
 
     try:
         ids = _ace_collect_today_box_ids(ACE_SHEET_URL)
 
         # 組出訊息
         if ids:
-            base_text = "今日出貨：" + ", ".join(ids)
+            base_text = "收單截止。今日出貨單號：\n" + "\n".join(ids)
             text = base_text if not force else (base_text + "（測試）")
         else:
             # 沒有資料：排程（非 force）時不推群組；手動（force）時回測試訊息
@@ -181,19 +187,23 @@ def push_ace_today_shipments(*, force: bool = False, reply_token: str | None = N
 
     except Exception as e:
         log.error(f"[ACE Today] Error: {e}", exc_info=True)
+    finally:
+        # 釋放鎖（僅排程模式才有鎖）
+        if not force:
+            r.delete(lock_key)
         
 # ─── Heroku Scheduler hourly tick for ACE (stat-holiday style) ───────────────
 def ace_today_cron_tick():
     """
     被 Heroku Scheduler【每小時】呼叫一次。
-    只有在『週四或週日』且『16:00（America/Vancouver）』時，才真正呼叫
+    只有在『週四或週日』且『15:00（America/Vancouver）』時，才真正呼叫
     push_ace_today_shipments(force=False)。去重交給函式內建的 Redis guard。
     """
     tz = pytz.timezone(TIMEZONE)
     now = datetime.now(tz)
 
-    # 週四=3、週日=6；僅在當地 16:00 時觸發
-    if now.weekday() not in (3, 6) or now.hour != 16:
+    # 週四=3、週日=6；僅在當地 15:00 時觸發
+    if now.weekday() not in (3, 6) or now.hour != 15:
         log.info(f"[ACE Today TICK] skip at {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         return
 

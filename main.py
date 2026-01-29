@@ -401,6 +401,34 @@ def webhook():
 def monday_webhook():
     return handle_monday_webhook()
 
+# ─── ACE Red Row Trigger Webhook ───────────────────────────────────────────────
+@app.route("/ace-trigger", methods=["POST"])
+def ace_trigger():
+    """
+    Webhook endpoint for Google Apps Script to trigger ACE shipment push.
+    Called when a row is marked red in the ACE Google Sheet.
+    
+    Expects JSON body with optional 'secret' field for basic auth.
+    """
+    # Basic authentication via shared secret
+    data = request.get_json(silent=True) or {}
+    expected_secret = os.getenv("ACE_TRIGGER_SECRET", "")
+    if expected_secret and data.get("secret") != expected_secret:
+        log.warning("[ACE Trigger] Invalid or missing secret")
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    log.info("[ACE Trigger] Received trigger from Google Sheet")
+    
+    # Run in background thread to respond quickly
+    def run_push():
+        try:
+            push_ace_today_shipments(force=False)
+        except Exception as e:
+            log.error(f"[ACE Trigger] Push failed: {e}", exc_info=True)
+    
+    threading.Thread(target=run_push, daemon=True).start()
+    return jsonify({"status": "triggered"}), 200
+
 # --- Poller State Helpers & Job -----------------------------------------------
 
 
