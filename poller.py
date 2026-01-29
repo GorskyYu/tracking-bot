@@ -8,7 +8,7 @@ import pytz
 from datetime import datetime
 from handlers.vicky_handler import vicky_has_active_orders, remind_vicky
 from services.te_api_service import call_api
-from main import (
+from config import (
     VICKY_GROUP_ID,
     VICKY_USER_ID,
     LINE_PUSH_URL,
