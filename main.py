@@ -56,7 +56,7 @@ from handlers.handlers import (
     handle_soquick_full_notification,
     dispatch_confirmation_notification
 )
-from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event, handle_paid_event
+from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event, handle_paid_event, handle_rate_update
 from handlers.vicky_handler import remind_vicky
 from handlers.ups_handler import handle_ups_logic
 from handlers.monday_webhook_handler import handle_monday_webhook
@@ -256,6 +256,23 @@ def webhook():
                 group_id=group_id
             )
             continue
+        
+        # ─── 運費單價更新：管理員回覆兩個數字更新零單價項目 ───
+        # Format: number number (e.g., "2.5 10" or "2.5, 10")
+        if re.match(r'^\d+(?:\.\d+)?\s*[,;\s]\s*\d+(?:\.\d+)?$', text.strip()):
+            current_user_id = src.get("userId")
+            current_group_id = src.get("groupId")
+            is_admin = (current_user_id == YVES_USER_ID or current_user_id == GORSKY_USER_ID)
+            
+            if is_admin:
+                if handle_rate_update(
+                    sender_id=current_group_id if current_group_id else current_user_id,
+                    message_text=text,
+                    reply_token=event["replyToken"],
+                    user_id=current_user_id,
+                    group_id=current_group_id
+                ):
+                    continue
         
         # 目前功能指令 (僅限管理員私訊)
         if text.strip() == "目前功能":

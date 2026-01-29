@@ -2,7 +2,7 @@
 import traceback
 from datetime import datetime
 
-from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD_MAPPING
+from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD_MAPPING, update_monday_item
 from utils.permissions import is_authorized_for_event, ADMIN_USER_IDS
 from utils.line_reply import reply_text
 from config import line_bot_api
@@ -570,26 +570,43 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
              line_bot_api.push_message(destination_id, TextSendMessage(text="沒有發現符合條件的項目（箱子尺寸與重量皆不為空，且狀態符合作業需求）。"))
              return
 
-        # ✅ 在群組模式下，檢查是否有項目的加拿大單價和國際單價都是 0 或空
-        if is_group_chat:
-            zero_price_items = []
-            for item in results:
-                cad_rate = item.get("cad_domestic_rate", 0)
-                intl_rate = item.get("intl_shipping_rate", 0)
-                if cad_rate == 0 and intl_rate == 0:
-                    zero_price_items.append(item)
+        # ✅ 檢查是否有項目的加拿大單價和國際單價都是 0 或空
+        zero_price_items = []
+        for item in results:
+            cad_rate = item.get("cad_domestic_rate", 0)
+            intl_rate = item.get("intl_shipping_rate", 0)
+            if cad_rate == 0 and intl_rate == 0:
+                zero_price_items.append(item)
+        
+        if zero_price_items:
+            # Store zero_price_items in Redis for later rate update
+            items_to_store = [{
+                "id": item["id"],
+                "board_id": item["board_id"],
+                "parent_name": item.get("parent_name", "N/A"),
+                "sub_name": item.get("sub_name", "N/A")
+            } for item in zero_price_items]
+            r.set(f"zero_price_items_{destination_id}", json.dumps(items_to_store), ex=3600)  # 1 hour expiry
             
-            if zero_price_items:
-                # Build error message with item details
-                error_lines = ["⚠️ 以下項目的「加拿大單價」與「國際單價」皆為 0，請管理員確認："]
-                for item in zero_price_items[:10]:  # Limit to first 10 items
-                    parent_name = item.get("parent_name", "N/A")
-                    sub_name = item.get("sub_name", "N/A")
-                    error_lines.append(f"• {parent_name} - {sub_name}")
-                if len(zero_price_items) > 10:
-                    error_lines.append(f"...還有 {len(zero_price_items) - 10} 項")
+            # Build error message with item details
+            error_lines = ["⚠️ 以下項目的「加拿大單價」與「國際單價」皆為 0，請管理員確認："]
+            for item in zero_price_items[:10]:  # Limit to first 10 items
+                parent_name = item.get("parent_name", "N/A")
+                sub_name = item.get("sub_name", "N/A")
+                error_lines.append(f"• {parent_name} - {sub_name}")
+            if len(zero_price_items) > 10:
+                error_lines.append(f"...還有 {len(zero_price_items) - 10} 項")
+            error_lines.append("")
+            error_lines.append("📝 管理員可回覆「加拿大單價 國際單價」來更新")
+            error_lines.append("例如：2.5 10 或 2.5, 10")
+            
+            # In group chat mode, stop here and don't show the bill
+            if is_group_chat:
                 line_bot_api.push_message(destination_id, TextSendMessage(text="\n".join(error_lines)))
                 return
+            else:
+                # In private chat, show warning but continue to display bill
+                line_bot_api.push_message(destination_id, TextSendMessage(text="\n".join(error_lines)))
 
         # Group Data 這裡要改用 final_filter，因為在 today 模式下 final_filter 會被設為 None
         grouped_clients = _group_items_by_client(results, final_filter, filter_date)
@@ -613,6 +630,69 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
              line_bot_api.push_message(destination_id, TextSendMessage(text="❌ 系統發生錯誤，請稍後再試。"))
         except:
              pass
+
+def handle_rate_update(sender_id, message_text, reply_token, user_id=None, group_id=None):
+    """
+    Handle admin response to update shipping rates for items with zero rates.
+    Format: <domestic_rate> <international_rate> (e.g., "2.5 10" or "2.5, 10" or "2.5; 10")
+    """
+    is_admin = user_id in ADMIN_USER_IDS
+    if not is_admin:
+        return False
+    
+    # Parse the rate input - support space, comma, or semicolon as separator
+    text = message_text.strip()
+    # Match pattern: number (space/comma/semicolon) number
+    match = re.match(r'^(\d+(?:\.\d+)?)\s*[,;\s]\s*(\d+(?:\.\d+)?)$', text)
+    if not match:
+        return False
+    
+    domestic_rate = float(match.group(1))
+    intl_rate = float(match.group(2))
+    
+    # Get the stored zero_price_items from Redis
+    destination_id = group_id if group_id else sender_id
+    stored_items_json = r.get(f"zero_price_items_{destination_id}")
+    
+    if not stored_items_json:
+        return False
+    
+    try:
+        stored_items = json.loads(stored_items_json)
+    except json.JSONDecodeError:
+        return False
+    
+    if not stored_items:
+        return False
+    
+    # Update each item in Monday
+    success_count = 0
+    fail_count = 0
+    
+    for item in stored_items:
+        item_id = item["id"]
+        board_id = item["board_id"]
+        
+        updates = {
+            COL_CAD_PRICE: str(domestic_rate),
+            COL_INTL_PRICE: str(intl_rate)
+        }
+        
+        if update_monday_item(board_id, item_id, updates):
+            success_count += 1
+        else:
+            fail_count += 1
+    
+    # Clear the stored items from Redis
+    r.delete(f"zero_price_items_{destination_id}")
+    
+    # Send result message
+    if fail_count == 0:
+        reply_text(reply_token, f"✅ 已成功更新 {success_count} 個項目的運費單價：\n• 加拿大單價：{domestic_rate}\n• 國際單價：{intl_rate}")
+    else:
+        reply_text(reply_token, f"⚠️ 更新完成：{success_count} 成功，{fail_count} 失敗\n• 加拿大單價：{domestic_rate}\n• 國際單價：{intl_rate}")
+    
+    return True
 
 def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, group_id=None):
     # 🔍 先抓取管理員狀態與自動對應名稱
@@ -655,11 +735,20 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
   例如：查看帳單 260125
 • 查看帳單 [客戶] [日期] - 查看特定客戶特定日期帳單（任何群組）
   例如：查看帳單 Vicky 260125
+• 查看帳單 [客戶] [日期] twd - 以台幣顯示帳單
+  例如：查看帳單 Vicky 260125 twd
+
+【運費單價更新】
+• 當帳單項目的「加拿大單價」與「國際單價」皆為 0 時，
+  管理員可直接回覆兩個數字來更新：
+  格式：[加拿大單價] [國際單價]
+  例如：2.5 10 或 2.5, 10 或 2.5; 10
+  此功能適用於群組或私訊查詢帳單後
 
 💡 提示：
 - 日期格式為 YYMMDD（例如：260125 代表 2026/01/25）
 - 客戶ID不區分大小寫
-- 在 Iris/Vicky/Yumi 群組中，unpaid 和 paid 指令會自動偵測客戶
+- 在 Iris/Vicky/Yumi/Angela 群組中，unpaid 和 paid 指令會自動偵測客戶
 - 帳單顯示按「出帳日」分組，每組再按母項目日期細分
 - paid 指令支援多項目按比例分配付款，從最舊日期開始分配
 - 所有指令僅限管理員使用（除非在指定群組）"""
