@@ -572,9 +572,35 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
 
         logging.info(f"[unpaid_worker] Found {len(results)} items for destination {destination_id}")
 
-        # ✅ 檢查是否有項目的加拿大單價和國際單價都是 0 或空
+        # ✅ 先過濾客戶 (與 _group_items_by_client 相同邏輯)
+        def _item_matches_filter(item, filter_name):
+            if not filter_name or filter_name == "All":
+                return True
+            raw_parent = item.get("parent_name", "")
+            match = re.match(r'^(\d+)\s+(.*)$', raw_parent.strip())
+            if match:
+                client_name = match.group(2)
+            else:
+                client_name = raw_parent
+            # 找出 canonical_name
+            found_canonical = False
+            canonical_name = None
+            for main_name in ["Vicky", "Yumi", "Lammond"]:
+                if main_name.lower() in client_name.lower():
+                    canonical_name = main_name
+                    found_canonical = True
+                    break
+            if not found_canonical:
+                canonical_name = client_name.split(" - ")[0].split()[0]
+            return filter_name.lower() in canonical_name.lower()
+        
+        # 過濾後的結果
+        filtered_results = [item for item in results if _item_matches_filter(item, final_filter)]
+        logging.info(f"[unpaid_worker] Filtered to {len(filtered_results)} items for client filter '{final_filter}'")
+
+        # ✅ 檢查是否有項目的加拿大單價和國際單價都是 0 或空 (僅檢查過濾後的項目)
         zero_price_items = []
-        for item in results:
+        for item in filtered_results:
             cad_rate = item.get("cad_domestic_rate", 0)
             intl_rate = item.get("intl_shipping_rate", 0)
             if cad_rate == 0 and intl_rate == 0:
