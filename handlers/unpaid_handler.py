@@ -570,6 +570,8 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
              line_bot_api.push_message(destination_id, TextSendMessage(text="沒有發現符合條件的項目（箱子尺寸與重量皆不為空，且狀態符合作業需求）。"))
              return
 
+        logging.info(f"[unpaid_worker] Found {len(results)} items for destination {destination_id}")
+
         # ✅ 檢查是否有項目的加拿大單價和國際單價都是 0 或空
         zero_price_items = []
         for item in results:
@@ -577,6 +579,8 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
             intl_rate = item.get("intl_shipping_rate", 0)
             if cad_rate == 0 and intl_rate == 0:
                 zero_price_items.append(item)
+        
+        logging.info(f"[unpaid_worker] Found {len(zero_price_items)} items with zero prices, is_group_chat={is_group_chat}")
         
         if zero_price_items:
             # Store zero_price_items in Redis for later rate update
@@ -587,6 +591,7 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
                 "sub_name": item.get("sub_name", "N/A")
             } for item in zero_price_items]
             r.set(f"zero_price_items_{destination_id}", json.dumps(items_to_store), ex=3600)  # 1 hour expiry
+            logging.info(f"[unpaid_worker] Stored {len(items_to_store)} zero-price items in Redis key: zero_price_items_{destination_id}")
             
             # Build error message with item details
             error_lines = ["⚠️ 以下項目的「加拿大單價」與「國際單價」皆為 0，請管理員確認："]
@@ -638,6 +643,7 @@ def handle_rate_update(sender_id, message_text, reply_token, user_id=None, group
     """
     is_admin = user_id in ADMIN_USER_IDS
     if not is_admin:
+        logging.debug(f"[rate_update] Not admin: {user_id}")
         return False
     
     # Parse the rate input - support space, comma, or semicolon as separator
@@ -645,6 +651,7 @@ def handle_rate_update(sender_id, message_text, reply_token, user_id=None, group
     # Match pattern: number (space/comma/semicolon) number
     match = re.match(r'^(\d+(?:\.\d+)?)\s*[,;\s]\s*(\d+(?:\.\d+)?)$', text)
     if not match:
+        logging.debug(f"[rate_update] Pattern not matched: {text}")
         return False
     
     domestic_rate = float(match.group(1))
@@ -654,16 +661,23 @@ def handle_rate_update(sender_id, message_text, reply_token, user_id=None, group
     destination_id = group_id if group_id else sender_id
     stored_items_json = r.get(f"zero_price_items_{destination_id}")
     
+    logging.info(f"[rate_update] Looking for key: zero_price_items_{destination_id}, found: {bool(stored_items_json)}")
+    
     if not stored_items_json:
+        logging.info(f"[rate_update] No stored zero_price_items for {destination_id}")
         return False
     
     try:
         stored_items = json.loads(stored_items_json)
     except json.JSONDecodeError:
+        logging.error(f"[rate_update] Failed to parse stored items JSON")
         return False
     
     if not stored_items:
+        logging.info(f"[rate_update] Stored items list is empty")
         return False
+    
+    logging.info(f"[rate_update] Found {len(stored_items)} items to update with rates: CAD={domestic_rate}, INTL={intl_rate}")
     
     # Update each item in Monday
     success_count = 0
@@ -678,10 +692,12 @@ def handle_rate_update(sender_id, message_text, reply_token, user_id=None, group
             COL_INTL_PRICE: str(intl_rate)
         }
         
+        logging.info(f"[rate_update] Updating item {item_id} on board {board_id}")
         if update_monday_item(board_id, item_id, updates):
             success_count += 1
         else:
             fail_count += 1
+            logging.error(f"[rate_update] Failed to update item {item_id}")
     
     # Clear the stored items from Redis
     r.delete(f"zero_price_items_{destination_id}")
