@@ -547,9 +547,10 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     
     return FlexSendMessage(alt_text=f"Bill for {display_name}", contents=bubble)
 
-def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, filter_date=None):
+def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, filter_date=None, is_group_chat=False):
     """Background thread worker.
     filter_date: Optional YYMMDD string to filter by specific date
+    is_group_chat: Whether the request originated from a group chat
     """
     try:
         # ✅ 判斷是否為 today 模式
@@ -568,6 +569,27 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
         if not results:
              line_bot_api.push_message(destination_id, TextSendMessage(text="沒有發現符合條件的項目（箱子尺寸與重量皆不為空，且狀態符合作業需求）。"))
              return
+
+        # ✅ 在群組模式下，檢查是否有項目的加拿大單價和國際單價都是 0 或空
+        if is_group_chat:
+            zero_price_items = []
+            for item in results:
+                cad_rate = item.get("cad_domestic_rate", 0)
+                intl_rate = item.get("intl_shipping_rate", 0)
+                if cad_rate == 0 and intl_rate == 0:
+                    zero_price_items.append(item)
+            
+            if zero_price_items:
+                # Build error message with item details
+                error_lines = ["⚠️ 以下項目的「加拿大單價」與「國際單價」皆為 0，請管理員確認："]
+                for item in zero_price_items[:10]:  # Limit to first 10 items
+                    parent_name = item.get("parent_name", "N/A")
+                    sub_name = item.get("sub_name", "N/A")
+                    error_lines.append(f"• {parent_name} - {sub_name}")
+                if len(zero_price_items) > 10:
+                    error_lines.append(f"...還有 {len(zero_price_items) - 10} 項")
+                line_bot_api.push_message(destination_id, TextSendMessage(text="\n".join(error_lines)))
+                return
 
         # Group Data 這裡要改用 final_filter，因為在 today 模式下 final_filter 會被設為 None
         grouped_clients = _group_items_by_client(results, final_filter, filter_date)
@@ -655,7 +677,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
         r.set(f"last_unpaid_client_{sender_id}", client_code, ex=3600)
         
         reply_text(reply_token, f"📅 正在掃描 {client_code} 的未出帳項目並標記日期，請稍候...")
-        Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today", client_code)).start()
+        Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today", client_code, None, bool(group_id))).start()
         return
 
     # 如果輸入 unpaid [名稱]，記錄到 Redis
@@ -676,7 +698,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
         
         reply_text(reply_token, "📅 正在掃描未出帳項目並標記日期，請稍候...")
         # 啟動 Thread 執行，傳入 "today" 作為 filter_name，並傳入 auto_target_name 進行過濾
-        Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today", auto_target_name)).start()
+        Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today", auto_target_name, None, bool(group_id))).start()
         return
     
     # 1. 如果是一般成員 (非管理員)
@@ -685,7 +707,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
         if len(parts) == 1 and auto_target_name:
             # 允許執行自動查詢
             reply_text(reply_token, f"🔍 正在搜尋 {auto_target_name} 的未付款項目，請稍候...")
-            t = Thread(target=_unpaid_worker, args=(group_id, auto_target_name))
+            t = Thread(target=_unpaid_worker, args=(group_id, auto_target_name, None, None, True))
             t.start()
             return
         else:
@@ -702,7 +724,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     if len(parts) == 1 and auto_target_name:
         reply_text(reply_token, f"🔍 正在搜尋 {auto_target_name} 的未付款項目，請稍候...")
         target_id = group_id if group_id else sender_id
-        t = Thread(target=_unpaid_worker, args=(target_id, auto_target_name))
+        t = Thread(target=_unpaid_worker, args=(target_id, auto_target_name, None, None, bool(group_id)))
         t.start()
         return
  
@@ -727,7 +749,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
             r.set(f"last_unpaid_client_{sender_id}", target_name, ex=3600)
             reply_text(reply_token, f"🔍 正在搜尋 {target_name} 在 {filter_date} 的未付款項目，請稍候...")
             target_id = group_id if group_id else sender_id
-            t = Thread(target=_unpaid_worker, args=(target_id, target_name, None, filter_date))
+            t = Thread(target=_unpaid_worker, args=(target_id, target_name, None, filter_date, bool(group_id)))
             t.start()
             return
         else:
@@ -735,7 +757,7 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
             target_name = " ".join(parts[1:]) 
             reply_text(reply_token, f"🔍 正在搜尋未付款項目 ({target_name})，請稍候...")
             target_id = group_id if group_id else sender_id
-            t = Thread(target=_unpaid_worker, args=(target_id, target_name))
+            t = Thread(target=_unpaid_worker, args=(target_id, target_name, None, None, bool(group_id)))
             t.start()
             return
 
