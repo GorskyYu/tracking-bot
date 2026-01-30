@@ -44,6 +44,7 @@ PDF_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_PDF")
 YVES_USER_ID: Optional[str] = os.getenv("YVES_USER_ID")
 GORSKY_USER_ID: Optional[str] = os.getenv("GORSKY_USER_ID")
 DANNY_USER_ID: Optional[str] = os.getenv("DANNY_USER_ID")
+SKY_USER_ID: Optional[str] = os.getenv("SKY_USER_ID")
 VICKY_USER_ID: Optional[str] = os.getenv("VICKY_USER_ID")
 IRIS_USER_ID: Optional[str] = os.getenv("IRIS_USER_ID")
 

@@ -27,6 +27,7 @@ from config import (
     DANNY_USER_ID,
     GORSKY_USER_ID,
     IRIS_USER_ID,
+    SKY_USER_ID,
     VICKY_USER_ID,
     YVES_USER_ID,
 
@@ -863,9 +864,9 @@ def dispatch_confirmation_notification(event, text, user_id):
     """
     has_code = CODE_TRIGGER_RE.search(text)
     
-    # 1. Danny 的判定：必須是 Danny 發送 + 包含「還沒按」 + 包含單號
-    if user_id == DANNY_USER_ID and "還沒按" in text and has_code:
-        log.info(f"[Danny Trigger] Auto-processing re-notification: {text[:20]}...")
+    # 1. Danny/Sky 的判定：必須是 Danny 或 Sky 發送 + 包含「還沒按」或「申報相符」 + 包含單號
+    if user_id in (DANNY_USER_ID, SKY_USER_ID) and ("還沒按" in text or "申報相符" in text) and has_code:
+        log.info(f"[Freight Staff Trigger] Auto-processing re-notification: {text[:20]}...")
         handle_missing_confirm(event) # 呼叫原本的處理邏輯
         return True
 
