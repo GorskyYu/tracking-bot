@@ -85,8 +85,10 @@ class ShipmentParserService:
                 for box_id, name in all_extracted_items:
                     for row in reversed(all_rows):
                         row_box_id = row[1].strip() if len(row) > 1 else ""
-                        row_name = row[6].strip() if len(row) > 6 else ""
-                        if row_box_id == box_id and row_name == name:
+                        row_customs_name = row[6].strip() if len(row) > 6 else "" # Column G: 清關人
+                        
+                        # 只要 Box ID 或 姓名 其中一個吻合，就視為找到 (因為 ID 格式可能不同)
+                        if (box_id and row_box_id == box_id) or (name and row_customs_name == name):
                             sender = row[2].strip()
                             phone = row[7].strip() if len(row) > 7 else ""
                             sender_groups[sender].append(f"{name} {phone}")
