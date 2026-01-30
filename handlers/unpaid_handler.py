@@ -514,29 +514,53 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             )
 
     # Footer (Total)
-    # Use green color for paid bills, red for unpaid bills
-    total_color = '#1DB446' if is_paid_bill else '#FF4B4B'
+    # Calculate total paid amount from all parent groups
+    total_paid = 0.0
+    for bill_data in dates_data.values():
+        for parent_data in bill_data.get("parent_dates", {}).values():
+            total_paid += parent_data.get("paid_amount", 0.0)
     
     # Format total based on currency
     if currency.lower() == "twd":
+        total_paid_display = f"NT${total_paid * default_rate:.0f}"
         total_display = f"NT${total * default_rate:.0f}"
     else:
+        total_paid_display = f"${total_paid:.2f}"
         total_display = f"${total:.2f}"
+    
+    # Build footer contents
+    footer_contents = [SeparatorComponent()]
+    
+    # For paid bills, show Total Amount Paid in green
+    if is_paid_bill:
+        footer_contents.append(
+            BoxComponent(
+                layout='horizontal',
+                margin='md',
+                contents=[
+                    TextComponent(text="Total Amount Paid", flex=4, size='lg', weight='bold'),
+                    TextComponent(text=total_paid_display, flex=3, align='end', size='lg', weight='bold', color='#1DB446')
+                ]
+            )
+        )
+    
+    # Total Amount Due (red for unpaid, red for paid too since it shows what was owed)
+    total_color = '#FF4B4B'
+    footer_contents.append(
+        BoxComponent(
+            layout='horizontal',
+            margin='md',
+            contents=[
+                TextComponent(text="Total Amount Due", flex=4, size='lg', weight='bold'),
+                TextComponent(text=total_display, flex=3, align='end', size='lg', weight='bold', color=total_color)
+            ]
+        )
+    )
     
     footer = BoxComponent(
         layout='vertical',
         spacing='sm',
-        contents=[
-             SeparatorComponent(),
-             BoxComponent(
-                layout='horizontal',
-                margin='md',
-                contents=[
-                    TextComponent(text="Total Amount", flex=4, size='lg', weight='bold'),
-                    TextComponent(text=total_display, flex=3, align='end', size='lg', weight='bold', color=total_color)
-                ]
-            )
-        ]
+        contents=footer_contents
     )
     
     bubble = BubbleContainer(

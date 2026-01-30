@@ -247,6 +247,11 @@ def webhook():
 
 
         # ─── 查看帳單觸發入口 ───
+        # ─── 查看帳單觸發入口 ───
+        if text.startswith("查看賬單"):
+            line_reply(event["replyToken"], "錯別字哦！正確的指令是：查看帳單")
+            continue
+        
         if text.startswith("查看帳單"):
             handle_bill_event(
                 sender_id=group_id if group_id else user_id,
