@@ -538,7 +538,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                 layout='horizontal',
                 margin='md',
                 contents=[
-                    TextComponent(text="Total Amount Paid", flex=4, size='lg', weight='bold'),
+                    TextComponent(text="Total Paid", flex=3, size='lg', weight='bold'),
                     TextComponent(text=total_paid_display, flex=3, align='end', size='lg', weight='bold', color='#1DB446')
                 ]
             )
@@ -551,7 +551,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             layout='horizontal',
             margin='md',
             contents=[
-                TextComponent(text="Total Amount Due", flex=4, size='lg', weight='bold'),
+                TextComponent(text="Total Due", flex=3, size='lg', weight='bold'),
                 TextComponent(text=total_display, flex=3, align='end', size='lg', weight='bold', color=total_color)
             ]
         )
