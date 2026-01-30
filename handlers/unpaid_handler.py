@@ -514,11 +514,11 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             )
 
     # Footer (Total)
-    # Calculate total paid amount from all parent groups
+    # Calculate total paid amount from all parent groups (use absolute value since paid_amount is positive)
     total_paid = 0.0
     for bill_data in dates_data.values():
         for parent_data in bill_data.get("parent_dates", {}).values():
-            total_paid += parent_data.get("paid_amount", 0.0)
+            total_paid += abs(parent_data.get("paid_amount", 0.0))
     
     # Format total based on currency
     if currency.lower() == "twd":
@@ -531,8 +531,8 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     # Build footer contents
     footer_contents = [SeparatorComponent()]
     
-    # For paid bills, show Total Amount Paid in green
-    if is_paid_bill:
+    # Show Total Paid in green if there's any paid amount (for both paid and unpaid views)
+    if total_paid > 0:
         footer_contents.append(
             BoxComponent(
                 layout='horizontal',
@@ -544,7 +544,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             )
         )
     
-    # Total Amount Due (red for unpaid, red for paid too since it shows what was owed)
+    # Total Amount Due (red)
     total_color = '#FF4B4B'
     footer_contents.append(
         BoxComponent(
