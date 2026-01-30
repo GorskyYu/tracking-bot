@@ -414,6 +414,9 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                 iris_found.append(name)
             elif name in ANGELA_NAMES:
                 angela_found.append(name)
+            elif name in YVES_NAMES:
+                # Yves's list: do not push private message to admin (skip fallback logic)
+                pass
             else:
                 # 不在任何名單中，記錄整行資訊
                 unknown_found.append(l.strip())

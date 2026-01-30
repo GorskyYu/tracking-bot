@@ -60,6 +60,9 @@ class ShipmentParserService:
                     bundled_names[self.cfg['YUMI_GROUP_ID']].append(name)
                 elif name in self.cfg['IRIS_NAMES']:
                     bundled_names[self.cfg['IRIS_GROUP_ID']].append(name)
+                elif name in self.cfg['YVES_NAMES']:
+                    # Yves's list: do not push private message to admin (skip fallback logic)
+                    pass
                 else:
                     # 只有不在上述清單的人，才需要去表單查 Sender
                     all_extracted_items.append((box_id, name))
