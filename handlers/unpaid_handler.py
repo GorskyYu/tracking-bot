@@ -1646,12 +1646,23 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
             }
             """
             
-            change_col_mutation = """
-            mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $val: String!) {
-                change_simple_column_value (board_id: $board_id, item_id: $item_id, column_id: $col_id, value: $val) { id }
-            }
-            """
             
+            # Formatted Bill Date for Monday (YYYY-MM-DD)
+            formatted_bill_date = f"{bill_date_yyyymmdd[:4]}-{bill_date_yyyymmdd[4:6]}-{bill_date_yyyymmdd[6:8]}"
+            
+            # Helper for multiple column update
+            def _update_multiple_columns(board_id, item_id, column_values):
+                query = """
+                mutation ($board_id: ID!, $item_id: ID!, $column_values: JSON!) {
+                    change_multiple_column_values (board_id: $board_id, item_id: $item_id, column_values: $column_values) { id }
+                }
+                """
+                return _monday_request(query, {
+                    "board_id": int(board_id),
+                    "item_id": int(item_id), 
+                    "column_values": json.dumps(column_values)
+                })
+
             # Process each parent item
             for p_info in parent_items_info:
                 # Calculate pro-rata credit share
@@ -1659,12 +1670,8 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
                 credit_share = amount * share_ratio
                 
                 parent_id = p_info["parent_id"]
-                parent_board_id = p_info["parent_board_id"]
                 subitem_board_id = p_info["subitem_board_id"]
                 parent_date_str = p_info["parent_date_str"]
-                
-                # Check if 折讓分攤 subitem already exists for this parent
-                # (We'll create it regardless - if duplicates become an issue, we can add check later)
                 
                 # 1. Create 折讓分攤 subitem
                 try:
@@ -1674,15 +1681,30 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
                     })
                     new_subitem_id = result["data"]["create_subitem"]["id"]
                     
-                    # 2. Set negative value in 加幣應收 column
+                    # 2. Update multiple columns: Credit (negative), Bill Date, Zeros for others
                     price_col_id = _fetch_col_id_by_title(subitem_board_id, COL_PRICE)
+                    
+                    # Fetch IDs for other columns to zero them out
+                    weight_col_id = _fetch_col_id_by_title(subitem_board_id, COL_WEIGHT)
+                    dim_col_id = _fetch_col_id_by_title(subitem_board_id, COL_DIMENSION)
+                    cad_price_col_id = _fetch_col_id_by_title(subitem_board_id, COL_CAD_PRICE)
+                    intl_price_col_id = _fetch_col_id_by_title(subitem_board_id, COL_INTL_PRICE)
+                    bill_date_col_id = _fetch_col_id_by_title(subitem_board_id, COL_BILL_DATE) # e.g. date_mkztczkr
+                    
                     negative_credit = -credit_share
-                    _monday_request(change_col_mutation, {
-                        "board_id": str(subitem_board_id),
-                        "item_id": str(new_subitem_id),
-                        "col_id": price_col_id,
-                        "val": str(negative_credit)
-                    })
+                    
+                    updates = {
+                        price_col_id: str(negative_credit),
+                        weight_col_id: "0",
+                        dim_col_id: "0", 
+                        cad_price_col_id: "0",
+                        intl_price_col_id: "0"
+                    }
+                    
+                    if bill_date_col_id:
+                        updates[bill_date_col_id] = {"date": formatted_bill_date}
+
+                    _update_multiple_columns(subitem_board_id, new_subitem_id, updates)
                     
                     distribution_log.append(f"✅ {parent_date_str}: 折讓 -${credit_share:.2f} (佔比 {share_ratio*100:.1f}%)")
                     
@@ -1690,30 +1712,44 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
                     logging.error(f"Failed to create 折讓分攤 for parent {parent_id}: {e}")
                     distribution_log.append(f"❌ {parent_date_str}: 建立折讓分攤失敗")
             
-            # 3. Redistribute existing payments across parent items proportionally
-            # New net amount for each parent = original_total - credit_share
-            # Payment should be redistributed so each parent's balance = net_amount - redistributed_paid
-            
+            # 3. Redistribute existing payments from the TOTAL POOL
             if total_existing_paid > 0.01:
                 redistribution_log = []
-                remaining_payment = total_existing_paid
+                remaining_payment_pool = total_existing_paid
                 
+                # New total debt for the whole bill = total_original - amount
+                new_bill_net_total = total_original - amount
+                
+                # Iterate parents to distribute from the pool
                 for p_info in parent_items_info:
                     share_ratio = p_info["original_total"] / total_original
                     credit_share = amount * share_ratio
-                    net_amount = p_info["original_total"] - credit_share
                     
-                    # Allocate payment proportionally to net amount
-                    if net_amount > 0:
-                        new_net_total = total_original - amount
-                        if new_net_total > 0:
-                            payment_share_ratio = net_amount / new_net_total
-                            redistributed_paid = total_existing_paid * payment_share_ratio
-                        else:
-                            redistributed_paid = 0
+                    # This parent's new net debt
+                    parent_net_debt = p_info["original_total"] - credit_share
+                    
+                    # How much payment to allocate to this parent?
+                    # Strategy: Fill this parent's debt completely if pool allows.
+                    # Since we are redistributing the ENTIRE pool, we should prioritize clearing debts.
+                    # BUT, total_existing_paid might be partial payment.
+                    # So we should allocate proportionally to the net debt.
+                    
+                    allocated_payment = 0.0
+                    if new_bill_net_total > 0.01:
+                       # Proportional allocation
+                       payment_ratio = parent_net_debt / new_bill_net_total
+                       allocated_payment = total_existing_paid * payment_ratio
                     else:
-                        redistributed_paid = 0
-                    
+                        # If net total is 0 (fully discounted?), payment has nowhere to go?
+                        # Or just split evenly/proportionally to original?
+                        allocated_payment = total_existing_paid * share_ratio
+
+                    # Cap allocation at the parent's net debt? 
+                    # Generally yes, unless overpaid. 
+                    # But proportional allocation handles "partial total payment" correctly.
+                    # If "total_existing_paid" == "new_bill_net_total" (Customer paid perfectly), 
+                    # then "allocated_payment" will equal "parent_net_debt", clearing it to 0. Correct.
+
                     parent_id = p_info["parent_id"]
                     parent_board_id = p_info["parent_board_id"]
                     parent_date_str = p_info["parent_date_str"]
@@ -1721,14 +1757,15 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
                     # Write new paid amount (in CAD)
                     try:
                         cad_paid_col_id = _fetch_col_id_by_title(parent_board_id, COL_CAD_PAID)
+                        
                         _monday_request(change_col_mutation, {
                             "board_id": str(parent_board_id),
                             "item_id": str(parent_id),
                             "col_id": cad_paid_col_id,
-                            "val": str(redistributed_paid)
+                            "val": str(allocated_payment)
                         })
                         
-                        # Clear TWD paid (since we converted everything to CAD)
+                        # Clear TWD paid
                         twd_paid_col_id = _fetch_col_id_by_title(parent_board_id, COL_TWD_PAID)
                         _monday_request(change_col_mutation, {
                             "board_id": str(parent_board_id),
@@ -1737,16 +1774,20 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
                             "val": "0"
                         })
                         
-                        new_balance = net_amount - redistributed_paid
-                        redistribution_log.append(f"📝 {parent_date_str}: 實收重分配 ${redistributed_paid:.2f}，餘額 ${new_balance:.2f}")
+                        new_balance = parent_net_debt - allocated_payment
+                        # Use small threshold for zero check
+                        if abs(new_balance) < 0.01: new_balance = 0.0
+                        
+                        redistribution_log.append(f"📝 {parent_date_str}: 實收改為 ${allocated_payment:.2f} (餘額 ${new_balance:.2f})")
                         
                     except Exception as e:
                         logging.error(f"Failed to redistribute payment for parent {parent_id}: {e}")
                         redistribution_log.append(f"❌ {parent_date_str}: 實收重分配失敗")
                 
                 distribution_log.append("")
-                distribution_log.append("📊 實收重分配：")
+                distribution_log.append("📊 實收已根據新總額重新分配 (Pool Redistribution)：")
                 distribution_log.extend(redistribution_log)
+
             
             # Send summary message
             summary = f"💸 {target_client} 折讓分攤完成（帳單 {bill_date_yymmdd}）：\n\n"

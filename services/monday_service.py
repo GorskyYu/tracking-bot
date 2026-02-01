@@ -265,3 +265,34 @@ class MondaySyncService:
         except Exception as e:
             log.error(f"[EXPENSE] Update failed: {str(e)}")
             return False, str(e), ""
+
+    def change_simple_column_value(self, board_id, item_id, column_id, value):
+        query = """
+        mutation ($board_id: ID!, $item_id: ID!, $column_id: String!, $value: String!) {
+            change_simple_column_value (board_id: $board_id, item_id: $item_id, column_id: $column_id, value: $value) {
+                id
+            }
+        }
+        """
+        variables = {
+            "board_id": int(board_id),
+            "item_id": int(item_id),
+            "column_id": column_id,
+            "value": str(value)
+        }
+        return self._post_with_backoff(self.api_url, {"query": query, "variables": variables})
+
+    def change_multiple_column_values(self, board_id, item_id, column_values):
+        query = """
+        mutation ($board_id: ID!, $item_id: ID!, $column_values: JSON!) {
+            change_multiple_column_values (board_id: $board_id, item_id: $item_id, column_values: $column_values) {
+                id
+            }
+        }
+        """
+        variables = {
+            "board_id": int(board_id),
+            "item_id": int(item_id),
+            "column_values": json.dumps(column_values)
+        }
+        return self._post_with_backoff(self.api_url, {"query": query, "variables": variables})
