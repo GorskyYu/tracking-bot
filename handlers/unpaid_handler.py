@@ -510,7 +510,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             is_zero = abs(subtotal) < 0.005
             
             if is_zero:
-                sub_val_color = '#000000'
+                sub_val_color = None
             elif sub_is_negative:
                 sub_val_color = '#1DB446'
             else:
@@ -633,7 +633,14 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
         prefix = "-" if total < 0 else ""
         total_display = f"{prefix}${abs(total):.2f}"
     
-    total_color = '#1DB446' if total <= 0 else '#FF4B4B'
+    # Determine color for Total Due
+    if abs(total) < 0.005:  # Effectively zero
+        total_color = None  # Default grey/black
+    elif total < 0:
+        total_color = '#1DB446' # Green for credit balance
+    else:
+        total_color = '#FF4B4B' # Red for due amount
+
     footer_contents.append(
         BoxComponent(
             layout='horizontal',
