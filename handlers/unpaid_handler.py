@@ -1572,8 +1572,9 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
 
     def _credit_worker():
         try:
-            # Fetch all items and filter by client and bill date
-            items = fetch_unpaid_items_globally()
+            # Fetch ALL items by bill date (regardless of paid/unpaid status)
+            # This ensures we distribute credit across all parent items for the bill
+            items = fetch_items_by_bill_date(bill_date_yymmdd)
             grouped = _group_items_by_client(items, target_client, bill_date_yyyymmdd)
             
             if not grouped:
