@@ -555,11 +555,11 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     # Build footer contents
     footer_contents = [SeparatorComponent()]
     
-    # 總支付金額 (green) - sum of all positive item prices
+    # 總支付金額 (green) - cash paid amount (excluding discount)
     if currency.lower() == "twd":
-        subtotal_display = f"NT${subtotal_raw * default_rate:.0f}"
+        paid_display_val = f"NT${total_paid * default_rate:.0f}"
     else:
-        subtotal_display = f"${subtotal_raw:.2f}"
+        paid_display_val = f"${total_paid:.2f}"
     
     footer_contents.append(
         BoxComponent(
@@ -567,7 +567,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             margin='md',
             contents=[
                 TextComponent(text="總支付金額", flex=3, size='md', weight='bold'),
-                TextComponent(text=subtotal_display, flex=3, align='end', size='md', weight='bold', color='#1DB446')
+                TextComponent(text=paid_display_val, flex=3, align='end', size='md', weight='bold', color='#1DB446')
             ]
         )
     )
