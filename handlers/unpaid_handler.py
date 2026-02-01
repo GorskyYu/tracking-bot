@@ -1629,13 +1629,38 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
     desc_parts = remaining_parts[date_index+1:]
     if desc_parts:
         description = " ".join(desc_parts)
+    
+    # Check if the description is actually a client name (User error correction)
+    # Case: credit 260120 yumi Dec折讓 => Parsed as: Date=260120, Desc="yumi Dec折讓", Client=None(or Context)
+    # If mode is RENAME and description looks like "Client Desc", try to split it.
+    if mode == "RENAME" and description and not target_client:
+        possible_parts = description.split()
+        if len(possible_parts) >= 2:
+            # Assume first part of description is client? 
+            # This is risky but let's see if the user intended "credit Date Client Desc" format 
+            # (which is weird, normally Client comes before Date).
+            # BUT the user said: "credit 260120 yumi Dec折讓"
+            # My parser above expects: credit [client] <date> <desc>
+            # So "credit yumi 260120 Dec折讓" works perfectly.
+            # But "credit 260120 yumi Dec折讓" parses as:
+            # remaining_parts = ['260120', 'yumi', 'Dec折讓']
+            # date_index = 0
+            # client_parts = []
+            # desc_parts = ['yumi', 'Dec折讓']
+            # So target_client is None.
+            
+            # Correction logic:
+            potential_client = possible_parts[0]
+            if potential_client.lower() in [k.lower() for k in GROUP_TO_CLIENT_MAP.values()] or len(potential_client) < 10:
+                 target_client = potential_client
+                 description = " ".join(possible_parts[1:])
 
     # Determine Client from Context if missing
     if not target_client:
         if group_id and group_id in GROUP_TO_CLIENT_MAP:
             target_client = GROUP_TO_CLIENT_MAP[group_id]
         else:
-            return reply_text(reply_token, "❌ 請指定客戶名稱。")
+            return reply_text(reply_token, "❌ 請指定客戶名稱 (例如: credit Yumi 260120 ...)。")
 
     # Standardize Dates
     bill_date_yymmdd = bill_date_short
