@@ -647,8 +647,16 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
         for item in filtered_results:
             cad_rate = item.get("cad_domestic_rate", 0)
             intl_rate = item.get("intl_shipping_rate", 0)
+            
+            # Check raw values to separate explicit "0" from empty/missing
+            raw_cad = str(item.get("raw_cad_domestic_rate", "")).strip()
+            raw_intl = str(item.get("raw_intl_shipping_rate", "")).strip()
+            
             if cad_rate == 0 and intl_rate == 0:
-                zero_price_items.append(item)
+                # Only block if BOTH are missing/empty.
+                # If at least one is explicitly "0", we allow it.
+                if not raw_cad and not raw_intl:
+                    zero_price_items.append(item)
         
         logging.info(f"[unpaid_worker] Found {len(zero_price_items)} items with zero prices, is_group_chat={is_group_chat}")
         
@@ -1023,8 +1031,10 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
         if rate <= 0: rate = 1.0
         
         # Extract shipping rates from subitem columns
-        cad_price = _extract_float(subitem_cols.get(COL_CAD_PRICE, "0"))
-        intl_price = _extract_float(subitem_cols.get(COL_INTL_PRICE, "0"))
+        raw_cad = subitem_cols.get(COL_CAD_PRICE, "")
+        raw_intl = subitem_cols.get(COL_INTL_PRICE, "")
+        cad_price = _extract_float(raw_cad)
+        intl_price = _extract_float(raw_intl)
         
         # Extract bill_date from subitem columns
         bill_date = subitem_cols.get(COL_BILL_DATE, "").strip()
@@ -1043,6 +1053,8 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
             "weight": weight_val,
             "cad_domestic_rate": cad_price,
             "intl_shipping_rate": intl_price,
+            "raw_cad_domestic_rate": raw_cad,
+            "raw_intl_shipping_rate": raw_intl,
             "parent_cad_paid": _extract_float(parent_cols.get(COL_CAD_PAID, "0")),
             "parent_twd_paid": _extract_float(parent_cols.get(COL_TWD_PAID, "0")),
             "parent_rate": rate
