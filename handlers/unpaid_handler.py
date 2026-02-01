@@ -1645,6 +1645,12 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
                 create_subitem(parent_item_id: $parent_id, item_name: $item_name) { id }
             }
             """
+
+            change_col_mutation = """
+            mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $val: String!) {
+                change_simple_column_value (board_id: $board_id, item_id: $item_id, column_id: $col_id, value: $val) { id }
+            }
+            """
             
             
             # Formatted Bill Date for Monday (YYYY-MM-DD)
@@ -1682,7 +1688,8 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
                     new_subitem_id = result["data"]["create_subitem"]["id"]
                     
                     # 2. Update multiple columns: Credit (negative), Bill Date, Zeros for others
-                    price_col_id = _fetch_col_id_by_title(subitem_board_id, COL_PRICE)
+                    # Use "追加加幣收費" for credit/discount instead of the formula column "加幣應收"
+                    price_col_id = _fetch_col_id_by_title(subitem_board_id, "追加加幣收費")
                     
                     # Fetch IDs for other columns to zero them out
                     weight_col_id = _fetch_col_id_by_title(subitem_board_id, COL_WEIGHT)
