@@ -506,16 +506,29 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             body_contents.append(SeparatorComponent(margin='sm'))
             subtotal = parent_group['subtotal']
             
-            sub_is_negative = subtotal < 0
-            sub_val_color = '#1DB446' if sub_is_negative else None
+            sub_is_negative = subtotal < -0.005
+            is_zero = abs(subtotal) < 0.005
+            
+            if is_zero:
+                sub_val_color = '#000000'
+            elif sub_is_negative:
+                sub_val_color = '#1DB446'
+            else:
+                sub_val_color = None
 
             if currency.lower() == "twd":
                 sub_disp_val = subtotal * default_rate
-                prefix = "-" if sub_disp_val < 0 else ""
-                subtotal_display = f"{prefix}NT${abs(sub_disp_val):.0f}"
+                if abs(sub_disp_val) < 0.5:
+                    subtotal_display = "NT$0"
+                else:
+                    prefix = "-" if sub_disp_val < 0 else ""
+                    subtotal_display = f"{prefix}NT${abs(sub_disp_val):.0f}"
             else:
-                prefix = "-" if subtotal < 0 else ""
-                subtotal_display = f"{prefix}${abs(subtotal):.2f}"
+                if is_zero:
+                    subtotal_display = "$0.00"
+                else:
+                    prefix = "-" if subtotal < 0 else ""
+                    subtotal_display = f"{prefix}${abs(subtotal):.2f}"
 
             body_contents.append(
                 BoxComponent(
@@ -575,9 +588,9 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     # 總折讓金額 (green) - only show if there's discount
     if total_discount > 0:
         if currency.lower() == "twd":
-            total_discount_display = f"-NT${total_discount * default_rate:.0f}"
+            total_discount_display = f"NT${total_discount * default_rate:.0f}"
         else:
-            total_discount_display = f"-${total_discount:.2f}"
+            total_discount_display = f"${total_discount:.2f}"
         
         footer_contents.append(
             BoxComponent(
