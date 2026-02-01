@@ -257,6 +257,13 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
                 found_canonical = True
                 break
         
+        # 3. Dynamic Filter Check: If specific filter requested is found in the full name, allow it
+        if not found_canonical and filter_name and filter_name != "All":
+             if filter_name.lower() in client_name.lower():
+                 # Use the filter name as the grouping key (capitalized)
+                 canonical_name = filter_name.capitalize()
+                 found_canonical = True
+
         if not found_canonical:
             # 不在名單的客人，只取第一個單詞或橫槓前的文字作為 Abowbow ID (Key)
             canonical_name = client_name.split(" - ")[0].split()[0]
@@ -709,6 +716,13 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
                     canonical_name = main_name
                     found_canonical = True
                     break
+            
+            # Dynamic Filter check for canonical name resolution
+            if not found_canonical and filter_name and filter_name != "All":
+                if filter_name.lower() in client_name.lower():
+                    canonical_name = filter_name.capitalize()
+                    found_canonical = True
+
             if not found_canonical:
                 canonical_name = client_name.split(" - ")[0].split()[0]
             return filter_name.lower() in canonical_name.lower()
@@ -904,6 +918,8 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
   例如：查看帳單 260125
 • 查看帳單 [客戶] [日期] - 查看特定客戶特定日期帳單（任何群組）
   例如：查看帳單 Vicky 260125
+• 查看帳單 [日期] [客戶] - 查看特定客戶特定日期帳單（同上）
+  例如：查看帳單 260125 Vicky
 • 查看帳單 [客戶] [日期] twd - 以台幣顯示帳單
   例如：查看帳單 Vicky 260125 twd
 
@@ -1187,7 +1203,7 @@ def handle_bill_event(sender_id, message_text, reply_token, user_id, group_id=No
             date_val = part
         elif part.lower() in ["twd", "ntd", "tw"]:
             currency = "twd"
-        elif not date_val:  # Client name comes before date
+        else:
             client_name = part
     
     # Currency display text
