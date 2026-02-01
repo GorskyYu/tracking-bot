@@ -1600,7 +1600,23 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
             return False
 
     # Check if second part is Amount (Creation Mode)
+    # Refined logic: If parts[1] is a number, it could be Amount OR Date (if strictly 6 digits).
+    # If it is 6 digits to look like a date, we check if there is ANOTHER date later.
+    # If yes -> parts[1] is Amount. If no -> parts[1] is Date (Rename Mode).
+    is_amount = False
     if len(parts) > 1 and is_float(parts[1]):
+        token = parts[1]
+        if re.match(r'^\d{6}$', token):
+            # It resembles a date. Check if another date exists later
+            has_other_date = any(re.match(r'^\d{6}$', p) for p in parts[2:])
+            if has_other_date:
+                is_amount = True
+            else:
+                is_amount = False
+        else:
+            is_amount = True
+
+    if is_amount:
         amount = float(parts[1])
         remaining_parts = parts[2:]
         mode = "CREATE"
