@@ -325,11 +325,18 @@ def _create_item_row(item, currency="cad"):
     if rate <= 0: rate = 1.0
     
     # Convert to TWD if requested
+    is_negative = price_val < 0
+    price_color = '#1DB446' if is_negative else None
+
     if currency.lower() == "twd":
         display_price = price_val * rate
-        formatted_price = f"NT${display_price:.0f}"
+        abs_price = abs(display_price)
+        prefix = "-" if display_price < 0 else ""
+        formatted_price = f"{prefix}NT${abs_price:.0f}"
     else:
-        formatted_price = f"${price_val:.2f}"
+        abs_price = abs(price_val)
+        prefix = "-" if price_val < 0 else ""
+        formatted_price = f"{prefix}${abs_price:.2f}"
 
     # 準備顯示內容容器
     row_contents = []
@@ -342,7 +349,7 @@ def _create_item_row(item, currency="cad"):
                 layout='horizontal',
                 contents=[
                     TextComponent(text=parent_name, flex=4, size='sm', wrap=True, weight='bold'),
-                    TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold')
+                    TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold', color=price_color)
                 ]
             )
         )
@@ -364,7 +371,7 @@ def _create_item_row(item, currency="cad"):
                 layout='horizontal',
                 contents=[
                     TextComponent(text=sub_name if sub_name else "N/A", flex=4, size='sm', wrap=True),
-                    TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold')
+                    TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold', color=price_color)
                 ]
             )
         )
@@ -498,17 +505,25 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             # Parent Date Subtotal
             body_contents.append(SeparatorComponent(margin='sm'))
             subtotal = parent_group['subtotal']
+            
+            sub_is_negative = subtotal < 0
+            sub_val_color = '#1DB446' if sub_is_negative else None
+
             if currency.lower() == "twd":
-                subtotal_display = f"NT${subtotal * default_rate:.0f}"
+                sub_disp_val = subtotal * default_rate
+                prefix = "-" if sub_disp_val < 0 else ""
+                subtotal_display = f"{prefix}NT${abs(sub_disp_val):.0f}"
             else:
-                subtotal_display = f"${subtotal:.2f}"
+                prefix = "-" if subtotal < 0 else ""
+                subtotal_display = f"{prefix}${abs(subtotal):.2f}"
+
             body_contents.append(
                 BoxComponent(
                     layout='horizontal',
                     margin='sm',
                     contents=[
                         TextComponent(text="Subtotal", flex=4, size='sm', color='#555555'),
-                        TextComponent(text=subtotal_display, flex=2, align='end', size='sm', weight='bold')
+                        TextComponent(text=subtotal_display, flex=2, align='end', size='sm', weight='bold', color=sub_val_color)
                     ]
                 )
             )
@@ -523,10 +538,15 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     # Format total based on currency
     if currency.lower() == "twd":
         total_paid_display = f"NT${total_paid * default_rate:.0f}"
-        total_display = f"NT${total * default_rate:.0f}"
+        
+        tot_disp_val = total * default_rate
+        prefix = "-" if tot_disp_val < 0 else ""
+        total_display = f"{prefix}NT${abs(tot_disp_val):.0f}"
     else:
         total_paid_display = f"${total_paid:.2f}"
-        total_display = f"${total:.2f}"
+        
+        prefix = "-" if total < 0 else ""
+        total_display = f"{prefix}${abs(total):.2f}"
     
     # Build footer contents
     footer_contents = [SeparatorComponent()]
@@ -544,8 +564,8 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             )
         )
     
-    # Total Amount Due (red)
-    total_color = '#FF4B4B'
+    # Total Amount Due (red, or green if negative)
+    total_color = '#1DB446' if total < 0 else '#FF4B4B'
     footer_contents.append(
         BoxComponent(
             layout='horizontal',
