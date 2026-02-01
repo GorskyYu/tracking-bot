@@ -529,21 +529,43 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             )
 
     # Footer (Total)
-    # Calculate total paid amount from all parent groups (use absolute value since paid_amount is positive)
+    # Calculate subtotal (sum of all item prices before paid/discount deductions)
+    subtotal_raw = 0.0
     total_paid = 0.0
+    total_discount = 0.0
+    
     for bill_data in dates_data.values():
         for parent_data in bill_data.get("parent_dates", {}).values():
-            total_paid += abs(parent_data.get("paid_amount", 0.0))
+            # Sum up item prices for subtotal
+            for item in parent_data.get("items", []):
+                subtotal_raw += item.get("price_val", 0.0)
+            
+            # Check if this parent group is a 折讓 (discount)
+            is_discount_group = any("折讓" in item.get("parent_name", "") for item in parent_data.get("items", []))
+            paid_amt = abs(parent_data.get("paid_amount", 0.0))
+            
+            if is_discount_group:
+                total_discount += paid_amt
+            else:
+                total_paid += paid_amt
     
-    # Format total based on currency
+    # Format values based on currency
     if currency.lower() == "twd":
-        total_paid_display = f"NT${total_paid * default_rate:.0f}"
+        subtotal_display = f"NT${subtotal_raw * default_rate:.0f}"
+        total_discount_display = f"-NT${total_discount * default_rate:.0f}"
+        # Total Paid includes actual payments + discount
+        combined_paid = total_paid + total_discount
+        total_paid_display = f"NT${combined_paid * default_rate:.0f}"
         
         tot_disp_val = total * default_rate
         prefix = "-" if tot_disp_val < 0 else ""
         total_display = f"{prefix}NT${abs(tot_disp_val):.0f}"
     else:
-        total_paid_display = f"${total_paid:.2f}"
+        subtotal_display = f"${subtotal_raw:.2f}"
+        total_discount_display = f"-${total_discount:.2f}"
+        # Total Paid includes actual payments + discount
+        combined_paid = total_paid + total_discount
+        total_paid_display = f"${combined_paid:.2f}"
         
         prefix = "-" if total < 0 else ""
         total_display = f"{prefix}${abs(total):.2f}"
@@ -551,8 +573,35 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     # Build footer contents
     footer_contents = [SeparatorComponent()]
     
-    # Show Total Paid in green if there's any paid amount (for both paid and unpaid views)
-    if total_paid > 0:
+    # Subtotal (black)
+    footer_contents.append(
+        BoxComponent(
+            layout='horizontal',
+            margin='md',
+            contents=[
+                TextComponent(text="Subtotal", flex=3, size='md', weight='bold'),
+                TextComponent(text=subtotal_display, flex=3, align='end', size='md', weight='bold')
+            ]
+        )
+    )
+    
+    # Total Discount (green) - only show if there's discount
+    if total_discount > 0:
+        footer_contents.append(
+            BoxComponent(
+                layout='horizontal',
+                margin='sm',
+                contents=[
+                    TextComponent(text="Total Discount", flex=3, size='md', weight='bold'),
+                    TextComponent(text=total_discount_display, flex=3, align='end', size='md', weight='bold', color='#1DB446')
+                ]
+            )
+        )
+    
+    footer_contents.append(SeparatorComponent(margin='md'))
+    
+    # Total Paid (green) - includes actual paid + discount
+    if combined_paid > 0:
         footer_contents.append(
             BoxComponent(
                 layout='horizontal',
@@ -1488,3 +1537,227 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id, group_id=No
             logging.error(f"Paid worker failed: {e}\n{traceback.format_exc()}")
 
     Thread(target=_paid_worker).start()
+
+
+def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=None):
+    """處理折讓分攤：按比例分配折扣到所有母項目，並建立折讓分攤子項目"""
+    if user_id not in ADMIN_USER_IDS:
+        return reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
+
+    # Parse command: credit <amount> [client] <bill_date_YYMMDD>
+    # In group chat: credit 346.13 260120
+    # In private chat: credit 346.13 Yumi 260120
+    match = re.match(r"^credit\s+(\d+(?:\.\d+)?)\s+(?:(\S+)\s+)?(\d{6})$", message_text.strip(), re.IGNORECASE)
+    if not match:
+        return reply_text(reply_token, "❌ 格式錯誤。用法：\n私聊：credit <金額> <客戶名> <YYMMDD>\n群組：credit <金額> <YYMMDD>")
+    
+    amount = float(match.group(1))
+    client_from_cmd = match.group(2)
+    bill_date_yymmdd = match.group(3)
+    
+    # Convert YYMMDD to YYYYMMDD for filter
+    bill_date_yyyymmdd = f"20{bill_date_yymmdd}"
+    
+    # Determine client
+    target_client = None
+    if client_from_cmd:
+        target_client = client_from_cmd
+    elif group_id and group_id in GROUP_TO_CLIENT_MAP:
+        target_client = GROUP_TO_CLIENT_MAP[group_id]
+    
+    if not target_client:
+        return reply_text(reply_token, "❌ 請指定客戶名稱：credit <金額> <客戶名> <YYMMDD>")
+
+    reply_text(reply_token, f"💸 正在為 {target_client} 分攤折讓 CAD ${amount:.2f}（帳單 {bill_date_yymmdd}），請稍候...")
+
+    def _credit_worker():
+        try:
+            # Fetch all items and filter by client and bill date
+            items = fetch_unpaid_items_globally()
+            grouped = _group_items_by_client(items, target_client, bill_date_yyyymmdd)
+            
+            if not grouped:
+                return line_bot_api.push_message(sender_id, TextSendMessage(text=f"查無 {target_client} 在 {bill_date_yymmdd} 的項目。"))
+
+            # Find the client in grouped dict
+            client_key = None
+            for key in grouped.keys():
+                if key.lower() == target_client.lower():
+                    client_key = key
+                    break
+            
+            if not client_key:
+                return line_bot_api.push_message(sender_id, TextSendMessage(text=f"查無 {target_client} 在 {bill_date_yymmdd} 的項目。"))
+
+            client_data = grouped[client_key]
+            
+            # Collect all parent items and their original totals (before paid deductions)
+            parent_items_info = []  # List of (parent_id, parent_board_id, subitem_board_id, original_total, parent_date_str, items_list)
+            
+            for bill_date_str, bill_data in client_data["data"].items():
+                for parent_date_str, parent_group in bill_data.get("parent_dates", {}).items():
+                    items_list = parent_group.get("items", [])
+                    if not items_list:
+                        continue
+                    
+                    # Skip if this is already a 折讓 parent
+                    if any("折讓" in item.get("parent_name", "") for item in items_list):
+                        continue
+                    
+                    sample_item = items_list[0]
+                    parent_id = sample_item.get("parent_id")
+                    parent_board_id = sample_item.get("parent_board_id")
+                    subitem_board_id = sample_item.get("board_id")
+                    
+                    # Calculate original total (sum of all item prices)
+                    original_total = sum(item.get("price_val", 0) for item in items_list)
+                    
+                    if original_total > 0:
+                        parent_items_info.append({
+                            "parent_id": parent_id,
+                            "parent_board_id": parent_board_id,
+                            "subitem_board_id": subitem_board_id,
+                            "original_total": original_total,
+                            "parent_date_str": parent_date_str,
+                            "items_list": items_list,
+                            "rate": sample_item.get("parent_rate", 1.0),
+                            "existing_cad_paid": sample_item.get("parent_cad_paid", 0),
+                            "existing_twd_paid": sample_item.get("parent_twd_paid", 0)
+                        })
+            
+            if not parent_items_info:
+                return line_bot_api.push_message(sender_id, TextSendMessage(text=f"查無 {target_client} 在 {bill_date_yymmdd} 的可分攤項目。"))
+            
+            # Calculate total original amount for pro-rata
+            total_original = sum(p["original_total"] for p in parent_items_info)
+            
+            # Calculate existing total paid (CAD equivalent)
+            total_existing_paid = 0.0
+            for p in parent_items_info:
+                rate = p["rate"] if p["rate"] > 0 else 1.0
+                total_existing_paid += p["existing_cad_paid"] + (p["existing_twd_paid"] / rate)
+            
+            distribution_log = []
+            
+            # GraphQL mutations
+            create_subitem_mutation = """
+            mutation ($parent_id: ID!, $item_name: String!) {
+                create_subitem(parent_item_id: $parent_id, item_name: $item_name) { id }
+            }
+            """
+            
+            change_col_mutation = """
+            mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $val: String!) {
+                change_simple_column_value (board_id: $board_id, item_id: $item_id, column_id: $col_id, value: $val) { id }
+            }
+            """
+            
+            # Process each parent item
+            for p_info in parent_items_info:
+                # Calculate pro-rata credit share
+                share_ratio = p_info["original_total"] / total_original
+                credit_share = amount * share_ratio
+                
+                parent_id = p_info["parent_id"]
+                parent_board_id = p_info["parent_board_id"]
+                subitem_board_id = p_info["subitem_board_id"]
+                parent_date_str = p_info["parent_date_str"]
+                
+                # Check if 折讓分攤 subitem already exists for this parent
+                # (We'll create it regardless - if duplicates become an issue, we can add check later)
+                
+                # 1. Create 折讓分攤 subitem
+                try:
+                    result = _monday_request(create_subitem_mutation, {
+                        "parent_id": str(parent_id),
+                        "item_name": "折讓分攤"
+                    })
+                    new_subitem_id = result["data"]["create_subitem"]["id"]
+                    
+                    # 2. Set negative value in 加幣應收 column
+                    price_col_id = _fetch_col_id_by_title(subitem_board_id, COL_PRICE)
+                    negative_credit = -credit_share
+                    _monday_request(change_col_mutation, {
+                        "board_id": str(subitem_board_id),
+                        "item_id": str(new_subitem_id),
+                        "col_id": price_col_id,
+                        "val": str(negative_credit)
+                    })
+                    
+                    distribution_log.append(f"✅ {parent_date_str}: 折讓 -${credit_share:.2f} (佔比 {share_ratio*100:.1f}%)")
+                    
+                except Exception as e:
+                    logging.error(f"Failed to create 折讓分攤 for parent {parent_id}: {e}")
+                    distribution_log.append(f"❌ {parent_date_str}: 建立折讓分攤失敗")
+            
+            # 3. Redistribute existing payments across parent items proportionally
+            # New net amount for each parent = original_total - credit_share
+            # Payment should be redistributed so each parent's balance = net_amount - redistributed_paid
+            
+            if total_existing_paid > 0.01:
+                redistribution_log = []
+                remaining_payment = total_existing_paid
+                
+                for p_info in parent_items_info:
+                    share_ratio = p_info["original_total"] / total_original
+                    credit_share = amount * share_ratio
+                    net_amount = p_info["original_total"] - credit_share
+                    
+                    # Allocate payment proportionally to net amount
+                    if net_amount > 0:
+                        new_net_total = total_original - amount
+                        if new_net_total > 0:
+                            payment_share_ratio = net_amount / new_net_total
+                            redistributed_paid = total_existing_paid * payment_share_ratio
+                        else:
+                            redistributed_paid = 0
+                    else:
+                        redistributed_paid = 0
+                    
+                    parent_id = p_info["parent_id"]
+                    parent_board_id = p_info["parent_board_id"]
+                    parent_date_str = p_info["parent_date_str"]
+                    
+                    # Write new paid amount (in CAD)
+                    try:
+                        cad_paid_col_id = _fetch_col_id_by_title(parent_board_id, COL_CAD_PAID)
+                        _monday_request(change_col_mutation, {
+                            "board_id": str(parent_board_id),
+                            "item_id": str(parent_id),
+                            "col_id": cad_paid_col_id,
+                            "val": str(redistributed_paid)
+                        })
+                        
+                        # Clear TWD paid (since we converted everything to CAD)
+                        twd_paid_col_id = _fetch_col_id_by_title(parent_board_id, COL_TWD_PAID)
+                        _monday_request(change_col_mutation, {
+                            "board_id": str(parent_board_id),
+                            "item_id": str(parent_id),
+                            "col_id": twd_paid_col_id,
+                            "val": "0"
+                        })
+                        
+                        new_balance = net_amount - redistributed_paid
+                        redistribution_log.append(f"📝 {parent_date_str}: 實收重分配 ${redistributed_paid:.2f}，餘額 ${new_balance:.2f}")
+                        
+                    except Exception as e:
+                        logging.error(f"Failed to redistribute payment for parent {parent_id}: {e}")
+                        redistribution_log.append(f"❌ {parent_date_str}: 實收重分配失敗")
+                
+                distribution_log.append("")
+                distribution_log.append("📊 實收重分配：")
+                distribution_log.extend(redistribution_log)
+            
+            # Send summary message
+            summary = f"💸 {target_client} 折讓分攤完成（帳單 {bill_date_yymmdd}）：\n\n"
+            summary += f"📋 折讓總額：CAD ${amount:.2f}\n"
+            summary += f"📦 涉及母項目：{len(parent_items_info)} 筆\n\n"
+            summary += "\n".join(distribution_log)
+            
+            line_bot_api.push_message(sender_id, TextSendMessage(text=summary))
+
+        except Exception as e:
+            logging.error(f"Credit worker failed: {e}\n{traceback.format_exc()}")
+            line_bot_api.push_message(sender_id, TextSendMessage(text=f"❌ 折讓分攤失敗：{str(e)}"))
+
+    Thread(target=_credit_worker).start()

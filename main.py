@@ -56,7 +56,7 @@ from handlers.handlers import (
     handle_soquick_full_notification,
     dispatch_confirmation_notification
 )
-from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event, handle_paid_event, handle_rate_update
+from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event, handle_paid_event, handle_rate_update, handle_credit_event
 from handlers.vicky_handler import remind_vicky
 from handlers.ups_handler import handle_ups_logic
 from handlers.monday_webhook_handler import handle_monday_webhook
@@ -342,6 +342,19 @@ def webhook():
                     user_id=user_id,
                     group_id=group_id
                 )
+            continue
+
+        # Credit 指令處理：折讓分攤
+        # 私聊：credit 346.13 Yumi 260120
+        # 群組：credit 346.13 260120
+        if text.lower().startswith("credit"):
+            handle_credit_event(
+                sender_id=group_id if group_id else user_id,
+                message_text=text,
+                reply_token=event["replyToken"],
+                user_id=user_id,
+                group_id=group_id
+            )
             continue
 
         # 1) 處理 UPS 批量更新與單筆尺寸錄入
