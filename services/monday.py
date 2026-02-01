@@ -813,30 +813,29 @@ def search_subitem_efficiently(target):
 
 
 
- 
- d e f   r e n a m e _ m o n d a y _ i t e m ( b o a r d _ i d ,   i t e m _ i d ,   n e w _ n a m e ) :  
-         " " "  
-         R e n a m e s   a   M o n d a y   i t e m   u s i n g   c h a n g e _ m u l t i p l e _ c o l u m n _ v a l u e s .  
-         " " "  
-         q u e r y   =   " " "  
-         m u t a t i o n   ( $ b o a r d _ i d :   I D ! ,   $ i t e m _ i d :   I D ! ,   $ c o l u m n _ v a l u e s :   J S O N ! )   {  
-                 c h a n g e _ m u l t i p l e _ c o l u m n _ v a l u e s   ( i t e m _ i d :   $ i t e m _ i d ,   b o a r d _ i d :   $ b o a r d _ i d ,   c o l u m n _ v a l u e s :   $ c o l u m n _ v a l u e s )   {  
-                         i d  
-                         n a m e  
-                 }  
-         }  
-         " " "  
-         v a r i a b l e s   =   {  
-                 " b o a r d _ i d " :   i n t ( b o a r d _ i d ) ,  
-                 " i t e m _ i d " :   i n t ( i t e m _ i d ) ,  
-                 " c o l u m n _ v a l u e s " :   j s o n . d u m p s ( { " n a m e " :   n e w _ n a m e } )  
-         }  
-          
-         r e s u l t   =   _ m o n d a y _ r e q u e s t ( q u e r y ,   v a r i a b l e s )  
-         i f   n o t   r e s u l t   o r   " d a t a "   n o t   i n   r e s u l t   o r   n o t   r e s u l t [ " d a t a " ] [ " c h a n g e _ m u l t i p l e _ c o l u m n _ v a l u e s " ] :  
-                 l o g g e r . e r r o r ( f " F a i l e d   t o   r e n a m e   i t e m   { i t e m _ i d } :   { r e s u l t } " )  
-                 r e t u r n   F a l s e  
-                  
-         l o g g e r . i n f o ( f " S u c c e s s f u l l y   r e n a m e d   i t e m   { i t e m _ i d }   t o   ' { n e w _ n a m e } ' " )  
-         r e t u r n   T r u e  
- 
+
+def rename_monday_item(board_id, item_id, new_name):
+    """
+    Renames a Monday item using change_multiple_column_values.
+    """
+    query = """
+    mutation ($board_id: ID!, $item_id: ID!, $column_values: JSON!) {
+        change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $column_values) {
+            id
+            name
+        }
+    }
+    """
+    variables = {
+        "board_id": int(board_id),
+        "item_id": int(item_id),
+        "column_values": json.dumps({"name": new_name})
+    }
+    
+    result = _monday_request(query, variables)
+    if not result or "data" not in result or not result["data"]["change_multiple_column_values"]:
+        logger.error(f"Failed to rename item {item_id}: {result}")
+        return False
+        
+    logger.info(f"Successfully renamed item {item_id} to '{new_name}'")
+    return True
