@@ -2,7 +2,7 @@
 import traceback
 from datetime import datetime
 
-from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD_MAPPING, update_monday_item
+from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD_MAPPING, update_monday_item, rename_monday_item
 from utils.permissions import is_authorized_for_event, ADMIN_USER_IDS
 from utils.line_reply import reply_text
 from config import line_bot_api
@@ -908,10 +908,13 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
   例如：查看帳單 Vicky 260125 twd
 
 【折讓/Credit 錄入】
-• credit [金額] [日期] - 錄入折讓金額並按比例分攤（在群組自動偵測客戶）
-  例如：在 Yumi 群組輸入 credit 346.13 260120
-• credit [金額] [客戶ID] [日期] - 錄入折讓金額並按比例分攤（指定客戶）
-  例如：credit 346.13 Yumi 260120
+• credit [金額] [日期] [說明] - 錄入折讓並分攤（可選說明）
+  例如：credit 346.13 260120 Dec折讓 => 建立 "Dec折讓 折讓分攤"
+  若無說明，預設名稱為 "折讓分攤"
+• credit [金額] [客戶ID] [日期] [說明] - 指定客戶錄入折讓
+  例如：credit 346.13 Yumi 260120 Dec折讓
+• credit [日期] [說明] - 修改現有折讓名稱 (無金額模式)
+  例如：credit 260120 Dec折讓 => 將該日該客戶所有 "折讓" 項目改名
   
 【運費單價更新】
 • 當帳單項目的「加拿大單價」與「國際單價」皆為 0 時，
@@ -1572,40 +1575,75 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id, group_id=No
 
 
 def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=None):
-    """處理折讓分攤：按比例分配折扣到所有母項目，並建立折讓分攤子項目"""
+    """
+    處理折讓分攤指令:
+    1. 建立折讓: credit <amount> [client] <date> [desc]
+    2. 修改折讓: credit [client] <date> <desc> (無金額)
+    """
     if user_id not in ADMIN_USER_IDS:
         return reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
 
-    # Parse command: credit <amount> [client] <bill_date_YYMMDD>
-    # In group chat: credit 346.13 260120
-    # In private chat: credit 346.13 Yumi 260120
-    match = re.match(r"^credit\s+(\d+(?:\.\d+)?)\s+(?:(\S+)\s+)?(\d{6})$", message_text.strip(), re.IGNORECASE)
-    if not match:
-        return reply_text(reply_token, "❌ 格式錯誤。用法：\n私聊：credit <金額> <客戶名> <YYMMDD>\n群組：credit <金額> <YYMMDD>")
-    
-    amount = float(match.group(1))
-    client_from_cmd = match.group(2)
-    bill_date_yymmdd = match.group(3)
-    
-    # Convert YYMMDD to YYYYMMDD for filter
-    bill_date_yyyymmdd = f"20{bill_date_yymmdd}"
-    
-    # Determine client
+    parts = message_text.strip().split()
+    # parts[0] is 'credit'
+
+    amount = None
     target_client = None
-    if client_from_cmd:
-        target_client = client_from_cmd
-    elif group_id and group_id in GROUP_TO_CLIENT_MAP:
-        target_client = GROUP_TO_CLIENT_MAP[group_id]
-    
-    if not target_client:
-        return reply_text(reply_token, "❌ 請指定客戶名稱：credit <金額> <客戶名> <YYMMDD>")
+    bill_date_short = None
+    description = None
 
-    reply_text(reply_token, f"💸 正在為 {target_client} 分攤折讓 CAD ${amount:.2f}（帳單 {bill_date_yymmdd}），請稍候...")
-
-    def _credit_worker():
+    # Helper to check if string is float
+    def is_float(s):
         try:
-            # Fetch ALL items by bill date (regardless of paid/unpaid status)
-            # This ensures we distribute credit across all parent items for the bill
+            float(s)
+            return True
+        except ValueError:
+            return False
+
+    # Check if second part is Amount (Creation Mode)
+    if len(parts) > 1 and is_float(parts[1]):
+        amount = float(parts[1])
+        remaining_parts = parts[2:]
+        mode = "CREATE"
+    else:
+        # Rename Mode
+        mode = "RENAME"
+        remaining_parts = parts[1:]
+
+    # Parse remaining parts to find Date (6 digits)
+    date_index = -1
+    for i, part in enumerate(remaining_parts):
+        if re.match(r'^\d{6}$', part):
+            bill_date_short = part
+            date_index = i
+            break
+    
+    if not bill_date_short:
+        return reply_text(reply_token, "❌ 找不到日期 (YYMMDD)。格式：credit ... <YYMMDD> ...")
+
+    # Extract Client (everything before date)
+    client_parts = remaining_parts[:date_index]
+    if client_parts:
+        target_client = " ".join(client_parts)
+    
+    # Extract Description (everything after date)
+    desc_parts = remaining_parts[date_index+1:]
+    if desc_parts:
+        description = " ".join(desc_parts)
+
+    # Determine Client from Context if missing
+    if not target_client:
+        if group_id and group_id in GROUP_TO_CLIENT_MAP:
+            target_client = GROUP_TO_CLIENT_MAP[group_id]
+        else:
+            return reply_text(reply_token, "❌ 請指定客戶名稱。")
+
+    # Standardize Dates
+    bill_date_yymmdd = bill_date_short
+    bill_date_yyyymmdd = f"20{bill_date_yymmdd}"
+
+    # Worker for Creating Credit
+    def _credit_worker_create():
+        try:
             items = fetch_items_by_bill_date(bill_date_yymmdd)
             grouped = _group_items_by_client(items, target_client, bill_date_yyyymmdd)
             
@@ -1624,32 +1662,25 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
 
             client_data = grouped[client_key]
             
-            # Collect all parent items and their original totals (before paid deductions)
-            parent_items_info = []  # List of (parent_id, parent_board_id, subitem_board_id, original_total, parent_date_str, items_list)
+            # Collect all parent items and their original totals
+            parent_items_info = []  
             
             for bill_date_str, bill_data in client_data["data"].items():
                 for parent_date_str, parent_group in bill_data.get("parent_dates", {}).items():
                     items_list = parent_group.get("items", [])
-                    if not items_list:
-                        continue
+                    if not items_list: continue
                     
-                    # Skip if this is already a 折讓 parent
                     if any("折讓" in item.get("parent_name", "") for item in items_list):
                         continue
                     
                     sample_item = items_list[0]
-                    parent_id = sample_item.get("parent_id")
-                    parent_board_id = sample_item.get("parent_board_id")
-                    subitem_board_id = sample_item.get("board_id")
-                    
-                    # Calculate original total (sum of all item prices)
                     original_total = sum(item.get("price_val", 0) for item in items_list)
                     
                     if original_total > 0:
                         parent_items_info.append({
-                            "parent_id": parent_id,
-                            "parent_board_id": parent_board_id,
-                            "subitem_board_id": subitem_board_id,
+                            "parent_id": sample_item.get("parent_id"),
+                            "parent_board_id": sample_item.get("parent_board_id"),
+                            "subitem_board_id": sample_item.get("board_id"),
                             "original_total": original_total,
                             "parent_date_str": parent_date_str,
                             "items_list": items_list,
@@ -1661,35 +1692,20 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
             if not parent_items_info:
                 return line_bot_api.push_message(sender_id, TextSendMessage(text=f"查無 {target_client} 在 {bill_date_yymmdd} 的可分攤項目。"))
             
-            # Calculate total original amount for pro-rata
             total_original = sum(p["original_total"] for p in parent_items_info)
-            
-            # Calculate existing total paid (CAD equivalent)
             total_existing_paid = 0.0
             for p in parent_items_info:
                 rate = p["rate"] if p["rate"] > 0 else 1.0
                 total_existing_paid += p["existing_cad_paid"] + (p["existing_twd_paid"] / rate)
             
             distribution_log = []
-            
-            # GraphQL mutations
             create_subitem_mutation = """
             mutation ($parent_id: ID!, $item_name: String!) {
                 create_subitem(parent_item_id: $parent_id, item_name: $item_name) { id }
             }
             """
-
-            change_col_mutation = """
-            mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $val: String!) {
-                change_simple_column_value (board_id: $board_id, item_id: $item_id, column_id: $col_id, value: $val) { id }
-            }
-            """
-            
-            
-            # Formatted Bill Date for Monday (YYYY-MM-DD)
             formatted_bill_date = f"{bill_date_yyyymmdd[:4]}-{bill_date_yyyymmdd[4:6]}-{bill_date_yyyymmdd[6:8]}"
             
-            # Helper for multiple column update
             def _update_multiple_columns(board_id, item_id, column_values):
                 query = """
                 mutation ($board_id: ID!, $item_id: ID!, $column_values: JSON!) {
@@ -1697,14 +1713,12 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
                 }
                 """
                 return _monday_request(query, {
-                    "board_id": int(board_id),
-                    "item_id": int(item_id), 
-                    "column_values": json.dumps(column_values)
+                    "board_id": int(board_id), "item_id": int(item_id), "column_values": json.dumps(column_values)
                 })
 
-            # Process each parent item
+            subitem_name = f"{description} 折讓分攤" if description else "折讓分攤"
+
             for p_info in parent_items_info:
-                # Calculate pro-rata credit share
                 share_ratio = p_info["original_total"] / total_original
                 credit_share = amount * share_ratio
                 
@@ -1712,133 +1726,115 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
                 subitem_board_id = p_info["subitem_board_id"]
                 parent_date_str = p_info["parent_date_str"]
                 
-                # 1. Create 折讓分攤 subitem
                 try:
                     result = _monday_request(create_subitem_mutation, {
                         "parent_id": str(parent_id),
-                        "item_name": "折讓分攤"
+                        "item_name": subitem_name
                     })
                     new_subitem_id = result["data"]["create_subitem"]["id"]
                     
-                    # 2. Update multiple columns: Credit (negative), Bill Date, Zeros for others
-                    # Use "追加加幣收費" for credit/discount instead of the formula column "加幣應收"
                     price_col_id = _fetch_col_id_by_title(subitem_board_id, "追加加幣收費")
-                    
-                    # Fetch IDs for other columns to zero them out
                     weight_col_id = _fetch_col_id_by_title(subitem_board_id, COL_WEIGHT)
                     dim_col_id = _fetch_col_id_by_title(subitem_board_id, COL_DIMENSION)
                     cad_price_col_id = _fetch_col_id_by_title(subitem_board_id, COL_CAD_PRICE)
                     intl_price_col_id = _fetch_col_id_by_title(subitem_board_id, COL_INTL_PRICE)
-                    bill_date_col_id = _fetch_col_id_by_title(subitem_board_id, COL_BILL_DATE) # e.g. date_mkztczkr
-                    
-                    negative_credit = -credit_share
+                    bill_date_col_id = _fetch_col_id_by_title(subitem_board_id, COL_BILL_DATE)
                     
                     updates = {
-                        price_col_id: str(negative_credit),
-                        weight_col_id: "0",
-                        dim_col_id: "0", 
-                        cad_price_col_id: "0",
-                        intl_price_col_id: "0"
+                        price_col_id: str(-credit_share),
+                        weight_col_id: "0", dim_col_id: "0", 
+                        cad_price_col_id: "0", intl_price_col_id: "0"
                     }
-                    
-                    if bill_date_col_id:
-                        updates[bill_date_col_id] = {"date": formatted_bill_date}
+                    if bill_date_col_id: updates[bill_date_col_id] = {"date": formatted_bill_date}
 
                     _update_multiple_columns(subitem_board_id, new_subitem_id, updates)
-                    
-                    distribution_log.append(f"✅ {parent_date_str}: 折讓 -${credit_share:.2f} (佔比 {share_ratio*100:.1f}%)")
-                    
+                    distribution_log.append(f"✅ {parent_date_str}: 折讓 -${credit_share:.2f} ({(share_ratio*100):.1f}%)")
                 except Exception as e:
                     logging.error(f"Failed to create 折讓分攤 for parent {parent_id}: {e}")
                     distribution_log.append(f"❌ {parent_date_str}: 建立折讓分攤失敗")
             
-            # 3. Redistribute existing payments from the TOTAL POOL
+            # Redistribute existing payments if any
             if total_existing_paid > 0.01:
-                redistribution_log = []
-                remaining_payment_pool = total_existing_paid
-                
-                # New total debt for the whole bill = total_original - amount
                 new_bill_net_total = total_original - amount
-                
-                # Iterate parents to distribute from the pool
                 for p_info in parent_items_info:
                     share_ratio = p_info["original_total"] / total_original
                     credit_share = amount * share_ratio
-                    
-                    # This parent's new net debt
                     parent_net_debt = p_info["original_total"] - credit_share
-                    
-                    # How much payment to allocate to this parent?
-                    # Strategy: Fill this parent's debt completely if pool allows.
-                    # Since we are redistributing the ENTIRE pool, we should prioritize clearing debts.
-                    # BUT, total_existing_paid might be partial payment.
-                    # So we should allocate proportionally to the net debt.
                     
                     allocated_payment = 0.0
                     if new_bill_net_total > 0.01:
-                       # Proportional allocation
-                       payment_ratio = parent_net_debt / new_bill_net_total
-                       allocated_payment = total_existing_paid * payment_ratio
+                       allocated_payment = total_existing_paid * (parent_net_debt / new_bill_net_total)
                     else:
-                        # If net total is 0 (fully discounted?), payment has nowhere to go?
-                        # Or just split evenly/proportionally to original?
                         allocated_payment = total_existing_paid * share_ratio
-
-                    # Cap allocation at the parent's net debt? 
-                    # Generally yes, unless overpaid. 
-                    # But proportional allocation handles "partial total payment" correctly.
-                    # If "total_existing_paid" == "new_bill_net_total" (Customer paid perfectly), 
-                    # then "allocated_payment" will equal "parent_net_debt", clearing it to 0. Correct.
 
                     parent_id = p_info["parent_id"]
                     parent_board_id = p_info["parent_board_id"]
-                    parent_date_str = p_info["parent_date_str"]
                     
-                    # Write new paid amount (in CAD)
                     try:
                         cad_paid_col_id = _fetch_col_id_by_title(parent_board_id, COL_CAD_PAID)
-                        
-                        _monday_request(change_col_mutation, {
-                            "board_id": str(parent_board_id),
-                            "item_id": str(parent_id),
-                            "col_id": cad_paid_col_id,
-                            "val": str(allocated_payment)
-                        })
-                        
-                        # Clear TWD paid
                         twd_paid_col_id = _fetch_col_id_by_title(parent_board_id, COL_TWD_PAID)
-                        _monday_request(change_col_mutation, {
-                            "board_id": str(parent_board_id),
-                            "item_id": str(parent_id),
-                            "col_id": twd_paid_col_id,
-                            "val": "0"
-                        })
                         
-                        new_balance = parent_net_debt - allocated_payment
-                        # Use small threshold for zero check
-                        if abs(new_balance) < 0.01: new_balance = 0.0
-                        
-                        redistribution_log.append(f"📝 {parent_date_str}: 實收改為 ${allocated_payment:.2f} (餘額 ${new_balance:.2f})")
-                        
+                        updates = { cad_paid_col_id: f"{allocated_payment:.2f}", twd_paid_col_id: "0" }
+                        _update_multiple_columns(parent_board_id, parent_id, updates)
                     except Exception as e:
-                        logging.error(f"Failed to redistribute payment for parent {parent_id}: {e}")
-                        redistribution_log.append(f"❌ {parent_date_str}: 實收重分配失敗")
-                
-                distribution_log.append("")
-                distribution_log.append("📊 實收已根據新總額重新分配 (Pool Redistribution)：")
-                distribution_log.extend(redistribution_log)
+                        logging.error(f"Failed to redistribute paid amount: {e}")
 
-            
-            # Send summary message
-            summary = f"💸 {target_client} 折讓分攤完成（帳單 {bill_date_yymmdd}）：\n\n"
-            summary += f"📋 折讓總額：CAD ${amount:.2f}\n"
-            summary += f"📦 涉及母項目：{len(parent_items_info)} 筆\n\n"
-            summary += "\n".join(distribution_log)
-            
+            summary = f"💰 {target_client} 折讓分攤完成 (名稱: {subitem_name})：\n" + "\n".join(distribution_log)
             line_bot_api.push_message(sender_id, TextSendMessage(text=summary))
 
         except Exception as e:
             logging.error(f"Credit worker failed: {e}\n{traceback.format_exc()}")
-            line_bot_api.push_message(sender_id, TextSendMessage(text=f"❌ 折讓分攤失敗：{str(e)}"))
+            line_bot_api.push_message(sender_id, TextSendMessage(text=f"❌ 系統錯誤: {str(e)}"))
 
-    Thread(target=_credit_worker).start()
+    # Worker for Renaming Credit
+    def _rename_credit_worker():
+        try:
+            items = fetch_items_by_bill_date(bill_date_yymmdd)
+            grouped = _group_items_by_client(items, target_client, bill_date_yyyymmdd)
+            
+            if not grouped:
+                return line_bot_api.push_message(sender_id, TextSendMessage(text=f"查無 {target_client} 在 {bill_date_yymmdd} 的項目。"))
+
+            client_key = None
+            for key in grouped.keys():
+                if key.lower() == target_client.lower():
+                    client_key = key
+                    break
+            if not client_key:
+                return line_bot_api.push_message(sender_id, TextSendMessage(text=f"查無 {target_client} 在 {bill_date_yymmdd} 的項目。"))
+
+            client_data = grouped[client_key]
+            renamed_count = 0
+            new_full_name = f"{description} 折讓分攤"
+
+            for bill_date_str, bill_data in client_data["data"].items():
+                for parent_date_str, parent_group in bill_data.get("parent_dates", {}).items():
+                    for item in parent_group.get("items", []):
+                        price_val = item.get("price_val", 0)
+                        sub_name = item.get("sub_name", "")
+                        
+                        if price_val < -0.01 and "折讓" in sub_name:
+                            board_id = item.get("board_id")
+                            item_id = item.get("id")
+                            if rename_monday_item(board_id, item_id, new_full_name):
+                                renamed_count += 1
+            
+            if renamed_count > 0:
+                line_bot_api.push_message(sender_id, TextSendMessage(text=f"✅ 已將 {renamed_count} 個折讓項目更名為：「{new_full_name}」"))
+            else:
+                line_bot_api.push_message(sender_id, TextSendMessage(text=f"⚠️ 找不到可以更名的折讓項目 (需包含「折讓」且金額為負)。"))
+
+        except Exception as e:
+            logging.error(f"Rename worker failed: {e}\n{traceback.format_exc()}")
+            line_bot_api.push_message(sender_id, TextSendMessage(text=f"❌ 系統錯誤: {str(e)}"))
+
+    # Execute based on mode
+    if mode == "CREATE":
+        display_desc = f" ({description})" if description else ""
+        reply_text(reply_token, f"💸 [建立折讓] {target_client} ${amount:.2f} {bill_date_short}{display_desc}，處理中...")
+        Thread(target=_credit_worker_create).start()
+    elif mode == "RENAME":
+        if not description:
+             return reply_text(reply_token, "❌ 改名模式需要提供新的描述文字。")
+        reply_text(reply_token, f"✏️ [修改折讓名稱] {target_client} {bill_date_short} -> {description} 折讓分攤，處理中...")
+        Thread(target=_rename_credit_worker).start()
