@@ -538,61 +538,53 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
         for parent_data in bill_data.get("parent_dates", {}).values():
             # Sum up item prices for subtotal
             for item in parent_data.get("items", []):
-                subtotal_raw += item.get("price_val", 0.0)
+                price_val = item.get("price_val", 0.0)
+                # Negative price items are discounts (折讓分攤)
+                if price_val < 0:
+                    total_discount += abs(price_val)
+                else:
+                    subtotal_raw += price_val
             
-            # Check if this parent group is a 折讓 (discount)
+            # Paid amount from parent item (exclude discount groups)
             is_discount_group = any("折讓" in item.get("parent_name", "") for item in parent_data.get("items", []))
             paid_amt = abs(parent_data.get("paid_amount", 0.0))
             
-            if is_discount_group:
-                total_discount += paid_amt
-            else:
+            if not is_discount_group:
                 total_paid += paid_amt
-    
-    # Format values based on currency
-    if currency.lower() == "twd":
-        subtotal_display = f"NT${subtotal_raw * default_rate:.0f}"
-        total_discount_display = f"-NT${total_discount * default_rate:.0f}"
-        # Total Paid includes actual payments + discount
-        combined_paid = total_paid + total_discount
-        total_paid_display = f"NT${combined_paid * default_rate:.0f}"
-        
-        tot_disp_val = total * default_rate
-        prefix = "-" if tot_disp_val < 0 else ""
-        total_display = f"{prefix}NT${abs(tot_disp_val):.0f}"
-    else:
-        subtotal_display = f"${subtotal_raw:.2f}"
-        total_discount_display = f"-${total_discount:.2f}"
-        # Total Paid includes actual payments + discount
-        combined_paid = total_paid + total_discount
-        total_paid_display = f"${combined_paid:.2f}"
-        
-        prefix = "-" if total < 0 else ""
-        total_display = f"{prefix}${abs(total):.2f}"
     
     # Build footer contents
     footer_contents = [SeparatorComponent()]
     
-    # Subtotal (black)
+    # 總支付金額 (green) - sum of all positive item prices
+    if currency.lower() == "twd":
+        subtotal_display = f"NT${subtotal_raw * default_rate:.0f}"
+    else:
+        subtotal_display = f"${subtotal_raw:.2f}"
+    
     footer_contents.append(
         BoxComponent(
             layout='horizontal',
             margin='md',
             contents=[
-                TextComponent(text="Subtotal", flex=3, size='md', weight='bold'),
-                TextComponent(text=subtotal_display, flex=3, align='end', size='md', weight='bold')
+                TextComponent(text="總支付金額", flex=3, size='md', weight='bold'),
+                TextComponent(text=subtotal_display, flex=3, align='end', size='md', weight='bold', color='#1DB446')
             ]
         )
     )
     
-    # Total Discount (green) - only show if there's discount
+    # 總折讓金額 (green) - only show if there's discount
     if total_discount > 0:
+        if currency.lower() == "twd":
+            total_discount_display = f"-NT${total_discount * default_rate:.0f}"
+        else:
+            total_discount_display = f"-${total_discount:.2f}"
+        
         footer_contents.append(
             BoxComponent(
                 layout='horizontal',
                 margin='sm',
                 contents=[
-                    TextComponent(text="Total Discount", flex=3, size='md', weight='bold'),
+                    TextComponent(text="總折讓金額", flex=3, size='md', weight='bold'),
                     TextComponent(text=total_discount_display, flex=3, align='end', size='md', weight='bold', color='#1DB446')
                 ]
             )
@@ -600,27 +592,41 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     
     footer_contents.append(SeparatorComponent(margin='md'))
     
-    # Total Paid (green) - includes actual paid + discount
+    # 已結清金額 (green) - actual paid + discount
+    combined_paid = total_paid + total_discount
     if combined_paid > 0:
+        if currency.lower() == "twd":
+            total_paid_display = f"NT${combined_paid * default_rate:.0f}"
+        else:
+            total_paid_display = f"${combined_paid:.2f}"
+        
         footer_contents.append(
             BoxComponent(
                 layout='horizontal',
                 margin='md',
                 contents=[
-                    TextComponent(text="Total Paid", flex=3, size='lg', weight='bold'),
+                    TextComponent(text="已結清金額", flex=3, size='lg', weight='bold'),
                     TextComponent(text=total_paid_display, flex=3, align='end', size='lg', weight='bold', color='#1DB446')
                 ]
             )
         )
     
-    # Total Amount Due (red, or green if negative)
-    total_color = '#1DB446' if total < 0 else '#FF4B4B'
+    # 應付餘額 (red, or green if zero/negative)
+    if currency.lower() == "twd":
+        tot_disp_val = total * default_rate
+        prefix = "-" if tot_disp_val < 0 else ""
+        total_display = f"{prefix}NT${abs(tot_disp_val):.0f}"
+    else:
+        prefix = "-" if total < 0 else ""
+        total_display = f"{prefix}${abs(total):.2f}"
+    
+    total_color = '#1DB446' if total <= 0 else '#FF4B4B'
     footer_contents.append(
         BoxComponent(
             layout='horizontal',
             margin='md',
             contents=[
-                TextComponent(text="Total Due", flex=3, size='lg', weight='bold'),
+                TextComponent(text="應付餘額", flex=3, size='lg', weight='bold'),
                 TextComponent(text=total_display, flex=3, align='end', size='lg', weight='bold', color=total_color)
             ]
         )
