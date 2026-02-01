@@ -900,6 +900,12 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
 • 查看帳單 [客戶] [日期] twd - 以台幣顯示帳單
   例如：查看帳單 Vicky 260125 twd
 
+【折讓/Credit 錄入】
+• credit [金額] [日期] - 錄入折讓金額並按比例分攤（在群組自動偵測客戶）
+  例如：在 Yumi 群組輸入 credit 346.13 260120
+• credit [金額] [客戶ID] [日期] - 錄入折讓金額並按比例分攤（指定客戶）
+  例如：credit 346.13 Yumi 260120
+  
 【運費單價更新】
 • 當帳單項目的「加拿大單價」與「國際單價」皆為 0 時，
   管理員可直接回覆兩個數字來更新：
