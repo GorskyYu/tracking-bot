@@ -634,10 +634,18 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     # 應付餘額 (red, or green if zero/negative)
     if currency.lower() == "twd":
         tot_disp_val = total * default_rate
-        prefix = "-" if tot_disp_val < 0 else ""
+        # 若四捨五入後為 0，強制移除負號
+        if round(abs(tot_disp_val)) == 0:
+            prefix = ""
+        else:
+            prefix = "-" if tot_disp_val < 0 else ""
         total_display = f"{prefix}NT${abs(tot_disp_val):.0f}"
     else:
-        prefix = "-" if total < 0 else ""
+        # 若四捨五入後為 0.00，強制移除負號
+        if round(abs(total), 2) == 0:
+             prefix = ""
+        else:
+             prefix = "-" if total < 0 else ""
         total_display = f"{prefix}${abs(total):.2f}"
     
     # Determine color for Total Due
