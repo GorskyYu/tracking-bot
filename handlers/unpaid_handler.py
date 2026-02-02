@@ -1044,6 +1044,18 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
             t.start()
             return
         else:
+            # 🟢 修正：支援 unpaid [客戶名稱] [日期] 的格式
+            if len(parts) >= 3 and re.match(r'^\d{6}$', parts[-1]):
+                filter_date = "20" + parts[-1]
+                target_name = " ".join(parts[1:-1])
+                
+                r.set(f"last_unpaid_client_{sender_id}", target_name, ex=3600)
+                reply_text(reply_token, f"🔍 正在搜尋 {target_name} 在 {filter_date} 的未付款項目，請稍候...")
+                target_id = group_id if group_id else sender_id
+                t = Thread(target=_unpaid_worker, args=(target_id, target_name, None, filter_date, bool(group_id)))
+                t.start()
+                return
+
             # Format: unpaid ClientID (original logic)
             target_name = " ".join(parts[1:]) 
             reply_text(reply_token, f"🔍 正在搜尋未付款項目 ({target_name})，請稍候...")
