@@ -903,8 +903,8 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
   例如：unpaid Lorant
 • unpaid [日期] - 查詢特定日期的未付款項目（在群組自動偵測客戶）
   例如：在 Vicky 群組輸入 unpaid 260125
-• unpaid [日期] [客戶ID] - 查詢特定日期的未付款項目（指定客戶）
-  例如：unpaid 260125 Lorant
+• unpaid [日期] [客戶ID] 或 [客戶ID] [日期] - 查詢特定日期的未付款項目（指定客戶）
+  例如：unpaid 260125 Lorant 或 unpaid Lorant 260125
 • unpaid today - 標記今日出帳並顯示
 • unpaid today [客戶ID] - 標記今日出帳並顯示特定客戶
   例如：unpaid today Lorant
