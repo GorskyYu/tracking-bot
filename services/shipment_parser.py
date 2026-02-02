@@ -31,6 +31,12 @@ class ShipmentParserService:
     def handle_missing_confirm(self, event):
         """處理「申報相符」提醒與散客 Fallback 邏輯"""
         text = event["message"]["text"]
+
+        # 自動更正 Ace 發來的 "周" 為 "週"
+        text = text.replace("周一", "週一").replace("周二", "週二").replace("周三", "週三") \
+                   .replace("周四", "週四").replace("周五", "週五").replace("周六", "週六") \
+                   .replace("周日", "週日")
+
         if "申報相符" not in text:
             return
 
@@ -113,7 +119,7 @@ class ShipmentParserService:
                         f"{ship_day}\n\n麻煩請 \n\n{declarant_list}\n\n"
                         f"收到EZ way通知後 請按申報相符 海關才能受理清關\n\n"
                         f"**須按申報相符者 EZ Way 會提前提傳輸\n\n"
-                        f"台灣時間周五 傍晚至晚上 就可以開始按申報相符**"
+                        f"台灣時間{timing_note} 傍晚至晚上 就可以開始按申報相符**"
                     )
                     
                     # 推送給管理員

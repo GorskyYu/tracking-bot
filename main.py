@@ -153,6 +153,11 @@ def webhook():
         group_id = src.get("groupId")
         msg      = event["message"]
         text     = msg.get("text", "").strip()
+        # 自動更正 Ace 發來的 "周" 為 "週"
+        text = text.replace("周一", "週一").replace("周二", "週二").replace("周三", "週三") \
+                   .replace("周四", "週四").replace("周五", "週五").replace("周六", "週六") \
+                   .replace("周日", "週日")
+
         mtype    = msg.get("type")
     
         # --- NEW & CLEANED PDF OCR Trigger ------------------------------------

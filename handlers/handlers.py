@@ -735,6 +735,11 @@ def handle_ace_ezway_check_and_push_to_yves(event: Dict[str, Any]) -> None:
     """
     text = event["message"]["text"]
 
+    # 自動更正 Ace 發來的 "周" 為 "週"
+    text = text.replace("周一", "週一").replace("周二", "週二").replace("周三", "週三") \
+               .replace("周四", "週四").replace("周五", "週五").replace("周六", "週六") \
+               .replace("周日", "週日")
+
     # Only trigger on the exact keywords
     if not (
         "麻煩請" in text
