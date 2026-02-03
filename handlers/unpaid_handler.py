@@ -589,7 +589,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                         layout='horizontal',
                         margin='md',
                         contents=[
-                            TextComponent(text="Credit (可抵扣)", flex=4, size='sm', color='#1DB446'),
+                            TextComponent(text="Paid (Already Received)", flex=4, size='sm', color='#1DB446'),
                             TextComponent(text=credit_disp, flex=2, align='end', size='sm', color='#1DB446', weight='bold')
                         ]
                     )
@@ -609,7 +609,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                         layout='horizontal',
                         margin='md',
                         contents=[
-                            TextComponent(text="⚠️ 上期未扣完", flex=4, size='sm', color='#ff3333'),
+                            TextComponent(text="Previous Deficit", flex=4, size='sm', color='#ff3333'),
                             TextComponent(text=deficit_disp, flex=2, align='end', size='sm', color='#ff3333', weight='bold')
                         ]
                     )
@@ -690,7 +690,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             layout='horizontal',
             margin='md',
             contents=[
-                TextComponent(text="總支付金額", flex=3, size='md', weight='bold'),
+                TextComponent(text="Paid Amount", flex=3, size='md', weight='bold'),
                 TextComponent(text=paid_display_val, flex=3, align='end', size='md', weight='bold', color='#1DB446')
             ]
         )
@@ -708,7 +708,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                 layout='horizontal',
                 margin='sm',
                 contents=[
-                    TextComponent(text="總折讓金額", flex=3, size='md', weight='bold'),
+                    TextComponent(text="Discount", flex=3, size='md', weight='bold'),
                     TextComponent(text=total_discount_display, flex=3, align='end', size='md', weight='bold', color='#1DB446')
                 ]
             )
@@ -729,7 +729,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                 layout='horizontal',
                 margin='md',
                 contents=[
-                    TextComponent(text="已結清金額", flex=3, size='lg', weight='bold'),
+                    TextComponent(text="Total Credit", flex=3, size='lg', weight='bold'),
                     TextComponent(text=total_paid_display, flex=3, align='end', size='lg', weight='bold', color='#1DB446')
                 ]
             )
@@ -765,7 +765,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             layout='horizontal',
             margin='md',
             contents=[
-                TextComponent(text="應付餘額", flex=3, size='lg', weight='bold'),
+                TextComponent(text="Total Due", flex=3, size='lg', weight='bold'),
                 TextComponent(text=total_display, flex=3, align='end', size='lg', weight='bold', color=total_color)
             ]
         )
