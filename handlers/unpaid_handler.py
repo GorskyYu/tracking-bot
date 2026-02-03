@@ -51,7 +51,6 @@ COL_ADDT_CAD = "追加加幣支出"
 COL_ADDT_TWD = "追加台幣支出"
 COL_CAD_PAID ="加幣實收"
 COL_TWD_PAID ="台幣實收"
-COL_CAD_TOTAL = "加幣總應收"  # Parent item's total CAD receivable
 COL_COLLECTOR = "收款人"
 COL_EXCHANGE = "匯率"
 COL_BILL_DATE = "出帳日"
@@ -115,75 +114,6 @@ def _fetch_col_id_by_title(board_id, title):
              if col["title"].strip() == title:
                  return col["id"]
     return None
-
-def _fetch_paid_subitems_total(parent_id, subitem_board_id):
-    """
-    查詢某個 parent item 下所有「已付款」狀態 subitems 的加幣應收總和。
-    已付款狀態: 已收款出貨、核實訂單、已完成
-    """
-    status_col_id = _fetch_col_id_by_title(subitem_board_id, COL_STATUS)
-    if not status_col_id:
-        logging.warning(f"Status column not found on subitem board {subitem_board_id}")
-        return 0.0
-    
-    # Query all subitems under this parent with PAID_STATUSES
-    query = """
-    query ($board_id: ID!, $col_id: String!, $vals: [String]!) {
-        items_page_by_column_values (
-            board_id: $board_id, 
-            columns: [{column_id: $col_id, column_values: $vals}],
-            limit: 500
-        ) {
-            items {
-                id
-                name
-                parent_item { id }
-                column_values {
-                    text
-                    column { title }
-                }
-            }
-        }
-    }
-    """
-    
-    variables = {
-        "board_id": int(subitem_board_id),
-        "col_id": status_col_id,
-        "vals": PAID_STATUSES
-    }
-    
-    res = _monday_request(query, variables)
-    if not res or "data" not in res or not res["data"].get("items_page_by_column_values"):
-        return 0.0
-    
-    total = 0.0
-    items = res["data"]["items_page_by_column_values"].get("items", [])
-    
-    for item in items:
-        # 只計算屬於指定 parent 的 subitems
-        if item.get("parent_item") and item["parent_item"].get("id") == str(parent_id):
-            cols = _map_column_values(item.get("column_values", []))
-            price = _extract_float(cols.get(COL_PRICE, "0"))
-            total += price
-    
-    logging.info(f"[_fetch_paid_subitems_total] Parent {parent_id}: paid subitems total = ${total:.2f}")
-    return total
-
-# Cache for paid subitems totals to avoid repeated API calls
-_paid_subitems_cache = {}
-
-def _get_paid_subitems_total_cached(parent_id, subitem_board_id):
-    """帶緩存的已付款 subitems 總額查詢"""
-    cache_key = f"{parent_id}_{subitem_board_id}"
-    if cache_key not in _paid_subitems_cache:
-        _paid_subitems_cache[cache_key] = _fetch_paid_subitems_total(parent_id, subitem_board_id)
-    return _paid_subitems_cache[cache_key]
-
-def clear_paid_subitems_cache():
-    """清除已付款 subitems 緩存"""
-    global _paid_subitems_cache
-    _paid_subitems_cache = {}
 
 def fetch_unpaid_items_globally():
     """
@@ -364,39 +294,22 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
         
         # Use parent_date as second level grouping key
         if parent_date not in bill_date_group["parent_dates"]:
-            # Calculate paid amount and total receivable from parent item (only once per unique parent)
+            # Calculate paid amount from parent item (only once per unique parent)
             rate = item.get("parent_rate", 1.0)
             if rate <= 0: rate = 1.0
-            parent_cad_paid = item.get("parent_cad_paid", 0)
-            parent_twd_paid = item.get("parent_twd_paid", 0)
-            total_paid_cad = parent_cad_paid + (parent_twd_paid / rate)
-            
-            # 🟢 新邏輯：查詢該 parent 下所有「已付款」subitems 的加幣應收總和
-            parent_id = item.get("parent_id")
-            subitem_board_id = item.get("board_id")
-            paid_subitems_total = _get_paid_subitems_total_cached(parent_id, subitem_board_id) if parent_id and subitem_board_id else 0.0
-            
-            # 可用 Credit = 加幣實收 - 已付款 subitems 加幣應收總和
-            available_credit = total_paid_cad - paid_subitems_total
-            
-            # 警示標記：如果 available_credit < 0，表示上期還沒扣完
-            has_unpaid_previous = available_credit < -0.005
-            unpaid_previous_amount = abs(available_credit) if has_unpaid_previous else 0.0
+            total_paid_cad = item.get("parent_cad_paid", 0) + (item.get("parent_twd_paid", 0) / rate)
             
             bill_date_group["parent_dates"][parent_date] = {
                 "items": [], 
-                "subtotal": 0.0,  # 會在後面累加當期 items
-                "paid_amount": total_paid_cad,  # 該筆貨物已付總額 (CAD)
-                "paid_subitems_total": paid_subitems_total,  # 已付款 subitems 總額
-                "available_credit": available_credit,  # 可用於本期的 credit
-                "has_unpaid_previous": has_unpaid_previous,  # 是否有上期未扣完
-                "unpaid_previous_amount": unpaid_previous_amount,  # 上期未扣完金額
-                "parent_rate": rate
+                "subtotal": 0.0,
+                "paid_amount": total_paid_cad # 該筆貨物已付總額 (CAD)
             }
+            # 預扣除實收
+            bill_date_group["parent_dates"][parent_date]["subtotal"] -= total_paid_cad
+            client_data["total"] -= total_paid_cad
         
         parent_group = bill_date_group["parent_dates"][parent_date]
         parent_group["items"].append(item)
-        # 累加當期 items 的價格
         parent_group["subtotal"] += item["price_val"]
         client_data["total"] += item["price_val"]
         
@@ -571,55 +484,15 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             # Items under this parent date
             for item in parent_group["items"]:
                 body_contents.append(_create_item_row(item, currency))
-            
-            # 🟢 新邏輯：顯示 Credit 或警示
-            available_credit = parent_group.get('available_credit', 0)
-            has_unpaid_previous = parent_group.get('has_unpaid_previous', False)
-            unpaid_previous_amount = parent_group.get('unpaid_previous_amount', 0)
-            paid_amt = parent_group.get('paid_amount', 0)
-            parent_rate = parent_group.get('parent_rate', 1.0)
-            if parent_rate <= 0: parent_rate = 1.0
-            
-            # 檢查該組包裹中是否包含「折讓」母項目
-            is_discount = any("折讓" in item.get("parent_name", "") for item in parent_group["items"])
-            
-            if not is_discount:
-                # 🔴 警示：上期還有未扣完的金額
-                if has_unpaid_previous:
-                    if currency.lower() == "twd":
-                        unpaid_display = f"NT${unpaid_previous_amount * parent_rate:.0f}"
-                    else:
-                        unpaid_display = f"${unpaid_previous_amount:.2f}"
-                    
-                    body_contents.append(
-                        BoxComponent(
-                            layout='horizontal',
-                            margin='md',
-                            contents=[
-                                TextComponent(text="⚠️ 上期未扣完", flex=4, size='sm', color='#FF0000', weight='bold'),
-                                TextComponent(text=unpaid_display, flex=2, align='end', size='sm', color='#FF0000', weight='bold')
-                            ]
-                        )
-                    )
-                # 🟢 顯示可用 Credit（如果有剩餘且 > 0）
-                elif available_credit > 0.005:
-                    if currency.lower() == "twd":
-                        credit_display = f"-NT${available_credit * parent_rate:.0f}"
-                    else:
-                        credit_display = f"-${available_credit:.2f}"
-                    
-                    body_contents.append(
-                        BoxComponent(
-                            layout='horizontal',
-                            margin='md',
-                            contents=[
-                                TextComponent(text="Credit (可抵扣)", flex=4, size='sm', color='#1DB446'),
-                                TextComponent(text=credit_display, flex=2, align='end', size='sm', color='#1DB446', weight='bold')
-                            ]
-                        )
-                    )
-            elif paid_amt != 0:
-                # 折讓案：顯示 Discount
+                
+            # Paid amount for this parent section (if any)
+            if parent_group["paid_amount"] != 0:
+                # 檢查該組包裹中是否包含「折讓」母項目
+                is_discount = any("折讓" in item.get("parent_name", "") for item in parent_group["items"])
+                label_text = "Discount" if is_discount else "Paid (Already Received)"
+                
+                # Format paid amount based on currency
+                paid_amt = parent_group['paid_amount']
                 if currency.lower() == "twd":
                     paid_display = f"-NT${paid_amt * default_rate:.0f}"
                 else:
@@ -630,7 +503,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                         layout='horizontal',
                         margin='md',
                         contents=[
-                            TextComponent(text="Discount", flex=4, size='sm', color='#1DB446'),
+                            TextComponent(text=label_text, flex=4, size='sm', color='#1DB446'),
                             TextComponent(text=paid_display, flex=2, align='end', size='sm', color='#1DB446', weight='bold')
                         ]
                     )
@@ -638,25 +511,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                 
             # Parent Date Subtotal
             body_contents.append(SeparatorComponent(margin='sm'))
-            items_total = parent_group['subtotal']  # 當期 items 總額
-            available_credit = parent_group.get('available_credit', 0)
-            has_unpaid_previous = parent_group.get('has_unpaid_previous', False)
-            unpaid_previous_amount = parent_group.get('unpaid_previous_amount', 0)
-            
-            # 計算實際應付金額
-            # 如果有可用 credit (> 0)，從當期總額扣除
-            # 如果上期有未扣完 (< 0)，加到當期總額
-            if not is_discount:
-                if has_unpaid_previous:
-                    # 上期未扣完，加到當期
-                    subtotal = items_total + unpaid_previous_amount
-                elif available_credit > 0:
-                    # 有可用 credit，從當期扣除
-                    subtotal = items_total - available_credit
-                else:
-                    subtotal = items_total
-            else:
-                subtotal = items_total
+            subtotal = parent_group['subtotal']
             
             sub_is_negative = subtotal < -0.005
             is_zero = abs(subtotal) < 0.005
@@ -669,7 +524,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                 sub_val_color = None
 
             if currency.lower() == "twd":
-                sub_disp_val = subtotal * parent_rate
+                sub_disp_val = subtotal * default_rate
                 if abs(sub_disp_val) < 0.5:
                     subtotal_display = "NT$0"
                 else:
@@ -696,8 +551,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     # Footer (Total)
     # Calculate subtotal (sum of all item prices before paid/discount deductions)
     subtotal_raw = 0.0
-    total_credit = 0.0  # 可用的 credit 總額
-    total_unpaid_previous = 0.0  # 上期未扣完總額
+    total_paid = 0.0
     total_discount = 0.0
     
     for bill_data in dates_data.values():
@@ -711,64 +565,39 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                 else:
                     subtotal_raw += price_val
             
-            # Credit/Unpaid from parent item (exclude discount groups)
+            # Paid amount from parent item (exclude discount groups)
             is_discount_group = any("折讓" in item.get("parent_name", "") for item in parent_data.get("items", []))
+            paid_amt = abs(parent_data.get("paid_amount", 0.0))
             
             if not is_discount_group:
-                available_credit = parent_data.get("available_credit", 0)
-                has_unpaid_previous = parent_data.get("has_unpaid_previous", False)
-                unpaid_previous_amount = parent_data.get("unpaid_previous_amount", 0)
-                
-                if has_unpaid_previous:
-                    total_unpaid_previous += unpaid_previous_amount
-                elif available_credit > 0:
-                    total_credit += available_credit
+                total_paid += paid_amt
     
     # Build footer contents
     footer_contents = [SeparatorComponent()]
     
-    # 可用 Credit 總額 (green)
-    if total_credit > 0:
-        if currency.lower() == "twd":
-            credit_display_val = f"-NT${total_credit * default_rate:.0f}"
-        else:
-            credit_display_val = f"-${total_credit:.2f}"
-        
-        footer_contents.append(
-            BoxComponent(
-                layout='horizontal',
-                margin='md',
-                contents=[
-                    TextComponent(text="Credit (可抵扣)", flex=3, size='md', weight='bold'),
-                    TextComponent(text=credit_display_val, flex=3, align='end', size='md', weight='bold', color='#1DB446')
-                ]
-            )
-        )
+    # 總支付金額 (green) - cash paid amount (excluding discount)
+    if currency.lower() == "twd":
+        paid_display_val = f"NT${total_paid * default_rate:.0f}"
+    else:
+        paid_display_val = f"${total_paid:.2f}"
     
-    # 上期未扣完總額 (red warning)
-    if total_unpaid_previous > 0:
-        if currency.lower() == "twd":
-            unpaid_display_val = f"NT${total_unpaid_previous * default_rate:.0f}"
-        else:
-            unpaid_display_val = f"${total_unpaid_previous:.2f}"
-        
-        footer_contents.append(
-            BoxComponent(
-                layout='horizontal',
-                margin='md',
-                contents=[
-                    TextComponent(text="⚠️ 上期未扣完", flex=3, size='md', weight='bold', color='#FF0000'),
-                    TextComponent(text=unpaid_display_val, flex=3, align='end', size='md', weight='bold', color='#FF0000')
-                ]
-            )
+    footer_contents.append(
+        BoxComponent(
+            layout='horizontal',
+            margin='md',
+            contents=[
+                TextComponent(text="總支付金額", flex=3, size='md', weight='bold'),
+                TextComponent(text=paid_display_val, flex=3, align='end', size='md', weight='bold', color='#1DB446')
+            ]
         )
+    )
     
     # 總折讓金額 (green) - only show if there's discount
     if total_discount > 0:
         if currency.lower() == "twd":
-            total_discount_display = f"-NT${total_discount * default_rate:.0f}"
+            total_discount_display = f"NT${total_discount * default_rate:.0f}"
         else:
-            total_discount_display = f"-${total_discount:.2f}"
+            total_discount_display = f"${total_discount:.2f}"
         
         footer_contents.append(
             BoxComponent(
@@ -783,12 +612,28 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     
     footer_contents.append(SeparatorComponent(margin='md'))
     
-    # 計算應付餘額 = items總額 - credit + 上期未扣完 - 折讓
-    final_due = subtotal_raw - total_credit + total_unpaid_previous - total_discount
+    # 已結清金額 (green) - actual paid + discount
+    combined_paid = total_paid + total_discount
+    if combined_paid > 0:
+        if currency.lower() == "twd":
+            total_paid_display = f"NT${combined_paid * default_rate:.0f}"
+        else:
+            total_paid_display = f"${combined_paid:.2f}"
+        
+        footer_contents.append(
+            BoxComponent(
+                layout='horizontal',
+                margin='md',
+                contents=[
+                    TextComponent(text="已結清金額", flex=3, size='lg', weight='bold'),
+                    TextComponent(text=total_paid_display, flex=3, align='end', size='lg', weight='bold', color='#1DB446')
+                ]
+            )
+        )
     
     # 應付餘額 (red, or green if zero/negative)
     if currency.lower() == "twd":
-        tot_disp_val = final_due * default_rate
+        tot_disp_val = total * default_rate
         # 若四捨五入後為 0，強制移除負號
         if round(abs(tot_disp_val)) == 0:
             prefix = ""
@@ -797,16 +642,16 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
         total_display = f"{prefix}NT${abs(tot_disp_val):.0f}"
     else:
         # 若四捨五入後為 0.00，強制移除負號
-        if round(abs(final_due), 2) == 0:
+        if round(abs(total), 2) == 0:
              prefix = ""
         else:
-             prefix = "-" if final_due < 0 else ""
-        total_display = f"{prefix}${abs(final_due):.2f}"
+             prefix = "-" if total < 0 else ""
+        total_display = f"{prefix}${abs(total):.2f}"
     
     # Determine color for Total Due
-    if abs(final_due) < 0.005:  # Effectively zero
+    if abs(total) < 0.005:  # Effectively zero
         total_color = None  # Default grey/black
-    elif final_due < 0:
+    elif total < 0:
         total_color = '#1DB446' # Green for credit balance
     else:
         total_color = '#FF4B4B' # Red for due amount
@@ -842,9 +687,6 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
     is_group_chat: Whether the request originated from a group chat
     """
     try:
-        # 🟢 清除已付款 subitems 緩存，確保獲取最新數據
-        clear_paid_subitems_cache()
-        
         # ✅ 判斷是否為 today 模式
         is_today_mode = (filter_name == "today")
         
@@ -1335,7 +1177,6 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
             "raw_intl_shipping_rate": raw_intl,
             "parent_cad_paid": _extract_float(parent_cols.get(COL_CAD_PAID, "0")),
             "parent_twd_paid": _extract_float(parent_cols.get(COL_TWD_PAID, "0")),
-            "parent_cad_total": _extract_float(parent_cols.get(COL_CAD_TOTAL, "0")),  # Parent's total CAD receivable
             "parent_rate": rate
         }
     return None
@@ -1345,9 +1186,6 @@ def _bill_worker(destination_id, client_filter, date_val, currency="cad"):
     currency: 'cad' or 'twd' - determines which currency to display
     """
     try:
-        # 🟢 清除已付款 subitems 緩存，確保獲取最新數據
-        clear_paid_subitems_cache()
-        
         results = fetch_items_by_bill_date(date_val)
         if not results:
             line_bot_api.push_message(destination_id, TextSendMessage(text=f"📅 {date_val} 沒有找到任何出帳項目。"))
