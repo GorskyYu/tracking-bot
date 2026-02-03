@@ -397,6 +397,13 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
             bill_date_group["parent_dates"][parent_date]["subtotal"] -= available_credit
             client_data["total"] -= available_credit
 
+        parent_group = bill_date_group["parent_dates"][parent_date]
+        parent_group["items"].append(item)
+        parent_group["subtotal"] += item["price_val"]
+        client_data["total"] += item["price_val"]
+
+    return raw_clients
+
 def _create_item_row(item, currency="cad"):
     """Creates a vertical box component for a single item row.
     currency: 'cad' or 'twd' - determines which currency to display
