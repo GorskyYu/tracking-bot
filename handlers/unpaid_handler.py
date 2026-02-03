@@ -659,6 +659,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     subtotal_raw = 0.0
     total_paid = 0.0
     total_discount = 0.0
+    footer_contents = []
 
     for bill_data in dates_data.values():
         for parent_data in bill_data.get("parent_dates", {}).values():
