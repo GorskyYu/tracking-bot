@@ -209,6 +209,76 @@ def fetch_unpaid_items_globally():
                  
     return items_found
 
+
+# Global cache for paid subitems total to avoid repeated API calls within the same request
+_paid_subitems_cache = {}
+
+def clear_paid_subitems_cache():
+    global _paid_subitems_cache
+    _paid_subitems_cache = {}
+
+def _fetch_paid_subitems_total(parent_id, subitem_board_id):
+    """
+    Fetches the sum of '加幣應收' (COL_PRICE) for all subitems under a parent 
+    that have a status in PAID_STATUSES.
+    """
+    # Check cache first
+    cache_key = f"{subitem_board_id}_{parent_id}"
+    if cache_key in _paid_subitems_cache:
+        return _paid_subitems_cache[cache_key]
+
+    price_col_id = _fetch_col_id_by_title(subitem_board_id, COL_PRICE)
+    status_col_id = _fetch_col_id_by_title(subitem_board_id, COL_STATUS)
+    
+    if not price_col_id or not status_col_id:
+        return 0.0
+
+    # Query to get all subitems of the parent
+    # Note: Mondays API doesn't easily let us query "subitems of parent X with status Y" directly and efficiently 
+    # without retrieving all subitems or using complex cursors if the list is huge.
+    # However, since we usually process items that we just found, we might assume the volume isn't massive per parent.
+    # But optimal way: search items by parent_item column? Monday doesn't support that easily on subitems board.
+    # We must query the subitems board. 
+    # Strategy: Use items_page_by_column_values is not possible for "parent_item_id".
+    
+    # Alternative: Query the Parent Item to get its subitems details.
+    query = """
+    query ($item_id: [ID!]) {
+        items (ids: $item_id) {
+            subitems {
+                id
+                column_values {
+                    id
+                    text
+                    ... on FormulaValue { display_value }
+                    column { title }
+                }
+            }
+        }
+    }
+    """
+    res = _monday_request(query, {"item_id": [int(parent_id)]})
+    
+    total_paid_subitems = 0.0
+    
+    if res and "data" in res and res["data"]["items"]:
+        parent = res["data"]["items"][0]
+        if parent and "subitems" in parent and parent["subitems"]:
+            for sub in parent["subitems"]:
+                # Parse columns
+                cols = _map_column_values(sub.get("column_values", []))
+                
+                # Check Status
+                status = cols.get(COL_STATUS, "")
+                if status in PAID_STATUSES:
+                    # Add Price
+                    price = _extract_float(cols.get(COL_PRICE, "0"))
+                    total_paid_subitems += price
+    
+    # Store in cache
+    _paid_subitems_cache[cache_key] = total_paid_subitems
+    return total_paid_subitems
+
 def _resolve_client_name(name):
     """Resolve client name using manual alias mapping."""
     clean = name.strip()
@@ -299,21 +369,33 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
             if rate <= 0: rate = 1.0
             total_paid_cad = item.get("parent_cad_paid", 0) + (item.get("parent_twd_paid", 0) / rate)
             
+            # 🟢 New Logic: Calculate Available Credit based on Paid Subitems
+            subitem_board_id = item.get("board_id")
+            parent_id = item.get("parent_id")
+            
+            # Fetch Sum of Prices of Subitems already marked as PAID
+            paid_subitems_total = _fetch_paid_subitems_total(parent_id, subitem_board_id)
+            
+            # Credit = Parent Paid (Wallet) - Spent on Paid Items
+            # If Positive: We have money left to pay for current items.
+            # If Negative: We are in deficit from previous items.
+            available_credit = total_paid_cad - paid_subitems_total
+
             bill_date_group["parent_dates"][parent_date] = {
-                "items": [], 
+                "items": [],
                 "subtotal": 0.0,
-                "paid_amount": total_paid_cad # 該筆貨物已付總額 (CAD)
+                "paid_amount": total_paid_cad, # Original Parent Paid
+                "available_credit": available_credit # Calculated Credit/Deficit
             }
-            # 預扣除實收
-            bill_date_group["parent_dates"][parent_date]["subtotal"] -= total_paid_cad
-            client_data["total"] -= total_paid_cad
-        
-        parent_group = bill_date_group["parent_dates"][parent_date]
-        parent_group["items"].append(item)
-        parent_group["subtotal"] += item["price_val"]
-        client_data["total"] += item["price_val"]
-        
-    return raw_clients
+            
+            # Apply Credit/Deficit to the running totals
+            # If Credit > 0: Reduces the bill (Subtotal decreases)
+            # If Credit < 0 (Deficit): Increases the bill (Subtotal increases)
+            # Mathematical ops: Subtotal - Credit
+            # Ex: Subtotal 100, Credit 20 -> Net 80.
+            # Ex: Subtotal 100, Deficit -20 (Credit is -20). 100 - (-20) = 120.
+            bill_date_group["parent_dates"][parent_date]["subtotal"] -= available_credit
+            client_data["total"] -= available_credit
 
 def _create_item_row(item, currency="cad"):
     """Creates a vertical box component for a single item row.
@@ -485,37 +567,54 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             for item in parent_group["items"]:
                 body_contents.append(_create_item_row(item, currency))
                 
-            # Paid amount for this parent section (if any)
-            if parent_group["paid_amount"] != 0:
-                # 檢查該組包裹中是否包含「折讓」母項目
-                is_discount = any("折讓" in item.get("parent_name", "") for item in parent_group["items"])
-                label_text = "Discount" if is_discount else "Paid (Already Received)"
-                
-                # Format paid amount based on currency
-                paid_amt = parent_group['paid_amount']
+            # 🟢 Check for Available Credit or Previous Deficit
+            available_credit = parent_group.get("available_credit", 0.0)
+            
+            # Case 1: Positive Credit (We have extra money from parent payment)
+            if available_credit > 0.005:
                 if currency.lower() == "twd":
-                    paid_display = f"-NT${paid_amt * default_rate:.0f}"
+                    credit_disp = f"-NT${available_credit * default_rate:.0f}"
                 else:
-                    paid_display = f"-${paid_amt:.2f}"
-
+                    credit_disp = f"-${available_credit:.2f}"
+                
                 body_contents.append(
                     BoxComponent(
                         layout='horizontal',
                         margin='md',
                         contents=[
-                            TextComponent(text=label_text, flex=4, size='sm', color='#1DB446'),
-                            TextComponent(text=paid_display, flex=2, align='end', size='sm', color='#1DB446', weight='bold')
+                            TextComponent(text="Credit (可抵扣)", flex=4, size='sm', color='#1DB446'),
+                            TextComponent(text=credit_disp, flex=2, align='end', size='sm', color='#1DB446', weight='bold')
                         ]
                     )
                 )
+            
+            # Case 2: Negative Credit (Deficit / Unpaid Previous)
+            elif available_credit < -0.005:
+                # Note: Deficit increases the bill, so it is a positive number addition
+                deficit_val = abs(available_credit)
+                if currency.lower() == "twd":
+                    deficit_disp = f"NT${deficit_val * default_rate:.0f}"
+                else:
+                    deficit_disp = f"${deficit_val:.2f}"
                 
+                body_contents.append(
+                    BoxComponent(
+                        layout='horizontal',
+                        margin='md',
+                        contents=[
+                            TextComponent(text="⚠️ 上期未扣完", flex=4, size='sm', color='#ff3333'),
+                            TextComponent(text=deficit_disp, flex=2, align='end', size='sm', color='#ff3333', weight='bold')
+                        ]
+                    )
+                )
+
             # Parent Date Subtotal
             body_contents.append(SeparatorComponent(margin='sm'))
             subtotal = parent_group['subtotal']
-            
+
             sub_is_negative = subtotal < -0.005
             is_zero = abs(subtotal) < 0.005
-            
+
             if is_zero:
                 sub_val_color = None
             elif sub_is_negative:
@@ -544,7 +643,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                     contents=[
                         TextComponent(text="Subtotal", flex=4, size='sm', color='#555555'),
                         TextComponent(text=subtotal_display, flex=2, align='end', size='sm', weight='bold', color=sub_val_color)
-                    ]
+                     ]
                 )
             )
 
@@ -553,7 +652,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     subtotal_raw = 0.0
     total_paid = 0.0
     total_discount = 0.0
-    
+
     for bill_data in dates_data.values():
         for parent_data in bill_data.get("parent_dates", {}).values():
             # Sum up item prices for subtotal
@@ -564,16 +663,13 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                     total_discount += abs(price_val)
                 else:
                     subtotal_raw += price_val
-            
-            # Paid amount from parent item (exclude discount groups)
-            is_discount_group = any("折讓" in item.get("parent_name", "") for item in parent_data.get("items", []))
-            paid_amt = abs(parent_data.get("paid_amount", 0.0))
-            
-            if not is_discount_group:
-                total_paid += paid_amt
-    
-    # Build footer contents
-    footer_contents = [SeparatorComponent()]
+
+            # Paid calculation logic update:
+            # Only sum up the "Available Credit" if it is positive (meaning it covered some cost).
+            # Do NOT sum "Previous Deficit" as Paid.
+            available_credit = parent_data.get("available_credit", 0.0)
+            if available_credit > 0:
+                total_paid += available_credit
     
     # 總支付金額 (green) - cash paid amount (excluding discount)
     if currency.lower() == "twd":
@@ -686,6 +782,7 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
     filter_date: Optional YYMMDD string to filter by specific date
     is_group_chat: Whether the request originated from a group chat
     """
+    clear_paid_subitems_cache()
     try:
         # ✅ 判斷是否為 today 模式
         is_today_mode = (filter_name == "today")
@@ -1185,6 +1282,7 @@ def _bill_worker(destination_id, client_filter, date_val, currency="cad"):
     """查看帳單的背景執行程序
     currency: 'cad' or 'twd' - determines which currency to display
     """
+    clear_paid_subitems_cache()
     try:
         results = fetch_items_by_bill_date(date_val)
         if not results:
