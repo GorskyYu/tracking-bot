@@ -40,7 +40,7 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     return gspread.authorize(creds)
 
-def _ace_collect_today_box_ids(sheet_url: str) -> list[str]:
+def _ace_collect_today_box_ids(sheet_url: str, mark_red_line: bool = False) -> list[str]:
     """
     讀取指定 Google Sheet（使用 service account），找出欄 A 等於「今天」的列，
     回傳所有該列欄 B（Box ID）的清單，但【同列的欄 C（寄件人）也必須非空】。
@@ -48,6 +48,7 @@ def _ace_collect_today_box_ids(sheet_url: str) -> list[str]:
     - 欄 A：日期（可能是顯示文字或原始值，使用 dateutil.parse 盡量解析）
     - 欄 B：Box ID
     - 欄 C：寄件人（必須非空才收集）
+    - mark_red_line: 若為 True，會在當日最後一筆出貨的下一行（若是空白行）標註紅色背景
     """
     gs = get_gspread_client()
     # 預設取第一個工作表（sheet1）。若你的 ACE sheet 不是第一個，可以改開特定 title。
@@ -59,6 +60,8 @@ def _ace_collect_today_box_ids(sheet_url: str) -> list[str]:
     today_local = datetime.now(tz).date()
 
     box_ids: list[str] = []
+    last_match_row_idx = -1
+
     # 假設第一列是表頭，從第二列開始掃描；若無表頭可改成 enumerate(rows, start=1)
     for i, row in enumerate(rows[1:], start=2):
         # row 至少要有 A、B、C 三欄
@@ -82,6 +85,31 @@ def _ace_collect_today_box_ids(sheet_url: str) -> list[str]:
         # 日期比對（以「同一天」為準，不含時間）
         if d == today_local and col_b and col_c:
             box_ids.append(col_b)
+            last_match_row_idx = i
+
+    # 若需要標註紅線，且有找到今天的貨
+    if mark_red_line and last_match_row_idx > 0:
+        target_row = last_match_row_idx + 1
+        is_blank = False
+        
+        # 檢查 target_row 是否為空白行
+        # rows 是 0-based，target_row 是 1-based。target_row 對應 rows index 為 target_row - 1
+        # 但 get_all_values() 可能沒抓到最後的空行，所以若 index 超出範圍也視為空白
+        if (target_row - 1) >= len(rows):
+            is_blank = True
+        else:
+            # 檢查該列是否所有欄位都是空字串
+            target_list = rows[target_row - 1]
+            if not any(col.strip() for col in target_list):
+                is_blank = True
+        
+        if is_blank:
+            try:
+                # 將該列（A~Z）背景設為紅色
+                ws.format(f"A{target_row}:Z{target_row}", {"backgroundColor": {"red": 1.0, "green": 0.0, "blue": 0.0}})
+                log.info(f"[ACE Sheet] Marked red separator at row {target_row}")
+            except Exception as e:
+                log.error(f"[ACE Sheet] Failed to mark red separator: {e}")
 
     # 去重（保留首次出現的順序）
     seen = set()
@@ -138,7 +166,8 @@ def push_ace_today_shipments(*, force: bool = False, reply_token: str | None = N
             return
 
     try:
-        ids = _ace_collect_today_box_ids(ACE_SHEET_URL)
+        # 在正式排程（非手動 force）時，順便將今日最後一列的下一行標註紅色
+        ids = _ace_collect_today_box_ids(ACE_SHEET_URL, mark_red_line=(not force))
 
         # 組出訊息
         if ids:
