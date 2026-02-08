@@ -85,7 +85,7 @@ class MondaySyncService:
 
     def run_sync(self, full_data, pdf_bytes, original_filename, redis_client, group_id):
         """
-        整合所有步驟的公開入口方法 - 已整合海運判定、加拿大散客標籤與環境變數
+        整合所有步驟的公開入口方法 - 已整合海運判定、加拿大散客標籤、加境內直寄與環境變數
         """
         try:
             # 1. 處理參考編號
@@ -114,14 +114,32 @@ class MondaySyncService:
             elif (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
                 adj_name, adj_client = "Chia-Chi Ku", "Vicky"
 
+            # --- 🟢 收件人判定：決定是否為加境內直寄 ---
+            # Taiwan-bound recipients (will use air/sea boards)
+            TAIWAN_RECIPIENTS = {"yves lai", "richard li", "tom gorsky"}
+            receiver_name = (receiver.get("name") or "").strip().lower()
+            
+            # Check if recipient is a Taiwan-bound recipient
+            is_taiwan_bound = any(tw_name in receiver_name for tw_name in TAIWAN_RECIPIENTS)
+            
             # --- 🟢 海運邏輯判定 (使用 Heroku 環境變數) ---
             is_sea = adj_client.lower().endswith(" sea")
-            if is_sea:
+            
+            # Route to appropriate board based on recipient and shipping type
+            if not is_taiwan_bound:
+                # Canadian Domestic Shipping - recipient is within Canada
+                target_parent_board_id = 8082569538  # Canadian Domestic Shipping parent board
+                target_subitem_board_id = 8082569581  # Canadian Domestic Shipping subitem board
+                is_domestic = True
+                log.info(f"[PDF→Monday] Routing to Canadian Domestic board (recipient: {receiver_name})")
+            elif is_sea:
                 target_parent_board_id = os.getenv('SEA_PARENT_BOARD_ID')
                 target_subitem_board_id = os.getenv('SEA_BOARD_ID')
+                is_domestic = False
             else:
                 target_parent_board_id = os.getenv('AIR_PARENT_BOARD_ID')
                 target_subitem_board_id = os.getenv('AIR_BOARD_ID')
+                is_domestic = False
 
             today = datetime.now().strftime("%Y%m%d")
             parent_name = f"{today} {adj_client} - {adj_name}"

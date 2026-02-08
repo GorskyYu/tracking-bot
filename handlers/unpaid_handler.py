@@ -36,7 +36,8 @@ CLIENT_ALIASES = {
     "Yumi - Shu-Yen Liu": "Yumi - Shu-Yen (Yumi) Liu"
 }
 
-TARGET_BOARD_IDS = [4814336467, 8783157722]
+TARGET_BOARD_IDS = [4814336467, 8783157722, 8082569538]  # Added 8082569538 for Canadian Domestic Shipping
+DOMESTIC_BOARD_ID = 8082569538  # Canadian Domestic Shipping parent board
 TARGET_STATUSES = ["溫哥華收款", "未收款出貨", "台中收款"]
 PAID_STATUSES = ["已收款出貨", "核實訂單", "已完成"]
 
@@ -411,6 +412,9 @@ def _create_item_row(item, currency="cad"):
     # 折讓案顯示母項目全名，其餘顯示子項目名
     parent_name = item.get("parent_name", "N/A")
     sub_name = item.get("sub_name", "").strip()
+    
+    # Check if this is a domestic shipping item
+    is_domestic = item.get("is_domestic", False)
 
     # 判斷是否為「折讓」特例路徑
     is_discount_path = "折讓" in parent_name
@@ -439,12 +443,13 @@ def _create_item_row(item, currency="cad"):
     
     if is_discount_path:
         # ─── 折讓特例路徑 ───
-        # 1. 第一行：顯示母項目全名 + 金額
+        # 1. 第一行：顯示母項目全名 + 金額 (add domestic indicator if applicable)
+        display_parent = f"{parent_name} (加境內)" if is_domestic else parent_name
         row_contents.append(
             BoxComponent(
                 layout='horizontal',
                 contents=[
-                    TextComponent(text=parent_name, flex=4, size='sm', wrap=True, weight='bold'),
+                    TextComponent(text=display_parent, flex=4, size='sm', wrap=True, weight='bold'),
                     TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold', color=price_color)
                 ]
             )
@@ -461,12 +466,13 @@ def _create_item_row(item, currency="cad"):
             )
     else:    
         # ─── 原本路徑 (一般包裹) ───
-        # 1. 第一行：顯示原本的子項目名 (單號) + 金額
+        # 1. 第一行：顯示原本的子項目名 (單號) + 金額, add domestic indicator if applicable
+        display_sub = f"{sub_name} (加境內)" if (is_domestic and sub_name) else (sub_name if sub_name else "N/A")
         row_contents.append(
             BoxComponent(
                 layout='horizontal',
                 contents=[
-                    TextComponent(text=sub_name if sub_name else "N/A", flex=4, size='sm', wrap=True),
+                    TextComponent(text=display_sub, flex=4, size='sm', wrap=True),
                     TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold', color=price_color)
                 ]
             )
@@ -1264,6 +1270,9 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
         # Extract bill_date from subitem columns
         bill_date = subitem_cols.get(COL_BILL_DATE, "").strip()
         
+        # Check if this is from the Canadian Domestic Shipping board
+        is_domestic = (parent_board_id == DOMESTIC_BOARD_ID)
+        
         return {
             "id": item["id"],
             "parent_id": parent_item["id"],
@@ -1282,7 +1291,8 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
             "raw_intl_shipping_rate": raw_intl,
             "parent_cad_paid": _extract_float(parent_cols.get(COL_CAD_PAID, "0")),
             "parent_twd_paid": _extract_float(parent_cols.get(COL_TWD_PAID, "0")),
-            "parent_rate": rate
+            "parent_rate": rate,
+            "is_domestic": is_domestic
         }
     return None
 

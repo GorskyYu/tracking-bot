@@ -26,6 +26,7 @@ SUBITEM_BOARD_MAPPING = {
     8783157722: 8783157868,
     4815120249: 4815120249, # Placeholder 4815120355
     8082685182: 8082685182, # Placeholder 8082685244
+    8082569538: 8082569581, # Canadian Domestic Shipping
 }
 
 def infer_flow_by_tracking(tracking_number: str) -> Optional[str]:
