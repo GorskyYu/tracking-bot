@@ -344,6 +344,11 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
              if filter_name.lower() not in canonical_name.lower(): 
                  continue
 
+        # Check domestic status and adjust parent_date if needed (to differentiate in Bill)
+        is_domestic = item.get("is_domestic", False)
+        if is_domestic:
+             parent_date = f"{parent_date} (加境內)"
+
         if canonical_name not in raw_clients:
             raw_clients[canonical_name] = {
                 "display_name": canonical_name,
@@ -443,13 +448,12 @@ def _create_item_row(item, currency="cad"):
     
     if is_discount_path:
         # ─── 折讓特例路徑 ───
-        # 1. 第一行：顯示母項目全名 + 金額 (add domestic indicator if applicable)
-        display_parent = f"{parent_name} (加境內)" if is_domestic else parent_name
+        # 1. 第一行：顯示母項目全名 + 金額
         row_contents.append(
             BoxComponent(
                 layout='horizontal',
                 contents=[
-                    TextComponent(text=display_parent, flex=4, size='sm', wrap=True, weight='bold'),
+                    TextComponent(text=parent_name, flex=4, size='sm', wrap=True, weight='bold'),
                     TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold', color=price_color)
                 ]
             )
@@ -466,13 +470,12 @@ def _create_item_row(item, currency="cad"):
             )
     else:    
         # ─── 原本路徑 (一般包裹) ───
-        # 1. 第一行：顯示原本的子項目名 (單號) + 金額, add domestic indicator if applicable
-        display_sub = f"{sub_name} (加境內)" if (is_domestic and sub_name) else (sub_name if sub_name else "N/A")
+        # 1. 第一行：顯示原本的子項目名 (單號) + 金額
         row_contents.append(
             BoxComponent(
                 layout='horizontal',
                 contents=[
-                    TextComponent(text=display_sub, flex=4, size='sm', wrap=True),
+                    TextComponent(text=sub_name if sub_name else "N/A", flex=4, size='sm', wrap=True),
                     TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold', color=price_color)
                 ]
             )
