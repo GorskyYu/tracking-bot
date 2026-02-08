@@ -1256,8 +1256,11 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
     dim_val = _get_column_value(COL_DIMENSION, sources)
     weight_val = _get_column_value(COL_WEIGHT, sources)
 
-    # ✅ 沿用折讓特例或尺寸齊全邏輯
-    if ("折讓" in parent_name) or (dim_val and dim_val.strip() and weight_val and weight_val.strip()):
+    # Check if this is from the Canadian Domestic Shipping board
+    is_domestic = (parent_board_id == DOMESTIC_BOARD_ID)
+
+    # ✅ 沿用折讓特例或尺寸齊全邏輯 (加境內直寄無需檢查尺寸重量)
+    if ("折讓" in parent_name) or is_domestic or (dim_val and dim_val.strip() and weight_val and weight_val.strip()):
         rate = _extract_float(parent_cols.get(COL_EXCHANGE, "1"))
         if rate <= 0: rate = 1.0
         
@@ -1269,9 +1272,6 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
         
         # Extract bill_date from subitem columns
         bill_date = subitem_cols.get(COL_BILL_DATE, "").strip()
-        
-        # Check if this is from the Canadian Domestic Shipping board
-        is_domestic = (parent_board_id == DOMESTIC_BOARD_ID)
         
         return {
             "id": item["id"],
