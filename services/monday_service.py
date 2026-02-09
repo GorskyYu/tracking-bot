@@ -232,6 +232,29 @@ class MondaySyncService:
             """
             self._post_with_backoff(self.api_url, {"query": set_type_q})
 
+            # --- 8. 🟢 加境內：根據 PDF 內容自動設定境內物流 (Fedex / UPS) ---
+            if is_domestic:
+                carrier = (full_data.get("carrier") or "").strip()
+                carrier_label = ""
+                if carrier.upper() == "UPS":
+                    carrier_label = "UPS"
+                elif carrier.upper() == "FEDEX":
+                    carrier_label = "Fedex"
+                
+                if carrier_label:
+                    set_carrier_q = f"""
+                    mutation {{
+                      change_column_value(
+                        item_id: {parent_id},
+                        board_id: {target_parent_board_id},
+                        column_id: "status_1_mkkc5pa0",
+                        value: "{{\\"label\\":\\"{carrier_label}\\"}}"
+                      ) {{ id }}
+                    }}
+                    """
+                    self._post_with_backoff(self.api_url, {"query": set_carrier_q})
+                    log.info(f"[PDF→Monday] Domestic carrier set to: {carrier_label}")
+
             log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
             # 同時存入項目 ID 與板塊 ID，用直線 | 隔開
             redis_client.set("global_last_pdf_parent", f"{parent_id}|{target_parent_board_id}", ex=600)
