@@ -53,6 +53,7 @@ from services.line_service import line_push, line_reply, line_push_mention
 from handlers.handlers import (
     handle_soquick_and_ace_shipments,
     handle_ace_shipments,
+    handle_ace_customs_tax,
     handle_soquick_full_notification,
     dispatch_confirmation_notification
 )
@@ -393,6 +394,11 @@ def webhook():
             log.info(f"Requested contents list from Vicky for {tracking_id}")
             continue
                 
+        # 5.5) ACE 海關調稅 / 進口頻繁稅
+        if group_id == ACE_GROUP_ID and "台幣" in text and ("海關調稅" in text or "進口頻繁稅" in text):
+            handle_ace_customs_tax(event)
+            continue
+
         # 6) Soquick "上周六出貨包裹的派件單號" & Ace "出貨單號" blocks
         if (group_id == SOQUICK_GROUP_ID and "上周六出貨包裹的派件單號" in text) or (group_id == ACE_GROUP_ID and "出貨單號" in text and "宅配單號" in text):
             handle_soquick_and_ace_shipments(event)

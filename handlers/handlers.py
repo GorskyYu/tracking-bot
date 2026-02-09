@@ -237,6 +237,162 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
                 line_bot_api.push_message(admin_id, TextSendMessage(text="以下為查無 ACE 試算表寄件人之單號："))
                 line_bot_api.push_message(admin_id, TextSendMessage(text="\n\n".join(unmapped_blocks)))
 
+def handle_ace_customs_tax(event: Dict[str, Any]) -> None:
+    """
+    處理 ACE 群組的「海關調稅」或「進口頻繁稅」訊息。
+    1) 解析每行 box ID + 稅務資訊
+    2) 用 box ID 去日期分頁 (col B) 查寄件人 (col C)
+    3) 去「台灣」分頁 (col B → col N) 查 tracking number
+    4) 若 tracking 是 UPS (1Z 開頭) 或 FedEx (12 位純數字)，用 tracking 取代 box ID；
+       否則保留 box ID 但去掉前三位 ACE
+    5) 按寄件人分流到各群組，未匹配的 fallback 給管理員
+    """
+    raw = event["message"]["text"]
+    log.info(f"[ACE TAX] Processing customs tax message")
+
+    # ── 1. Parse each line ──────────────────────────────────────────────
+    line_re = re.compile(r'^(ACE\d{6}[A-Za-z0-9]+)\s+(.+)$')
+    parsed_lines: List[Dict[str, str]] = []       # {box_id, detail}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = line_re.match(line)
+        if m:
+            parsed_lines.append({"box_id": m.group(1), "detail": m.group(2)})
+
+    if not parsed_lines:
+        log.warning("[ACE TAX] No valid lines parsed")
+        return
+
+    # ── 2. Determine target date from box IDs ──────────────────────────
+    ace_date_match = re.search(r'ACE(\d{6})', raw)
+    if ace_date_match:
+        target_date = ace_date_match.group(1)
+    else:
+        target_date = datetime.fromtimestamp(
+            event["timestamp"] / 1000,
+            tz=timezone(timedelta(hours=8))
+        ).strftime("%y%m%d")
+
+    # ── 3. Open ACE sheet: dated tab + 台灣 tab ───────────────────────
+    from config import ACE_SHEET_URL, EXCLUDED_SENDERS
+    try:
+        gs = get_gspread_client()
+        ss = gs.open_by_url(ACE_SHEET_URL)
+
+        # 3a. Dated tab → box_id ↦ sender
+        worksheets = ss.worksheets()
+        ws = next((w for w in worksheets if w.title == target_date), worksheets[0])
+        log.info(f"[ACE TAX] 使用日期分頁 {ws.title} (target_date={target_date})")
+        rows = ws.get_all_values()[1:]  # skip header
+
+        box_to_sender: Dict[str, str] = {}
+        for row in rows:
+            bid = row[1].strip() if len(row) > 1 else ""
+            sender = row[2].strip() if len(row) > 2 else ""
+            if bid and sender:
+                box_to_sender[bid] = sender
+
+        # 3b. 台灣 tab → box_id ↦ tracking
+        tw_ws = next((w for w in worksheets if w.title == "台灣"), None)
+        box_to_tracking: Dict[str, str] = {}
+        if tw_ws:
+            tw_rows = tw_ws.get_all_values()[1:]
+            for row in tw_rows:
+                bid = row[1].strip() if len(row) > 1 else ""
+                tracking = row[13].strip() if len(row) > 13 else ""
+                if bid and tracking:
+                    box_to_tracking[bid] = tracking
+            log.info(f"[ACE TAX] 台灣分頁載入 {len(box_to_tracking)} 筆 tracking")
+        else:
+            log.warning("[ACE TAX] 找不到「台灣」分頁，將不替換 tracking")
+
+    except Exception as e:
+        log.error(f"[ACE TAX] Sheet lookup failed: {e}")
+        # 出錯時直接把原始訊息 fallback 給管理員
+        for admin_id in ADMIN_USER_IDS:
+            line_bot_api.push_message(admin_id, TextSendMessage(
+                text=f"ACE 海關/頻繁稅 (試算表讀取失敗)：\n{raw}"
+            ))
+        return
+
+    # ── 4. Build display lines & group by sender ──────────────────────
+    def _display_id(box_id: str, tracking: str) -> str:
+        """Decide what identifier to show in the forwarded message."""
+        if tracking.upper().startswith("1Z"):
+            return tracking          # UPS
+        if re.fullmatch(r'\d{12}', tracking):
+            return tracking          # FedEx (12 pure digits)
+        # fallback: strip leading "ACE"
+        return box_id[3:] if box_id.upper().startswith("ACE") else box_id
+
+    # sender ↦ list of display lines
+    vicky: List[str] = []
+    yumi:  List[str] = []
+    iris:  List[str] = []
+    angela: List[str] = []
+    fallback_sender_lines: Dict[str, List[str]] = {}   # sender → lines
+    unmapped_lines: List[str] = []
+
+    for item in parsed_lines:
+        box_id = item["box_id"]
+        detail = item["detail"]
+        tracking = box_to_tracking.get(box_id, "")
+        disp = _display_id(box_id, tracking)
+        display_line = f"{disp} {detail}"
+
+        sender = box_to_sender.get(box_id, "")
+        if not sender:
+            unmapped_lines.append(display_line)
+            continue
+
+        if sender in YVES_NAMES or sender in EXCLUDED_SENDERS:
+            continue   # silently skip
+        elif sender in VICKY_NAMES:
+            vicky.append(display_line)
+        elif sender in YUMI_NAMES:
+            yumi.append(display_line)
+        elif sender in IRIS_NAMES:
+            iris.append(display_line)
+        elif sender in ANGELA_NAMES:
+            angela.append(display_line)
+        else:
+            fallback_sender_lines.setdefault(sender, []).append(display_line)
+
+    # ── 5. Push to groups ─────────────────────────────────────────────
+    def push(group_id: str, lines: List[str]) -> None:
+        if not lines:
+            return
+        text = "\n".join(lines)
+        payload = {"to": group_id, "messages": [{"type": "text", "text": text}]}
+        resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+        log.info(f"[ACE TAX] Pushed {len(lines)} lines to {group_id}: {resp.status_code}")
+
+    push(VICKY_GROUP_ID, vicky)
+    push(YUMI_GROUP_ID, yumi)
+    push(IRIS_GROUP_ID, iris)
+    push(ANGELA_GROUP_ID, angela)
+
+    # ── 6. Fallback to admins ─────────────────────────────────────────
+    if fallback_sender_lines or unmapped_lines:
+        for admin_id in ADMIN_USER_IDS:
+            line_bot_api.push_message(admin_id, TextSendMessage(
+                text="ACE Fallback 海關/頻繁稅："))
+
+            for s_name, s_lines in fallback_sender_lines.items():
+                line_bot_api.push_message(admin_id, TextSendMessage(text=s_name))
+                line_bot_api.push_message(admin_id, TextSendMessage(text="\n".join(s_lines)))
+
+            if unmapped_lines:
+                line_bot_api.push_message(admin_id, TextSendMessage(
+                    text="以下為查無 ACE 試算表寄件人之單號："))
+                line_bot_api.push_message(admin_id, TextSendMessage(
+                    text="\n".join(unmapped_lines)))
+
+    log.info(f"[ACE TAX] Done. vicky={len(vicky)} yumi={len(yumi)} "
+             f"iris={len(iris)} angela={len(angela)} "
+             f"fallback_senders={len(fallback_sender_lines)} unmapped={len(unmapped_lines)}")
 
 def handle_soquick_full_notification(event: Dict[str, Any]) -> None:
     """
