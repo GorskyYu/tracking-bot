@@ -1030,6 +1030,8 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
   例如：paid 260125 Lorant
 • paid [金額] - 錄入實收金額（在群組自動偵測客戶，或使用上次查詢）
   例如：在 Iris 群組輸入 paid 152.99
+• paid [金額] [air|domestic] - 指定分配類別 (空運/境內)
+  例如：paid 400 air 或 paid 400 domestic
 • paid [金額] ntd/twd - 錄入台幣實收（在群組自動偵測客戶）
   例如：paid 1500 ntd
 • paid [金額] ntd/twd [客戶ID] - 錄入實收金額（指定客戶）
@@ -1568,8 +1570,28 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id, group_id=No
     if user_id not in ADMIN_USER_IDS:
         return reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
 
+    # Pre-processing to extract mode (air/domestic)
+    tokens = message_text.strip().split()
+    if len(tokens) < 2: return
+
+    mode = "all"
+    clean_tokens = []
+    
+    # Identify mode and filter tokens
+    for token in tokens:
+        lower_token = token.lower()
+        if lower_token == "air":
+            mode = "air"
+        elif lower_token == "domestic":
+            mode = "domestic"
+        else:
+            clean_tokens.append(token)
+            
+    # Reconstruct text without mode keywords for the regex
+    clean_text = " ".join(clean_tokens)
+
     # 1. 解析指令 (例如：paid 42.41 ntd 或 paid 42.41 ntd Iris)
-    match = re.match(r"^(paid|Paid)\s*(\d+(?:\.\d+)?)\s*(ntd|twd|cad)?\s*(.+)?$", message_text.strip(), re.IGNORECASE)
+    match = re.match(r"^(paid|Paid)\s*(\d+(?:\.\d+)?)\s*(ntd|twd|cad)?\s*(.+)?$", clean_text, re.IGNORECASE)
     if not match:
         return
     
@@ -1648,6 +1670,14 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id, group_id=No
                     sample_item = items_list[0]
                     parent_id = sample_item.get("parent_id")
                     parent_board_id = sample_item.get("parent_board_id")
+                    
+                    # Check mode filter
+                    is_domestic_board = (parent_board_id == DOMESTIC_BOARD_ID)
+                    if mode == "air" and is_domestic_board:
+                        continue # Skip domestic when only paying air
+                    if mode == "domestic" and not is_domestic_board:
+                        continue # Skip air when only paying domestic
+
                     subitem_board_id = sample_item.get("board_id")
                     rate = sample_item.get("parent_rate", 1.0)
                     
