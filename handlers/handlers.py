@@ -334,6 +334,13 @@ def handle_ace_customs_tax(event: Dict[str, Any]) -> None:
         # fallback: strip leading "ACE"
         return box_id[3:] if box_id.upper().startswith("ACE") else box_id
 
+    # Operator English names → group (takes priority over EXCLUDED_SENDERS)
+    OPERATOR_TO_GROUP = {
+        "Vicky Ku": VICKY_GROUP_ID,
+        "Yumi Liu": YUMI_GROUP_ID,
+        # "Yves Lai" 等留給 YVES skip 邏輯處理
+    }
+
     # sender ↦ list of display lines
     vicky: List[str] = []
     yumi:  List[str] = []
@@ -354,8 +361,23 @@ def handle_ace_customs_tax(event: Dict[str, Any]) -> None:
             unmapped_lines.append(display_line)
             continue
 
+        # 1) Check operator English name mapping first
+        if sender in OPERATOR_TO_GROUP:
+            target = OPERATOR_TO_GROUP[sender]
+            if target == VICKY_GROUP_ID:
+                vicky.append(display_line)
+            elif target == YUMI_GROUP_ID:
+                yumi.append(display_line)
+            elif target == IRIS_GROUP_ID:
+                iris.append(display_line)
+            elif target == ANGELA_GROUP_ID:
+                angela.append(display_line)
+            continue
+
+        # 2) Check YVES skip (Yves Lai, Yves KT Lai, etc.)
         if sender in YVES_NAMES or sender in EXCLUDED_SENDERS:
             continue   # silently skip
+        # 3) Check Chinese name sets
         elif sender in VICKY_NAMES:
             vicky.append(display_line)
         elif sender in YUMI_NAMES:
