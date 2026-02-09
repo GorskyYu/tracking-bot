@@ -202,6 +202,13 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
             matched_recipients = set()
             # 加入 matched_recipients 判定，避免同一收件人重複匹配多行
             for row in rows:
+                # Fix: Verify date in Box ID to prevent matching old data (e.g. 2024 rows)
+                # when falling back to the master sheet.
+                if ace_date_match and len(row) > 1:
+                    box_id = row[1].strip()
+                    if f"ACE{target_date}" not in box_id:
+                        continue
+
                 # Column I (index 8) = 收件人 (recipient)
                 sheet_recipient = row[8].strip() if len(row) > 8 else ""
                 if sheet_recipient in fallback_map and sheet_recipient not in matched_recipients:
