@@ -5,6 +5,7 @@ import requests
 import threading
 import os
 import base64
+import time
 import openai
 from datetime import datetime
 from PIL import Image
@@ -117,14 +118,26 @@ def _handle_unknown_fedex(img, tracking_number, group_id, redis_client, pending_
             }
         }, timeout=10)
 
-        # 4) Store in redis + batch buffer
+        # 4) 等待 Monday automation 完成後，覆蓋加拿大單價為 0
+        time.sleep(8)
+        requests.post("https://api.monday.com/v2", headers=headers, json={
+            "query": mutation,
+            "variables": {
+                "itemId": sub_id,
+                "boardId": air_subitem_board,
+                "columnVals": json.dumps({"numeric9__1": "0"})
+            }
+        }, timeout=10)
+        log.info(f"[BARCODE] Set 加拿大單價=0 for subitem {sub_id}")
+
+        # 5) Store in redis + batch buffer
         redis_client.set(f"last_subitem_for_{group_id}", sub_id, ex=300)
         pending_buffer[group_id].append(tracking_number)
         if group_id not in scheduled_buffer:
             scheduled_buffer.add(group_id)
             threading.Timer(30 * 60, summary_callback, args=[group_id]).start()
 
-        # 5) Notify
+        # 6) Notify
         requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json={
             "to": YVES_USER_ID,
             "messages": [{"type": "text", "text": f"📦 自動建立 {parent_name}\n📋 子項目: {tracking_number}\n📍 {loc}"}]
