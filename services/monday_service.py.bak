@@ -9,17 +9,6 @@ from datetime import datetime
 
 log = logging.getLogger(__name__)
 
-# 定義倉庫的郵遞區號 (移除空白，統一格式)
-WAREHOUSE_ZIPS = {
-    "V6Y0E3", # Ruichao 702-6733 & 6733 Buswell
-    "V6Y1K3", # 185-9040 Blundell
-    "V6X1Z7", # 158-11782 River Rd
-    "V6X0B9"  # 1025-2633 Simpson
-}
-
-# 定義倉庫收件人關鍵字 (Backup Logic)
-WAREHOUSE_NAMES = {"yves", "richard", "tom gorsky", "y&g"}
-
 class MondaySyncService:
     def __init__(self, api_token, gspread_client_func, line_push_func):
         """
@@ -108,13 +97,12 @@ class MondaySyncService:
             all_tracking_numbers = full_data.get("all_tracking_numbers", []) or []
             self._sync_to_google_sheet(ref_no, all_tracking_numbers)
 
-            # 3. 處理名稱與代理人判定 (含 混合式邏輯判定)
+            # 3. 處理名稱與代理人判定
             sender = full_data.get("sender", {}) or {}
             receiver = full_data.get("receiver", {}) or {}
             name = (sender.get("name") or "").strip()
             client_id = (sender.get("client_id") or "").strip()
             
-            # 清理代理人名稱
             temp = re.sub(r"\s*\((?:YUMI|VICKY)\)\s*", " ", name, flags=re.IGNORECASE)
             raw_name = re.sub(r"\s+", " ", temp).strip()
             adj_name = self._adjust_caps(raw_name)
@@ -125,63 +113,33 @@ class MondaySyncService:
                 adj_name, adj_client = "Shu-Yen Liu", "Yumi"
             elif (("Vicky" in adj_name or "Chia-Chi" in adj_name) and "Ku" in adj_name):
                 adj_name, adj_client = "Chia-Chi Ku", "Vicky"
-            # 🟢 Karl Lagerfeld → Yumi (自動歸類)
-            elif re.search(r"karl\s*lagerfeld", name, re.IGNORECASE):
-                adj_name, adj_client = "Shu-Yen Liu", "Yumi"
 
-            # ------------------------------------------------------------------
-            # 🟢 混合式邏輯判定：郵遞區號優先，人名備援
-            # ------------------------------------------------------------------
+            # --- 🟢 收件人判定：決定是否為加境內直寄 ---
+            # Taiwan-bound recipients (will use air/sea boards)
+            TAIWAN_RECIPIENTS = {"yves lai", "richard li", "tom gorsky"}
             receiver_name = (receiver.get("name") or "").strip().lower()
-            raw_zip = (receiver.get("postal_code") or "")
-            clean_zip = re.sub(r"\s+", "", raw_zip).upper() # Normalize to V6X1Z7
-
-            is_taiwan_bound = False
-            decision_reason = ""
-            board_display_name = ""
-
-            # Logic A: 優先檢查郵遞區號
-            if clean_zip and clean_zip in WAREHOUSE_ZIPS:
-                is_taiwan_bound = True
-                decision_reason = f"✅ 郵編吻合 ({clean_zip})"
             
-            # Logic B1: 郵編雖有但不符 (明確指向境內)
-            elif clean_zip and len(clean_zip) >= 3:
-                is_taiwan_bound = False
-                decision_reason = f"✈️ 郵編指向他處 ({clean_zip})"
-
-            # Logic B2: 無郵編，Fallback 檢查人名
-            else:
-                if any(n in receiver_name for n in WAREHOUSE_NAMES):
-                    is_taiwan_bound = True
-                    decision_reason = f"⚠️ 無郵編，依人名判定 ({receiver_name})"
-                else:
-                    is_taiwan_bound = False
-                    decision_reason = "⚠️ 無郵編且非倉庫人名，預設境內"
-
-            # 🟢 海運邏輯 (Client ID Check)
+            # Check if recipient is a Taiwan-bound recipient
+            is_taiwan_bound = any(tw_name in receiver_name for tw_name in TAIWAN_RECIPIENTS)
+            
+            # --- 🟢 海運邏輯判定 (使用 Heroku 環境變數) ---
             is_sea = adj_client.lower().endswith(" sea")
             
-            # 設定目標 Board
-            if is_taiwan_bound:
-                if is_sea:
-                    target_parent_board_id = os.getenv('SEA_PARENT_BOARD_ID')
-                    target_subitem_board_id = os.getenv('SEA_BOARD_ID')
-                    is_domestic = False
-                    board_display_name = "🇹🇼 海運 Sea"
-                else:
-                    target_parent_board_id = os.getenv('AIR_PARENT_BOARD_ID')
-                    target_subitem_board_id = os.getenv('AIR_BOARD_ID')
-                    is_domestic = False
-                    board_display_name = "🇹🇼 空運 Air"
-            else:
-                # Canadian Domestic Shipping
-                target_parent_board_id = 8082569538
-                target_subitem_board_id = 8082569581
+            # Route to appropriate board based on recipient and shipping type
+            if not is_taiwan_bound:
+                # Canadian Domestic Shipping - recipient is within Canada
+                target_parent_board_id = 8082569538  # Canadian Domestic Shipping parent board
+                target_subitem_board_id = 8082569581  # Canadian Domestic Shipping subitem board
                 is_domestic = True
-                board_display_name = "🇨🇦 境內配送 (Domestic)"
-            
-            log.info(f"[PDF→Monday] Routing: {board_display_name} | Reason: {decision_reason}")
+                log.info(f"[PDF→Monday] Routing to Canadian Domestic board (recipient: {receiver_name})")
+            elif is_sea:
+                target_parent_board_id = os.getenv('SEA_PARENT_BOARD_ID')
+                target_subitem_board_id = os.getenv('SEA_BOARD_ID')
+                is_domestic = False
+            else:
+                target_parent_board_id = os.getenv('AIR_PARENT_BOARD_ID')
+                target_subitem_board_id = os.getenv('AIR_BOARD_ID')
+                is_domestic = False
 
             today = datetime.now().strftime("%Y%m%d")
             parent_name = f"{today} {adj_client} - {adj_name}"
@@ -230,6 +188,7 @@ class MondaySyncService:
                     log.error(f"[PDF→Monday] attach PDF failed: {file_resp.status_code} {file_resp.text}")
 
             # 6. 建立子項目與設定初始狀態
+            postal = (receiver.get("postal_code") or "").replace(" ", "").upper()
             for tn in all_tracking_numbers:
                 create_sub_m = f'mutation {{ create_subitem(parent_item_id: {parent_id}, item_name: "{tn}") {{ id }} }}'
                 resp_sub = self._post_with_backoff(self.api_url, {"query": create_sub_m})
@@ -248,16 +207,12 @@ class MondaySyncService:
                 """
                 self._post_with_backoff(self.api_url, {"query": mut_status})
 
-                # 根據郵遞區號設定物流 (針對倉庫進貨自動貼標 Ace/SoQuick)
-                # 使用 clean_zip 判斷
-                if clean_zip.startswith("V6X1Z7"):
+                # 根據郵遞區號設定物流
+                if postal.startswith("V6X1Z7"):
                     self._post_with_backoff(self.api_url, {"query": f'mutation {{ change_column_value(item_id: {sub_id}, board_id: {target_subitem_board_id}, column_id: "status_18__1", value: "{{\\"label\\":\\"Ace\\"}}") {{ id }} }}'})
                     self._post_with_backoff(self.api_url, {"query": f'mutation {{ change_column_value(item_id: {sub_id}, board_id: {target_subitem_board_id}, column_id: "status_19__1", value: "{{\\"label\\":\\"ACE大嘴鳥\\"}}") {{ id }} }}'})
-                elif clean_zip.startswith("V6X0B9") or clean_zip.startswith("V6Y1K3") or clean_zip.startswith("V6Y0E3"): 
-                    # 擴展：把其他倉庫地址也納入 SoQuick 或依據舊邏輯
-                    # 舊邏輯只有 V6X0B9 -> SoQuick
-                    if clean_zip.startswith("V6X0B9"):
-                        self._post_with_backoff(self.api_url, {"query": f'mutation {{ change_column_value(item_id: {sub_id}, board_id: {target_subitem_board_id}, column_id: "status_18__1", value: "{{\\"label\\":\\"SoQuick\\"}}") {{ id }} }}'})
+                elif postal.startswith("V6X0B9"):
+                    self._post_with_backoff(self.api_url, {"query": f'mutation {{ change_column_value(item_id: {sub_id}, board_id: {target_subitem_board_id}, column_id: "status_18__1", value: "{{\\"label\\":\\"SoQuick\\"}}") {{ id }} }}'})
 
             # --- 7. 🟢 客人種類分類 (早期代購 vs 加拿大散客) ---
             is_early = (adj_name == "Shu-Yen Liu" and adj_client == "Yumi") or \
@@ -303,16 +258,7 @@ class MondaySyncService:
             log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
             # 同時存入項目 ID 與板塊 ID，用直線 | 隔開
             redis_client.set("global_last_pdf_parent", f"{parent_id}|{target_parent_board_id}", ex=600)
-            
-            # --- 9. 🟢 發送詳細通知 ---
-            tracking_str = ", ".join(all_tracking_numbers) if all_tracking_numbers else "無單號"
-            msg = (
-                f"📄 PDF 處理完成\n"
-                f"單號: {tracking_str}\n"
-                f"去向: {board_display_name}\n"
-                f"邏輯: {decision_reason}"
-            )
-            self.line_push(self.line_status_group, msg)
+            self.line_push(self.line_status_group, f"[PDF→Monday] Monday sync completed for {parent_name}")
 
         except Exception as e:
             log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
