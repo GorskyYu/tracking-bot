@@ -261,20 +261,6 @@ class MondaySyncService:
                     if clean_zip.startswith("V6X0B9"):
                         self._post_with_backoff(self.api_url, {"query": f'mutation {{ change_column_value(item_id: {sub_id}, board_id: {target_subitem_board_id}, column_id: "status_18__1", value: "{{\\"label\\":\\"SoQuick\\"}}") {{ id }} }}'})
 
-            # --- 6b. 🟢 Karl Lagerfeld: 等 Monday automation 完成後覆蓋加拿大單價為 0 ---
-            if _is_karl_lagerfeld and all_tracking_numbers:
-                import time
-                time.sleep(8)
-                for tn in all_tracking_numbers:
-                    # 用 subitem name 搜尋剛建立的 subitem ID
-                    find_sub_q = f'query {{ items_by_column_values(board_id: {target_subitem_board_id}, column_id: "name", column_value: "{tn}") {{ id }} }}'
-                    sub_resp = self._post_with_backoff(self.api_url, {"query": find_sub_q})
-                    sub_items = (sub_resp.json().get("data", {}) or {}).get("items_by_column_values", []) or []
-                    for si in sub_items:
-                        zero_q = f'mutation {{ change_simple_column_value(item_id: {si["id"]}, board_id: {target_subitem_board_id}, column_id: "numeric9__1", value: "0") {{ id }} }}'
-                        self._post_with_backoff(self.api_url, {"query": zero_q})
-                        log.info(f"[PDF→Monday] Set 加拿大單價=0 for subitem {si['id']}")
-
             # --- 7. 🟢 客人種類分類 (早期代購 vs 加拿大散客) ---
             is_early = (adj_name == "Shu-Yen Liu" and adj_client == "Yumi") or \
                        (adj_name == "Chia-Chi Ku" and adj_client == "Vicky")
