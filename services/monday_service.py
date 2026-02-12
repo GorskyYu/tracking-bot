@@ -104,9 +104,8 @@ class MondaySyncService:
             if ref_no and "-" in ref_no and len(ref_no) > 19:
                 ref_no = ref_no.rsplit('-', 1)[0]
             
-            # 2. 同步 Google Sheet
+            # 2. 提取追蹤號碼 (Google Sheet 同步移至 Monday 建立後)
             all_tracking_numbers = full_data.get("all_tracking_numbers", []) or []
-            self._sync_to_google_sheet(ref_no, all_tracking_numbers)
 
             # 3. 處理名稱與代理人判定 (含 混合式邏輯判定)
             _is_karl_lagerfeld = False  # 追蹤是否為 Karl Lagerfeld 來源
@@ -303,10 +302,19 @@ class MondaySyncService:
                     log.info(f"[PDF→Monday] Domestic carrier set to: {carrier_label}")
 
             log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
-            # 同時存入項目 ID 與板塊 ID，用直線 | 隔開
-            redis_client.set("global_last_pdf_parent", f"{parent_id}|{target_parent_board_id}", ex=600)
+
+            # --- 8.5 🟢 Google Sheet 同步 (在 Monday 建立後執行) ---
+            self._sync_to_google_sheet(ref_no, all_tracking_numbers)
+
+            # 存入項目 ID、板塊 ID、子項目板塊 ID、類型，用直線 | 隔開 (30 分鐘有效)
+            pdf_type = "domestic" if is_domestic else "air"
+            redis_client.set(
+                "global_last_pdf_parent",
+                f"{parent_id}|{target_parent_board_id}|{target_subitem_board_id}|{pdf_type}",
+                ex=1800
+            )
             
-            # --- 9. 🟢 發送詳細通知 ---
+            # --- 9. 🟢 發送詳細通知到狀態群組 ---
             tracking_str = ", ".join(all_tracking_numbers) if all_tracking_numbers else "無單號"
             msg = (
                 f"📄 PDF 處理完成\n"
@@ -316,14 +324,46 @@ class MondaySyncService:
             )
             self.line_push(self.line_status_group, msg)
 
+            # --- 10. 🟢 發送錄入提示到 PDF 群組 ---
+            pdf_group_id = os.getenv("LINE_GROUP_ID_PDF")
+            if pdf_group_id:
+                if is_domestic:
+                    prompt_msg = (
+                        f"📄 PDF 處理完成 ─ {parent_name}\n"
+                        f"🏷 單號: {tracking_str}\n"
+                        f"📍 去向: {board_display_name}\n\n"
+                        f"💡 請在此群組輸入以下格式完成錄入：\n"
+                        f"[加境內支出] [加拿大單價]\n"
+                        f"例如：43.10 2.5\n"
+                        f"⚠️ 如某欄為 0 請輸入 0"
+                    )
+                else:
+                    prompt_msg = (
+                        f"📄 PDF 處理完成 ─ {parent_name}\n"
+                        f"🏷 單號: {tracking_str}\n"
+                        f"📍 去向: {board_display_name}\n\n"
+                        f"💡 請在此群組輸入以下格式完成錄入：\n"
+                        f"[加境內支出] [加拿大單價] [國際單價]\n"
+                        f"例如：43.10 2.5 10\n"
+                        f"⚠️ 如某欄為 0 請輸入 0"
+                    )
+                self.line_push(pdf_group_id, prompt_msg)
+
         except Exception as e:
             log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
             self.line_push(self.line_status_group, f"ERROR [PDF→Monday] {e}")
             
     # 修正：參數增加 board_id
     def update_domestic_expense(self, parent_id, amount, group_id, board_id):
-        """檢查並錄入境內支出金額"""
-        # 1. 查詢該項目的名稱與境內支出
+        """檢查並錄入境內支出金額 (舊版，保留向下相容)"""
+        ok, msg, item_name = self.update_expense_and_rates(
+            parent_id, amount, None, None, board_id, None, True
+        )
+        return ok, msg, item_name
+
+    def update_expense_and_rates(self, parent_id, expense_amount, canada_price, intl_price, board_id, subitem_board_id, is_domestic):
+        """更新境內支出金額及子項目的加拿大單價 / 國際單價"""
+        # 1. 查詢該項目的名稱、境內支出、以及子項目清單
         query = f'''
         query {{
           items (ids: [{parent_id}]) {{
@@ -331,34 +371,55 @@ class MondaySyncService:
             column_values(ids: ["{self.domestic_expense_col}"]) {{
               text
             }}
+            subitems {{
+              id
+            }}
           }}
         }}'''
         try:
             r = self._post_with_backoff(self.api_url, {"query": query})
             res = r.json().get("data", {}).get("items", [])
-            if not res: return False, "找不到項目", ""
+            if not res:
+                return False, "找不到項目", ""
 
-            item_name = res[0].get("name", "Unknown Item")
-            
+            item = res[0]
+            item_name = item.get("name", "Unknown Item")
+
             # 安全檢查：確保 column_values 存在
-            cols = res[0].get("column_values", [])
+            cols = item.get("column_values", [])
             current_val = cols[0].get("text", "") if cols else ""
-            
-            if current_val and current_val.strip():
-                return False, f"欄位已有數值 ({current_val})", item_name
 
-            # 2. 執行更新 (使用傳入的 board_id)
+            if current_val and current_val.strip():
+                return False, f"加境內支出欄位已有數值 ({current_val})", item_name
+
+            # 2. 更新父項目的「加境內支出」
             mutation = f'''
             mutation {{
               change_simple_column_value(
                 item_id: {parent_id},
                 board_id: {board_id},
                 column_id: "{self.domestic_expense_col}",
-                value: "{amount}"
+                value: "{expense_amount}"
               ) {{ id }}
             }}'''
             self._post_with_backoff(self.api_url, {"query": mutation})
-            return True, "成功", item_name # 回傳名稱
+            log.info(f"[EXPENSE] Parent {parent_id} expense updated to {expense_amount}")
+
+            # 3. 更新所有子項目的單價
+            subitems = item.get("subitems", []) or []
+            if subitem_board_id and canada_price is not None:
+                for sub in subitems:
+                    sub_id = sub["id"]
+                    # 加拿大單價 (numeric9__1)
+                    self.change_simple_column_value(subitem_board_id, sub_id, "numeric9__1", str(canada_price))
+                    log.info(f"[EXPENSE] Subitem {sub_id} CA price → {canada_price}")
+
+                    # 國際單價 (numeric5__1) — 僅空運/海運
+                    if not is_domestic and intl_price is not None:
+                        self.change_simple_column_value(subitem_board_id, sub_id, "numeric5__1", str(intl_price))
+                        log.info(f"[EXPENSE] Subitem {sub_id} intl price → {intl_price}")
+
+            return True, "成功", item_name
         except Exception as e:
             log.error(f"[EXPENSE] Update failed: {str(e)}")
             return False, str(e), ""

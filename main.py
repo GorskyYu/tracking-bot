@@ -230,26 +230,73 @@ def webhook():
                 line_push(user_id, "好的，請輸入子項目名稱：")
                 continue
 
-        # --- 金額自動錄入邏輯：僅限 PDF Scanning 群組觸發 ---
+        # --- 費用錄入邏輯：僅限 PDF Scanning 群組觸發 ---
         if group_id == PDF_GROUP_ID:
-            # 檢查是否為純數字金額 (如 43.10)
-            if re.match(r'^\d+(\.\d{1,2})?$', text):
-                # 從全局 Key 抓取最後一次上傳的 PDF 項目 ID
-                redis_val = r.get("global_last_pdf_parent")
+            redis_val = r.get("global_last_pdf_parent")
+            # 檢查是否有待錄入的 PDF 項目 且 訊息看起來像數字輸入
+            if redis_val and "|" in redis_val and re.match(r'^\d+(?:\.\d+)?(?:[\s,;]+\d+(?:\.\d+)?)*$', text.strip()):
+                parts_redis = redis_val.split("|")
+                if len(parts_redis) >= 4:
+                    last_pid, last_bid, last_sub_bid, pdf_type = parts_redis[0], parts_redis[1], parts_redis[2], parts_redis[3]
+                    is_domestic_pdf = (pdf_type == "domestic")
 
-                if redis_val and "|" in redis_val:
-                    # 拆分出項目 ID 與板塊 ID
-                    last_pid, last_bid = redis_val.split("|")
+                    # 自動偵測 delimiter (空格 / 逗號 / 分號) 並拆分數值
+                    raw_values = re.split(r'[\s,;]+', text.strip())
+                    try:
+                        nums = [float(v) for v in raw_values if v]
+                    except ValueError:
+                        nums = []
 
-                    # 呼叫時多傳入板塊 ID
-                    ok, msg, item_name = monday_service.update_domestic_expense(last_pid, text, group_id, last_bid)
+                    # ── 境內 PDF：需要 2 個數值 ──
+                    if is_domestic_pdf:
+                        if len(nums) == 2:
+                            expense, canada_price = nums
+                            ok, msg, item_name = monday_service.update_expense_and_rates(
+                                last_pid, expense, canada_price, None, last_bid, last_sub_bid, True
+                            )
+                            if ok:
+                                line_push(group_id,
+                                    f"✅ 錄入成功\n"
+                                    f"📌 項目: {item_name}\n"
+                                    f"💰 加境內支出: ${expense}\n"
+                                    f"🇨🇦 加拿大單價: ${canada_price}")
+                                r.delete("global_last_pdf_parent")
+                            else:
+                                line_push(group_id, f"❌ 錄入失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
+                            continue
+                        else:
+                            line_push(group_id,
+                                f"❌ 格式錯誤！境內 PDF 請輸入 2 個數值：\n"
+                                f"[加境內支出] [加拿大單價]\n"
+                                f"例如：43.10 2.5\n"
+                                f"⚠️ 如某欄為 0 請輸入 0")
+                            continue
 
-                    if ok:
-                        line_push(group_id, f"✅ 已成功登記境內支出: ${text}\n📌 項目: {item_name}")
-                        r.delete("global_last_pdf_parent")
+                    # ── 空運 / 海運 PDF：需要 3 個數值 ──
                     else:
-                        line_push(group_id, f"❌ 登記失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
-                    continue
+                        if len(nums) == 3:
+                            expense, canada_price, intl_price = nums
+                            ok, msg, item_name = monday_service.update_expense_and_rates(
+                                last_pid, expense, canada_price, intl_price, last_bid, last_sub_bid, False
+                            )
+                            if ok:
+                                line_push(group_id,
+                                    f"✅ 錄入成功\n"
+                                    f"📌 項目: {item_name}\n"
+                                    f"💰 加境內支出: ${expense}\n"
+                                    f"🇨🇦 加拿大單價: ${canada_price}\n"
+                                    f"🌍 國際單價: ${intl_price}")
+                                r.delete("global_last_pdf_parent")
+                            else:
+                                line_push(group_id, f"❌ 錄入失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
+                            continue
+                        else:
+                            line_push(group_id,
+                                f"❌ 格式錯誤！空運/海運 PDF 請輸入 3 個數值：\n"
+                                f"[加境內支出] [加拿大單價] [國際單價]\n"
+                                f"例如：43.10 2.5 10\n"
+                                f"⚠️ 如某欄為 0 請輸入 0")
+                            continue
 
 
         # ─── 查看帳單觸發入口 ───
