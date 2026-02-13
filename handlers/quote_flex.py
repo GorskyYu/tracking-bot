@@ -352,7 +352,7 @@ def build_result_flex(services: List[ServiceQuote], mode: str,
             rows.append(_detail_row("附加費", f"${svc.surcharges:.2f}"))
         if svc.tax > 0:
             rows.append(_detail_row("稅金", f"${svc.tax:.2f}"))
-        rows.append(_detail_row("ETA", str(svc.eta)))
+        rows.append(_detail_row("ETA", _short_eta(str(svc.eta))))
 
         svc_box = {
             "type": "box", "layout": "vertical",
