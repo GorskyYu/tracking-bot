@@ -111,7 +111,7 @@ def build_confirm_flex(parsed: ParsedInput) -> dict:
                          "color": "#dc3545",
                          "action": {"type": "message",
                                     "label": "錯誤",
-                                    "text": "報價確認錯誤"}},
+                                    "text": "報價錯誤"}},
                     ],
                 },
                 {"type": "button", "height": "sm", "style": "secondary",

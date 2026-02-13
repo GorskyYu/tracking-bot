@@ -205,7 +205,7 @@ def handle_quote_message(event: dict, user_id: str,
     if state == "parsed":
         if text == "報價確認正確":
             return _on_confirmed(r, user_id, target_id, profile)
-        if text == "報價確認錯誤":
+        if text == "報價錯誤":
             return _on_rejected(r, user_id, target_id)
         if text == "報價重新輸入":
             _clear_session(r, user_id)
