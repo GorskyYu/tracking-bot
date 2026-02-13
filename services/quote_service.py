@@ -10,6 +10,7 @@ import math
 import json
 import logging
 import base64
+from datetime import datetime, timedelta
 import requests
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Optional
@@ -548,7 +549,12 @@ def build_quote_text(mode: str,
     eta = cheapest.eta
     if mode == "加台空運":
         lines.append(f"🕒若今日寄件，預計 {eta} 抵達國際空運倉")
-        lines.append("🕒台灣投遞 ETA：約抵達空運倉後 3～8 個工作日")
+        # Calculate arrival range (ETA + 3~8 business days)
+        eta_range = _calc_arrival_range(eta)
+        if eta_range:
+            lines.append(f"🕒台灣投遞 ETA：{eta_range[0]} ～ {eta_range[1]}")
+        else:
+            lines.append("🕒台灣投遞 ETA：約抵達空運倉後 3～8 個工作日")
         lines.append("🕒逢台加假日/颱風假/旺季延誤/店到店作業等則順延")
         lines.append("🕒實際投遞日期依物流狀況為準")
     elif mode == "加台海運":
@@ -567,6 +573,7 @@ def build_quote_text(mode: str,
         lines.append(f"📮{fp} → {tp}")
     else:
         lines.append(f"📮From: {fp}")
+    lines.append("")
 
     # Check for Taiwan domestic fee (Air freight + non-GV origin)
     add_tw_fee = False
@@ -591,6 +598,7 @@ def build_quote_text(mode: str,
     # ── 4. Per-Box Details ───────────────────────────────────────────────
     grand_total = 0.0
     box_subtotals = []
+    tw_fee_added = False  # Track whether TW fee has been added to a box
 
     for bw in box_weights:
         cmp = (">>" if bw.r_vol > 2 * bw.r_act
@@ -605,6 +613,12 @@ def build_quote_text(mode: str,
             intl_cost = i15 * bw.intl_weight
             box_cost = dom_cost + intl_cost
             expr = f"{effective_dom_rate:.3f}*{bw.dom_weight:.1f} + {i15:.3f}*{bw.intl_weight:.1f}"
+
+        # Add TW domestic fee inline (on first box)
+        if add_tw_fee and not tw_fee_added:
+            box_cost += TW_DOMESTIC_FEE_CAD
+            expr += f" + {TW_DOMESTIC_FEE_TWD:.0f}/{EXCHANGE_RATE:.1f}"
+            tw_fee_added = True
 
         grand_total += box_cost
         box_subtotals.append(box_cost)
@@ -625,18 +639,7 @@ def build_quote_text(mode: str,
         lines.append("")
 
     # ── 5. Total ─────────────────────────────────────────────────────────
-    if add_tw_fee:
-        grand_total += TW_DOMESTIC_FEE_CAD
-        # Add a line explaining the fee
-        parts_str = " + ".join(f"{s:.2f}" for s in box_subtotals)
-        if len(box_subtotals) > 1:
-             lines.append(f"➕非大溫地區寄件，加收台灣境內運費: {TW_DOMESTIC_FEE_TWD}/{EXCHANGE_RATE:.1f} = {TW_DOMESTIC_FEE_CAD:.2f} CAD")
-             lines.append(f"💲Total Cost: {parts_str} + {TW_DOMESTIC_FEE_CAD:.2f} = {grand_total:.2f} CAD")
-        else:
-             lines.append(f"➕非大溫地區寄件，加收台灣境內運費: {TW_DOMESTIC_FEE_TWD}/{EXCHANGE_RATE:.1f} = {TW_DOMESTIC_FEE_CAD:.2f} CAD")
-             lines.append(f"💲Total Cost: {box_subtotals[0]:.2f} + {TW_DOMESTIC_FEE_CAD:.2f} = {grand_total:.2f} CAD")
-
-    elif len(box_subtotals) > 1:
+    if len(box_subtotals) > 1:
         parts = " + ".join(f"{s:.2f}" for s in box_subtotals)
         lines.append(f"💲Total Cost: {parts} = {grand_total:.2f} CAD")
     else:
@@ -670,6 +673,35 @@ def build_quote_text(mode: str,
         ])
 
     return "\n".join(lines)
+
+
+# ─── ETA Business-Day Range Helper ───────────────────────────────────────────
+
+def _calc_arrival_range(eta_str: str):
+    """
+    Calculate Taiwan arrival range: ETA date + 3~8 business days.
+    Returns (from_str, to_str) or None if ETA can't be parsed.
+    Mimics calcArrivalRange_ from Google Sheet.
+    """
+    try:
+        eta_date = datetime.strptime(eta_str.strip(), "%Y-%m-%d")
+    except (ValueError, AttributeError):
+        return None
+
+    def _add_biz_days(start: datetime, days: int) -> datetime:
+        current = start
+        added = 0
+        while added < days:
+            current += timedelta(days=1)
+            # Skip weekends (5=Sat, 6=Sun)
+            if current.weekday() >= 5:
+                continue
+            added += 1
+        return current
+
+    d3 = _add_biz_days(eta_date, 3)
+    d8 = _add_biz_days(eta_date, 8)
+    return (d3.strftime("%Y-%m-%d"), d8.strftime("%Y-%m-%d"))
 
 
 def _fmt_postal(pc: str) -> str:
