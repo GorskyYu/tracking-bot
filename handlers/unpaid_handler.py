@@ -4,7 +4,7 @@ from datetime import datetime
 
 from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD_MAPPING, update_monday_item, rename_monday_item
 from utils.permissions import is_authorized_for_event, ADMIN_USER_IDS
-from utils.line_reply import reply_text
+from utils.line_reply import reply_text, reply_message
 from config import line_bot_api
 from linebot.models import TextSendMessage, QuickReply, QuickReplyButton, MessageAction, FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, SeparatorComponent
 from threading import Thread
@@ -999,6 +999,97 @@ def handle_rate_update(sender_id, message_text, reply_token, user_id=None, group
     
     return True
 
+
+# ─── Help Menu Helpers ────────────────────────────────────────────────────────
+
+def _send_help_menu(reply_token):
+    """Admin Help Menu Flex Message"""
+    flex_contents = {
+        "type": "bubble",
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "md",
+            "contents": [
+                {"type": "text", "text": "📋 管理員指令選單", "weight": "bold", "size": "xl", "color": "#1a1a1a"},
+                {"type": "text", "text": "請點選下方按鈕查看詳細指令說明：", "size": "sm", "color": "#888888"},
+                {"type": "separator", "margin": "md"},
+                
+                {"type": "button", "style": "secondary", "height": "sm", "margin": "md",
+                 "action": {"type": "message", "label": "💸 未付款相關 (Unpaid)", "text": "help:unpaid"}},
+                 
+                {"type": "button", "style": "secondary", "height": "sm", "margin": "sm",
+                 "action": {"type": "message", "label": "💰 已付款相關 (Paid)", "text": "help:paid"}},
+                 
+                {"type": "button", "style": "secondary", "height": "sm", "margin": "sm",
+                 "action": {"type": "message", "label": "🧾 查看帳單 (Bill)", "text": "help:bill"}},
+                 
+                {"type": "button", "style": "secondary", "height": "sm", "margin": "sm",
+                 "action": {"type": "message", "label": "📉 折讓/Credit處理", "text": "help:credit"}},
+                 
+                {"type": "button", "style": "secondary", "height": "sm", "margin": "sm",
+                 "action": {"type": "message", "label": "⚙️ 其他指令/運費更新", "text": "help:other"}},
+            ]
+        }
+    }
+    reply_message(reply_token, [{"type": "flex", "altText": "管理員指令選單", "contents": flex_contents}])
+
+def _send_help_detail(reply_token, category):
+    """Detailed help text for specific category"""
+    text = ""
+    if category == "unpaid":
+        text = """📋【未付款查詢 (Unpaid)】
+• unpaid
+  查詢所有未付款項目
+• unpaid [客戶ID]
+  查詢特定客戶 (如: unpaid Lorant)
+• unpaid [日期]
+  查詢特定日期未付款 (如: unpaid 260125)
+  (自動分流: 群組內自動偵測客戶)
+• unpaid today
+  標記今日出帳並顯示
+• unpaid today [客戶ID]
+  標記今日出帳並顯示特定客戶"""
+    elif category == "paid":
+        text = """📋【已付款處理 (Paid)】
+• paid [日期]
+  查看已付款帳單 (如: paid 260125)
+• paid [金額]
+  錄入實收金額 (如: paid 152.99)
+• paid [金額] [air|domestic]
+  指定分配 (如: paid 400 air)
+• paid [金額] ntd/twd
+  錄入台幣實收 (如: paid 1500 ntd)"""
+    elif category == "bill":
+        text = """📋【查看帳單 (Bill)】
+• 查看帳單 [日期]
+  查看特定日期帳單 (如: 查看帳單 260125)
+• 查看帳單 [客戶] [日期]
+  查看特定客戶特定日期 (如: 查看帳單 Vicky 260125)
+• 查看帳單 [客戶] [日期] twd
+  以台幣顯示帳單"""
+    elif category == "credit":
+        text = """📋【折讓/Credit 錄入】
+• credit [金額] [日期] [說明]
+  錄入折讓並分攤 (如: credit 346.13 260120 Dec折讓)
+• credit [金額] [客戶ID] [日期] [說明]
+  指定客戶錄入折讓
+• credit [日期] [說明]
+  修改現有折讓名稱 (無金額模式)"""
+    elif category == "other":
+        text = """📋【其他/運費更新】
+• [加拿大單價] [國際單價]
+  當帳單顯示單價為0時，直接回覆兩個數字更新
+  (如: 2.5 10 或 2.5, 10)
+  
+💡 提示：
+- 日期格式為 YYMMDD
+- 客戶ID不區分大小寫
+- 群組內指令會自動偵測客戶"""
+    else:
+        text = "❌ 未知的指令類別"
+    
+    reply_text(reply_token, text)
+
+
 def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, group_id=None):
     # 🔍 先抓取管理員狀態與自動對應名稱
     is_admin = user_id in ADMIN_USER_IDS
@@ -1009,68 +1100,13 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     
     # 處理目前功能指令 (僅限管理員私訊)
     if message_text.strip() == "目前功能" and is_admin and not group_id:
-        help_text = """📋 目前可用指令：
+        _send_help_menu(reply_token)
+        return
 
-【未付款相關】
-• unpaid - 查詢所有未付款項目
-• unpaid [客戶ID] - 查詢特定客戶未付款項目
-  例如：unpaid Lorant
-• unpaid [日期] - 查詢特定日期的未付款項目（在群組自動偵測客戶）
-  例如：在 Vicky 群組輸入 unpaid 260125
-• unpaid [日期] [客戶ID] 或 [客戶ID] [日期] - 查詢特定日期的未付款項目（指定客戶）
-  例如：unpaid 260125 Lorant 或 unpaid Lorant 260125
-• unpaid today - 標記今日出帳並顯示
-• unpaid today [客戶ID] - 標記今日出帳並顯示特定客戶
-  例如：unpaid today Lorant
-
-【已付款相關】
-• paid [日期] - 查看特定日期已付款帳單（在指定群組）
-  例如：paid 260125
-• paid [日期] [客戶ID] - 查看特定日期已付款帳單
-  例如：paid 260125 Lorant
-• paid [金額] - 錄入實收金額（在群組自動偵測客戶，或使用上次查詢）
-  例如：在 Iris 群組輸入 paid 152.99
-• paid [金額] [air|domestic] - 指定分配類別 (空運/境內)
-  例如：paid 400 air 或 paid 400 domestic
-• paid [金額] ntd/twd - 錄入台幣實收（在群組自動偵測客戶）
-  例如：paid 1500 ntd
-• paid [金額] ntd/twd [客戶ID] - 錄入實收金額（指定客戶）
-  例如：paid 1500 ntd Iris
-
-【查看帳單】
-• 查看帳單 [日期] - 查看特定日期帳單（在指定群組）
-  例如：查看帳單 260125
-• 查看帳單 [客戶] [日期] - 查看特定客戶特定日期帳單（任何群組）
-  例如：查看帳單 Vicky 260125
-• 查看帳單 [日期] [客戶] - 查看特定客戶特定日期帳單（同上）
-  例如：查看帳單 260125 Vicky
-• 查看帳單 [客戶] [日期] twd - 以台幣顯示帳單
-  例如：查看帳單 Vicky 260125 twd
-
-【折讓/Credit 錄入】
-• credit [金額] [日期] [說明] - 錄入折讓並分攤（可選說明）
-  例如：credit 346.13 260120 Dec折讓 => 建立 "Dec折讓 折讓分攤"
-  若無說明，預設名稱為 "折讓分攤"
-• credit [金額] [客戶ID] [日期] [說明] - 指定客戶錄入折讓
-  例如：credit 346.13 Yumi 260120 Dec折讓
-• credit [日期] [說明] - 修改現有折讓名稱 (無金額模式)
-  例如：credit 260120 Dec折讓 => 將該日該客戶所有 "折讓" 項目改名
-  
-【運費單價更新】
-• 當帳單項目的「加拿大單價」與「國際單價」皆為 0 時，
-  管理員可直接回覆兩個數字來更新：
-  格式：[加拿大單價] [國際單價]
-  例如：2.5 10 或 2.5, 10 或 2.5; 10
-  此功能適用於群組或私訊查詢帳單後
-
-💡 提示：
-- 日期格式為 YYMMDD（例如：260125 代表 2026/01/25）
-- 客戶ID不區分大小寫
-- 在 Iris/Vicky/Yumi/Angela 群組中，unpaid 和 paid 指令會自動偵測客戶
-- 帳單顯示按「出帳日」分組，每組再按母項目日期細分
-- paid 指令支援多項目按比例分配付款，從最舊日期開始分配
-- 所有指令僅限管理員使用（除非在指定群組）"""
-        reply_text(reply_token, help_text)
+    # 處理 Help 子選單指令 (僅限管理員)
+    if message_text.startswith("help:") and is_admin:
+        cat = message_text.split(":")[1].strip()
+        _send_help_detail(reply_token, cat)
         return
 
     # 處理 unpaid today [client_code] (帶客戶代號的 today 指令)

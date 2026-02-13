@@ -348,11 +348,13 @@ def webhook():
                     continue
         
         # 目前功能指令 (僅限管理員私訊)
-        if text.strip() == "目前功能":
+        if text.strip() == "目前功能" or text.startswith("help:"):
             current_user_id = src.get("userId")
             current_group_id = src.get("groupId")
             is_admin = (current_user_id == YVES_USER_ID or current_user_id == GORSKY_USER_ID)
             
+            # Allow "help:..." in DMs or if admin wants to debug, but mainly for "目前功能" menu
+            # "目前功能" should be DM only to avoid spamming groups
             if is_admin and not current_group_id:
                 handle_unpaid_event(
                     current_user_id,  # sender_id (positional)
