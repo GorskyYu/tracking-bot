@@ -31,6 +31,11 @@ INTL_RATE_AIR_HEAVY = 10    # total intl weight >= 3 kg
 INTL_RATE_SEA = 5
 INTL_RATE_DOMESTIC = 0.5
 
+# Taiwan Domestic Fee (non-Greater Vancouver origin)
+TW_DOMESTIC_FEE_TWD = 240
+EXCHANGE_RATE = 24.0
+TW_DOMESTIC_FEE_CAD = TW_DOMESTIC_FEE_TWD / EXCHANGE_RATE
+
 # Canada Post API (credentials from CP.js)
 CP_ENDPOINT = "https://soa-gw.canadapost.ca"
 CP_USERNAME = "e09db0d137a26ee9"
@@ -506,6 +511,15 @@ def get_i15_rate(mode: str, total_intl_weight: float) -> float:
     return 0
 
 
+def is_greater_vancouver(postal: str) -> bool:
+    """Check if postal code is in Greater Vancouver (V3-V7)."""
+    pc = postal.strip().upper().replace(" ", "")
+    if len(pc) < 2:
+        return False
+    # V3, V4, V5, V6, V7 used as loose definition of GV
+    return pc.startswith("V") and pc[1] in ("3", "4", "5", "6", "7")
+
+
 # ─── Canned Message Builder ──────────────────────────────────────────────────
 
 def build_quote_text(mode: str,
@@ -542,15 +556,11 @@ def build_quote_text(mode: str,
     tp = _fmt_postal(to_postal)
     if mode == "加境內":
         lines.append(f"📮{fp} → {tp}")
-    else:
-        lines.append(f"📮From: {fp}")
-    lines.append("")
-
-    # ── 3. Rates ─────────────────────────────────────────────────────────
-    total_dom_weight = sum(bw.dom_weight for bw in box_weights)
-    total_intl_weight = sum(bw.intl_weight for bw in box_weights)
-    i15 = get_i15_rate(mode, total_intl_weight)
-    is_domestic = (mode == "加境內")
+    
+    # Check for Taiwan domestic fee (Air freight + non-GV origin)
+    add_tw_fee = False
+    if mode == "加台空運" and not is_greater_vancouver(from_postal):
+        add_tw_fee = True
 
     # Effective per-kg rate from cheapest API total
     effective_dom_rate = cheapest.total / total_dom_weight if total_dom_weight else 0
@@ -597,7 +607,33 @@ def build_quote_text(mode: str,
         lines.append("")
 
     # ── 5. Total ─────────────────────────────────────────────────────────
-    if len(box_subtotals) > 1:
+    if add_tw_fee:
+        grand_total += TW_DOMESTIC_FEE_CAD
+        # Add a line explaining the fee
+        parts_str = " + ".join(f"{s:.2f}" for s in box_subtotals)
+        lines.append(f"➕非大溫地區寄件，加收台灣境內運費: {TW_DOMESTIC_FEE_TWD}/{EXCHANGE_RATE} = {TW_DOMESTIC_FEE_CAD:.2f} CAD")
+        lines.append(f"💲Total Cost: {parts_str} + {TW_DOMESTIC_FEE_CAD:.2f} = {grand_total:.2f} CAD")
+    el    if bw.min_bill == 15:
+            lines.append("（海運最低計費 15 kg）")
+        elif bw.min_bill == 1:
+            lines.append("（不足 1 公斤，以 1 公斤計價）")
+        elif bw.min_bill == 2:
+            lines.append("（最大值介於 1–2 公斤，以 2 公斤計價）")
+        lines.append("")
+
+    # ── 5. Total ─────────────────────────────────────────────────────────
+    if add_tw_fee:
+        grand_total += TW_DOMESTIC_FEE_CAD
+        # Add a line explaining the fee
+        parts_str = " + ".join(f"{s:.2f}" for s in box_subtotals)
+        if len(box_subtotals) > 1:
+             lines.append(f"➕非大溫地區寄件，加收台灣境內運費: {TW_DOMESTIC_FEE_TWD}/{EXCHANGE_RATE:.1f} = {TW_DOMESTIC_FEE_CAD:.2f} CAD")
+             lines.append(f"💲Total Cost: {parts_str} + {TW_DOMESTIC_FEE_CAD:.2f} = {grand_total:.2f} CAD")
+        else:
+             lines.append(f"➕非大溫地區寄件，加收台灣境內運費: {TW_DOMESTIC_FEE_TWD}/{EXCHANGE_RATE:.1f} = {TW_DOMESTIC_FEE_CAD:.2f} CAD")
+             lines.append(f"💲Total Cost: {box_subtotals[0]:.2f} + {TW_DOMESTIC_FEE_CAD:.2f} = {grand_total:.2f} CAD")
+
+    elif len(box_subtotals) > 1:
         parts = " + ".join(f"{s:.2f}" for s in box_subtotals)
         lines.append(f"💲Total Cost: {parts} = {grand_total:.2f} CAD")
     else:
