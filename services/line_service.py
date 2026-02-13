@@ -45,6 +45,76 @@ def line_reply(reply_token: str, text: str) -> requests.Response:
     return resp
 
 
+def line_push_flex(target_id: str, alt_text: str,
+                   contents: dict) -> requests.Response:
+    """Push a Flex Message to a user or group.
+
+    Args:
+        target_id: LINE user ID or group ID
+        alt_text: Fallback text shown in notifications
+        contents: Flex Message contents (bubble or carousel dict)
+
+    Returns:
+        Response from LINE API
+    """
+    payload = {
+        "to": target_id,
+        "messages": [{
+            "type": "flex",
+            "altText": alt_text,
+            "contents": contents,
+        }],
+    }
+    resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+    log.info(f"[line_push_flex] to {target_id}: {resp.status_code}")
+    return resp
+
+
+def line_reply_flex(reply_token: str, alt_text: str,
+                    contents: dict) -> requests.Response:
+    """Reply with a Flex Message using a reply token.
+
+    Args:
+        reply_token: Reply token from webhook event
+        alt_text: Fallback text shown in notifications
+        contents: Flex Message contents (bubble or carousel dict)
+
+    Returns:
+        Response from LINE API
+    """
+    payload = {
+        "replyToken": reply_token,
+        "messages": [{
+            "type": "flex",
+            "altText": alt_text,
+            "contents": contents,
+        }],
+    }
+    resp = requests.post(LINE_REPLY_URL, headers=LINE_HEADERS, json=payload)
+    log.info(f"[line_reply_flex] status: {resp.status_code}")
+    return resp
+
+
+def line_push_messages(target_id: str,
+                       messages: List[Dict[str, Any]]) -> requests.Response:
+    """Push multiple messages (text, flex, etc.) in a single API call.
+
+    Args:
+        target_id: LINE user ID or group ID
+        messages: List of LINE message objects (max 5)
+
+    Returns:
+        Response from LINE API
+    """
+    payload = {
+        "to": target_id,
+        "messages": messages[:5],  # LINE allows max 5 messages per push
+    }
+    resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
+    log.info(f"[line_push_messages] to {target_id}: {resp.status_code}")
+    return resp
+
+
 def line_push_mention(
     group_id: str,
     message_template: str,

@@ -61,6 +61,7 @@ from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, hand
 from handlers.vicky_handler import remind_vicky
 from handlers.ups_handler import handle_ups_logic
 from handlers.monday_webhook_handler import handle_monday_webhook
+from handlers.quote_handler import handle_quote_trigger, handle_quote_message, is_in_quote_session
 
 # 工作排程
 from jobs.ace_tasks import push_ace_today_shipments
@@ -228,6 +229,16 @@ def webhook():
                 # 設定狀態並給予 5 分鐘 (300秒) 的時限
                 r.set(twws_state_key, "active", ex=300)
                 line_push(user_id, "好的，請輸入子項目名稱：")
+                continue
+
+        # ─── Quick Quote 報價流程 ─────────────────────────────────────────
+        if mtype == "text" and text == "開始報價":
+            handle_quote_trigger(event, user_id, group_id, r)
+            continue
+
+        # If user is in an active quote session, route message there first
+        if mtype == "text" and is_in_quote_session(r, user_id):
+            if handle_quote_message(event, user_id, group_id, text, r):
                 continue
 
         # --- 費用錄入邏輯：僅限 PDF Scanning 群組觸發 ---
