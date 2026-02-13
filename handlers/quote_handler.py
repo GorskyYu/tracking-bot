@@ -617,12 +617,12 @@ def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
             "paddingStart": "sm", "paddingEnd": "sm",
             "contents": [
                 {"type": "text", "text": "Service", "size": "xxs",
-                 "color": "#888888", "flex": 4, "weight": "bold"},
+                 "color": "#888888", "flex": 3, "weight": "bold"},
                 {"type": "text", "text": "支出", "size": "xxs",
                  "color": "#888888", "flex": 3, "align": "end", "weight": "bold"},
                 {"type": "text", "text": "ETA", "size": "xxs",
                  "color": "#888888", "flex": 2, "align": "end", "weight": "bold"},
-                {"type": "filler", "flex": 3},
+                {"type": "filler", "flex": 4},
             ],
         },
         {"type": "separator", "margin": "xs"},
@@ -639,7 +639,7 @@ def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
 
         row_contents: list = [
             {
-                "type": "box", "layout": "vertical", "flex": 4,
+                "type": "box", "layout": "vertical", "flex": 3,
                 "contents": [
                     {"type": "text",
                      "text": f"{svc.carrier} - {svc.name}",
@@ -654,7 +654,7 @@ def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
             {"type": "text", "text": _short_eta(svc.eta), "size": "xxs",
              "flex": 2, "align": "end", "gravity": "center",
              "color": "#888888"},
-            {"type": "button", "style": "primary", "height": "sm", "flex": 3,
+            {"type": "button", "style": "primary", "height": "sm", "flex": 4,
              "color": "#28a745" if is_cheapest else "#007bff",
              "action": {"type": "message",
                         "label": "繼續",
