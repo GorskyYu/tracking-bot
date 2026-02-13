@@ -230,16 +230,17 @@ def handle_quote_message(event: dict, user_id: str,
 # ─── Private State Handlers ──────────────────────────────────────────────────
 
 def _on_collecting(r, uid, target, text):
-    """Parse message text and show confirm flex."""
+    """Parse message text and show confirm flex or partial status."""
     _append_buffer(r, uid, text)
     full_text = _get_buffer(r, uid)
 
     parsed = parse_package_input(full_text)
 
-    if not parsed or not parsed.packages:
+    # 1. Nothing found at all (or parse error)
+    if not parsed or (not parsed.packages and not parsed.postal_codes):
         line_push(
             target,
-            "🔍 尚未偵測到完整的包裹資料。\n"
+            "🔍 尚未偵測到任何包裹資料。\n"
             "請確認訊息包含：\n"
             "• 包裹尺寸（長×寬×高，公分）\n"
             "• 重量（公斤）\n"
@@ -248,11 +249,67 @@ def _on_collecting(r, uid, target, text):
         )
         return True
 
-    _save_parsed(r, uid, parsed)
-    _set_state(r, uid, "parsed")
+    # 2. Check for completeness
+    pkgs = parsed.packages
+    postal_codes = parsed.postal_codes
+    
+    # Check if ALL packages are valid (L>0, W>0, H>0, Wt>0)
+    all_pkgs_valid = True
+    for p in pkgs:
+        if not (p.length > 0 and p.width > 0 and p.height > 0 and p.weight > 0):
+            all_pkgs_valid = False
+            break
+            
+    has_pkgs = len(pkgs) > 0
+    has_postal = len(postal_codes) > 0
 
-    flex = _build_confirm_flex(parsed)
-    line_push_flex(target, "📦 包裹資料確認", flex)
+    # 3. If everything is complete -> Proceed to Confirmation
+    if has_pkgs and all_pkgs_valid and has_postal:
+        _save_parsed(r, uid, parsed)
+        _set_state(r, uid, "parsed")
+
+        flex = _build_confirm_flex(parsed)
+        line_push_flex(target, "📦 包裹資料確認", flex)
+        return True
+
+    # 4. Partial data detected -> Show status update
+    # Construct a helpful message listing what we have and what's missing
+    lines = ["🔍 已讀取部分資料：", ""]
+    
+    if has_pkgs:
+        lines.append(f"📦 包裹：{len(pkgs)} 件")
+        for i, p in enumerate(pkgs):
+            dims = f"{p.length:.0f}x{p.width:.0f}x{p.height:.0f}"
+            wt = f"{p.weight:.1f}kg"
+            
+            # Check what's missing for this package
+            missing = []
+            if not (p.length > 0 and p.width > 0 and p.height > 0):
+                missing.append("尺寸")
+            if not (p.weight > 0):
+                missing.append("重量")
+            
+            if missing:
+                status = f"❌ 缺{'、'.join(missing)}"
+            else:
+                status = "✅ 完整"
+                
+            lines.append(f"  • Box {i+1}: {dims}, {wt} ({status})")
+    else:
+        lines.append("❌ 尚未偵測到包裹尺寸/重量")
+
+    lines.append("")
+    
+    if has_postal:
+        pc_str = ", ".join([_fmt_postal(pc) for pc in postal_codes])
+        lines.append(f"📮 郵遞區號：{pc_str} (✅)")
+    else:
+        lines.append("❌ 尚未偵測到加拿大郵遞區號")
+
+    lines.append("")
+    lines.append("請繼續輸入缺少的資訊...")
+    
+    line_push(target, "\n".join(lines))
     return True
 
 

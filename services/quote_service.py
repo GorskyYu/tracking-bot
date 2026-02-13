@@ -219,7 +219,8 @@ def parse_package_input(text: str) -> Optional[ParsedInput]:
                 height=float(p.get("height", 0)),
                 weight=float(p.get("weight", 0)),
             )
-            if pkg.length > 0 and pkg.width > 0 and pkg.height > 0 and pkg.weight > 0:
+            # Allow partial packages if any dimension or weight is present
+            if pkg.length > 0 or pkg.width > 0 or pkg.height > 0 or pkg.weight > 0:
                 packages.append(pkg)
 
         postal_codes = []
