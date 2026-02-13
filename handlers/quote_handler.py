@@ -288,7 +288,7 @@ def _on_confirmed(r, uid, target):
         # 加台空運/海運: ship to warehouse
         to_postal = WAREHOUSE_POSTAL
 
-    line_push(target, "📡 正在查詢境內運費，請稍候…")
+    line_push(target, "📡 正在查詢境內段運費，請稍候…")
 
     # Call APIs in background to avoid webhook timeout
     threading.Thread(
@@ -606,7 +606,7 @@ def _build_confirm_flex(parsed: ParsedInput) -> dict:
 def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
     """Bubble listing UPS/FedEx services with Service | Cost | ETA | 選擇 button."""
     body: list = [
-        {"type": "text", "text": "🚚 境內運送服務",
+        {"type": "text", "text": "🚚 境內段運送服務",
          "weight": "bold", "size": "lg", "color": "#1a1a1a"},
         {"type": "text", "text": "以下為 UPS / FedEx 境內運送報價，請選擇一項",
          "size": "xs", "color": "#888888", "margin": "sm", "wrap": True},
@@ -617,9 +617,9 @@ def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
             "paddingStart": "sm", "paddingEnd": "sm",
             "contents": [
                 {"type": "text", "text": "Service", "size": "xxs",
-                 "color": "#888888", "flex": 5, "weight": "bold"},
+                 "color": "#888888", "flex": 4, "weight": "bold"},
                 {"type": "text", "text": "支出", "size": "xxs",
-                 "color": "#888888", "flex": 2, "align": "end", "weight": "bold"},
+                 "color": "#888888", "flex": 3, "align": "end", "weight": "bold"},
                 {"type": "text", "text": "ETA", "size": "xxs",
                  "color": "#888888", "flex": 3, "align": "end", "weight": "bold"},
                 {"type": "filler", "flex": 2},
@@ -639,7 +639,7 @@ def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
 
         row_contents: list = [
             {
-                "type": "box", "layout": "vertical", "flex": 5,
+                "type": "box", "layout": "vertical", "flex": 4,
                 "contents": [
                     {"type": "text",
                      "text": f"{svc.carrier} - {svc.name}",
@@ -647,7 +647,8 @@ def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
                 ],
             },
             {"type": "text", "text": f"${svc.total:.2f}", "size": "xxs",
-             "flex": 2, "align": "end", "gravity": "center",
+             "flex": 3, "align": "end", "gravity": "center",
+             "wrap": False,
              "color": "#28a745" if is_cheapest else "#333333",
              "weight": "bold" if is_cheapest else "regular"},
             {"type": "text", "text": _short_eta(svc.eta), "size": "xxs",
@@ -656,7 +657,7 @@ def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
             {"type": "button", "style": "primary", "height": "sm", "flex": 2,
              "color": "#28a745" if is_cheapest else "#007bff",
              "action": {"type": "message",
-                        "label": "選擇",
+                        "label": "繼續",
                         "text": f"報價選擇服務_{idx}"}},
         ]
 
