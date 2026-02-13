@@ -575,8 +575,14 @@ def _fetch_services_and_show(r, uid, target, from_postal, to_postal,
         # ── Profile: auto-select forced service (e.g. Iris → FEDEX_GROUND) ──
         if not profile.allow_service_select and profile.forced_service:
             forced_idx = None
+            target_svc = profile.forced_service.upper().replace("_", " ").replace("-", " ")
+            
             for idx, svc in enumerate(all_quotes):
-                if profile.forced_service in svc.name:
+                # Try to fuzzy match (check name OR carrier+name)
+                # e.g. "FedEx Ground" should match "FEDEX_GROUND"
+                c1 = svc.name.upper()
+                c2 = f"{svc.carrier} {svc.name}".upper()
+                if target_svc in c1 or target_svc in c2:
                     forced_idx = idx
                     break
 
@@ -654,8 +660,14 @@ def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
         action_flex = build_post_quote_flex(mode, profile)
 
         # ── Route messages based on profile visibility ──────────────────
-        group_msgs: list = []   # messages pushed to the group / default target
-        yves_msgs: list = []    # messages pushed privately to cost_push_target
+        group_msgs: list = []   # messages for the main chat
+        private_msgs: dict = {} # target_id -> list[msg]
+
+        def add_private(uid, msg):
+            if uid:
+                if uid not in private_msgs:
+                    private_msgs[uid] = []
+                private_msgs[uid].append(msg)
 
         # 1. Canned text
         if profile.show_cost_in_group:
@@ -663,7 +675,7 @@ def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
         else:
             # Cost goes to profile.cost_push_target privately
             if profile.cost_push_target:
-                yves_msgs.append({"type": "text", "text": quote_text})
+                add_private(profile.cost_push_target, {"type": "text", "text": quote_text})
             # Group gets a simplified acknowledgement
             group_msgs.append({
                 "type": "text",
@@ -678,8 +690,9 @@ def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
             )
             if profile.show_cost_in_group:
                 group_msgs.append({"type": "text", "text": warn_text})
-            elif profile.cost_push_target:
-                yves_msgs.append({"type": "text", "text": warn_text})
+            else:
+                if profile.cost_push_target:
+                    add_private(profile.cost_push_target, {"type": "text", "text": warn_text})
 
         # 3. Result comparison flex
         if profile.show_result_flex_in_group:
@@ -689,7 +702,7 @@ def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
             })
         else:
             if profile.result_flex_push_target:
-                yves_msgs.append({
+                add_private(profile.result_flex_push_target, {
                     "type": "flex", "altText": "📊 境內段運費比較表",
                     "contents": result_flex,
                 })
@@ -704,9 +717,9 @@ def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
         if group_msgs:
             line_push_messages(target, group_msgs)
 
-        # Push private messages to cost_push_target
-        if yves_msgs and profile.cost_push_target:
-            line_push_messages(profile.cost_push_target, yves_msgs)
+        # Push private messages
+        for uid, msgs in private_msgs.items():
+            line_push_messages(uid, msgs)
 
     except Exception as e:
         log.error(f"[QuoteHandler] Quote calculation error: {e}", exc_info=True)
