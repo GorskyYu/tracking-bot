@@ -111,7 +111,10 @@ def line_push_messages(target_id: str,
         "messages": messages[:5],  # LINE allows max 5 messages per push
     }
     resp = requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json=payload)
-    log.info(f"[line_push_messages] to {target_id}: {resp.status_code}")
+    if resp.status_code >= 400:
+        log.error(f"[line_push_messages] failed to {target_id}: {resp.status_code} {resp.text}")
+    else:
+        log.info(f"[line_push_messages] to {target_id}: {resp.status_code}")
     return resp
 
 

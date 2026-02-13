@@ -424,7 +424,7 @@ def build_post_quote_flex(current_mode: str, profile: QuoteProfile) -> dict:
                        "text": "報價完成"},
         })
 
-    return {
+    bubble = {
         "type": "bubble",
         "body": {
             "type": "box", "layout": "vertical",
@@ -435,8 +435,12 @@ def build_post_quote_flex(current_mode: str, profile: QuoteProfile) -> dict:
                  "size": "xs", "color": "#888888", "margin": "sm"},
             ],
         },
-        "footer": {
+    }
+
+    if buttons:
+        bubble["footer"] = {
             "type": "box", "layout": "vertical", "spacing": "sm",
             "contents": buttons,
-        },
-    }
+        }
+
+    return bubble
