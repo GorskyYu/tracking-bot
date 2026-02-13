@@ -308,23 +308,23 @@ def webhook():
                         ok, msg, item_name = monday_service.update_expense_and_rates(
                             last_pid, expense, canada_price, None, last_bid, last_sub_bid, True
                         )
-                            if ok:
-                                line_push(group_id,
-                                    f"✅ 錄入成功\n"
-                                    f"📌 項目: {item_name}\n"
-                                    f"💰 加境內支出: ${expense}\n"
-                                    f"🇨🇦 加拿大單價: ${canada_price}")
-                                r.delete("global_last_pdf_parent")
-                            else:
-                                line_push(group_id, f"❌ 錄入失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
-                            continue
-                        else:
+                        if ok:
                             line_push(group_id,
-                                f"❌ 格式錯誤！境內 PDF 請輸入 2 個數值：\n"
-                                f"[加境內支出] [加拿大單價]\n"
-                                f"例如：43.10 2.5\n"
-                                f"⚠️ 如某欄為 0 請輸入 0")
-                            continue
+                                f"✅ 錄入成功\n"
+                                f"📌 項目: {item_name}\n"
+                                f"💰 加境內支出: ${expense}\n"
+                                f"🇨🇦 加拿大單價: ${canada_price}")
+                            r.delete("global_last_pdf_parent")
+                        else:
+                            line_push(group_id, f"❌ 錄入失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
+                        continue
+                    else:
+                        line_push(group_id,
+                            f"❌ 格式錯誤！境內 PDF 請輸入 2 個數值：\n"
+                            f"[加境內支出] [加拿大單價]\n"
+                            f"例如：43.10 2.5\n"
+                            f"⚠️ 如某欄為 0 請輸入 0")
+                        continue
 
                     # ── 空運 / 海運 PDF：需要 3 個數值 ──
                     else:
