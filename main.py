@@ -251,24 +251,63 @@ def webhook():
             # 檢查是否有待錄入的 PDF 項目 且 訊息看起來像數字輸入
             if redis_val and "|" in redis_val and re.match(r'^\d+(?:\.\d+)?(?:[\s,;]+\d+(?:\.\d+)?)*$', text.strip()):
                 parts_redis = redis_val.split("|")
-                if len(parts_redis) >= 4:
-                    last_pid, last_bid, last_sub_bid, pdf_type = parts_redis[0], parts_redis[1], parts_redis[2], parts_redis[3]
-                    is_domestic_pdf = (pdf_type == "domestic")
+                # Handle auto-rate flag (new format has 5 parts)
+                auto_rate_flag = "0"
+                if len(parts_redis) >= 5:
+                    last_pid, last_bid, last_sub_bid, pdf_type, auto_rate_flag = parts_redis[:5]
+                elif len(parts_redis) >= 4:
+                    last_pid, last_bid, last_sub_bid, pdf_type = parts_redis[:4]
+                else:
+                    return "OK", 200
 
-                    # 自動偵測 delimiter (空格 / 逗號 / 分號) 並拆分數值
-                    raw_values = re.split(r'[\s,;]+', text.strip())
-                    try:
-                        nums = [float(v) for v in raw_values if v]
-                    except ValueError:
-                        nums = []
+                is_domestic_pdf = (pdf_type == "domestic")
+                is_auto_rate = (auto_rate_flag == "1")
 
-                    # ── 境內 PDF：需要 2 個數值 ──
-                    if is_domestic_pdf:
-                        if len(nums) == 2:
-                            expense, canada_price = nums
-                            ok, msg, item_name = monday_service.update_expense_and_rates(
-                                last_pid, expense, canada_price, None, last_bid, last_sub_bid, True
-                            )
+                raw_values = re.split(r'[\s,;]+', text.strip())
+                try:
+                    nums = [float(v) for v in raw_values if v]
+                except ValueError:
+                    nums = []
+
+                # **Auto-Rate Mode**
+                if is_auto_rate and not is_domestic_pdf:
+                    if len(nums) == 1:
+                        # 只有1個數字：當作成本，自動填入 2.5 / 10
+                        expense = nums[0]
+                        canada_price = 2.5
+                        intl_price = 10.0
+                        log.info(f"[AutoRate] Applying defaults CA=2.5 Intl=10 for Expense {expense}")
+                        
+                        ok, msg, item_name = monday_service.update_expense_and_rates(
+                            last_pid, expense, canada_price, intl_price, last_bid, last_sub_bid, False
+                        )
+                        if ok:
+                            line_push(group_id,
+                                f"✅ 自動錄入成功 (Auto-Rate)\n"
+                                f"📌 項目: {item_name}\n"
+                                f"💰 加境內支出: ${expense}\n"
+                                f"🇨🇦 加拿大單價: $2.5 (Auto)\n"
+                                f"🌍 國際單價: $10.0 (Auto)")
+                            r.delete("global_last_pdf_parent")
+                        else:
+                            line_push(group_id, f"❌ 自動錄入失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
+                        continue
+                    
+                    elif len(nums) == 3:
+                        pass # Allow manual override
+                    else:
+                         line_push(group_id,
+                            f"⚡ 自動模式請輸入 1 個數值 (成本) 或 3 個數值 (覆盖設定)\n"
+                            f"目前收到 {len(nums)} 個數值")
+                         continue
+
+                # ── 境內 PDF：需要 2 個數值 ──
+                if is_domestic_pdf:
+                    if len(nums) == 2:
+                        expense, canada_price = nums
+                        ok, msg, item_name = monday_service.update_expense_and_rates(
+                            last_pid, expense, canada_price, None, last_bid, last_sub_bid, True
+                        )
                             if ok:
                                 line_push(group_id,
                                     f"✅ 錄入成功\n"

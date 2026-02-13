@@ -111,6 +111,27 @@ class MondaySyncService:
             _is_karl_lagerfeld = False  # 追蹤是否為 Karl Lagerfeld 來源
             sender = full_data.get("sender", {}) or {}
             receiver = full_data.get("receiver", {}) or {}
+            
+            # --- 🟢 自動費率判定 (Auto-Rate Logic) ---
+            # 檢查寄件人與收件人是否符合特定規則，若符合則後續只需輸入成本即可
+            s_name = (sender.get("name") or "").upper().replace(" ", "")
+            s_addr = (sender.get("address") or "").upper().replace(" ", "")
+            r_name = (receiver.get("name") or "").upper().replace(" ", "")
+            r_addr = (receiver.get("address") or "").upper().replace(" ", "")
+            r_zip = (receiver.get("postal_code") or "").upper().replace(" ", "")
+
+            is_vicky_sender = "VICKY" in s_name and "T1W0L4" in s_addr
+            is_yumi_sender = "YUMI" in s_name and "L6B1R2" in s_addr
+            valid_sender = is_vicky_sender or is_yumi_sender
+
+            is_yves_recv = "YVES" in r_name and "V6X1Z7" in r_zip
+            is_richard_recv_1 = "RICHARD" in r_name and "V6Y0E3" in r_zip  # Matches both Buzz 1813 addresses
+            is_richard_recv_2 = "RICHARD" in r_name and "V6Y1K3" in r_zip
+            valid_receiver = is_yves_recv or is_richard_recv_1 or is_richard_recv_2
+
+            is_auto_rate = valid_sender and valid_receiver
+            log.info(f"[AutoRate] SenderMatch={valid_sender} RecvMatch={valid_receiver} => Auto={is_auto_rate}")
+
             name = (sender.get("name") or "").strip()
             client_id = (sender.get("client_id") or "").strip()
             
@@ -306,18 +327,29 @@ class MondaySyncService:
             # --- 8.5 🟢 Google Sheet 同步 (在 Monday 建立後執行) ---
             self._sync_to_google_sheet(ref_no, all_tracking_numbers)
 
-            # 存入項目 ID、板塊 ID、子項目板塊 ID、類型，用直線 | 隔開 (30 分鐘有效)
+            # --- 9. 🟢 發送詳細通知到狀態群組 ---
+            tracking_str = ", ".join(all_tracking_numbers) if all_tracking_numbers else "無單號"
+            
+            # --- 判斷自動匯率標記 ---
+            auto_rate_flag = "1" if is_auto_rate else "0"
             pdf_type = "domestic" if is_domestic else "air"
             redis_client.set(
                 "global_last_pdf_parent",
-                f"{parent_id}|{target_parent_board_id}|{target_subitem_board_id}|{pdf_type}",
+                f"{parent_id}|{target_parent_board_id}|{target_subitem_board_id}|{pdf_type}|{auto_rate_flag}",
                 ex=1800
             )
-            
-            # --- 9. 🟢 發送詳細通知到狀態群組 ---
-            tracking_str = ", ".join(all_tracking_numbers) if all_tracking_numbers else "無單號"
+
+            # --- 顯示提示 ---
+            extra_hint = ""
+            if is_auto_rate:
+                extra_hint = "\n⚡ ***自動單價模式***：請僅輸入【加境內成本】即可 (加拿大單價各為 2.5 / 國際由系統自動補 10)"
+            elif is_domestic:
+                extra_hint = "\n請輸入：[加境內支出] [加拿大單價]"
+            else:
+                extra_hint = "\n請輸入：[加境內支出] [加拿大單價] [國際單價]"
+
             msg = (
-                f"📄 PDF 處理完成\n"
+                f"📄 PDF 處理完成{extra_hint}\n"
                 f"單號: {tracking_str}\n"
                 f"去向: {board_display_name}\n"
                 f"邏輯: {decision_reason}"

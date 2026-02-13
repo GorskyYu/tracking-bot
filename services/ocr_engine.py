@@ -16,10 +16,25 @@ log = logging.getLogger(__name__)
 # We use separate, strict instructions for each carrier to prevent data mix-ups.
 
 OCR_SHIPPING_PROMPT = """
-Task: Extract sender (name, phone, client ID, address), receiver postal code, 
+Task: Extract sender (name, phone, client ID, address), 
+receiver (name, address, postal code), 
 and Reference No.1 from this shipping ticket.
-Response Format: {"sender": {"name": "", "phone": "", "client_id": "", "address": ""}, 
-"receiver": {"postal_code": ""}, "reference_number": ""}
+
+Response Format: 
+{
+  "sender": {
+    "name": "", 
+    "phone": "", 
+    "client_id": "", 
+    "address": ""
+  }, 
+  "receiver": {
+    "name": "",
+    "address": "",
+    "postal_code": ""
+  }, 
+  "reference_number": ""
+}
 """
 
 # STRICT FEDEX PROMPT: Expanded to capture Receiver Address for routing.
@@ -35,6 +50,7 @@ Response JSON:
   },
   "receiver": {
     "name": "string (To name)",
+    "address": "string (Full address line)",
     "postal_code": "string (ZIP/Postal code e.g. V6X 1Z7)"
   },
   "reference_number": "string (Ref #, PO #, Invoice #)"
