@@ -4,10 +4,12 @@
 Manages the multi-step quote conversation via LINE Flex Messages.
 
 State Machine (persisted in Redis with 10-min TTL):
-  collecting   → 等待使用者貼上客人訊息
-  parsed       → 資料已解析，等待「正確/錯誤」確認
-  correcting   → 使用者按了「錯誤」, 等待手動輸入
-  choosing_mode→ 等待選擇「空運/海運」
+  collecting      → 等待使用者貼上客人訊息
+  parsed          → 資料已解析，等待「正確/錯誤」確認
+  correcting      → 使用者按了「錯誤」, 等待手動輸入
+  choosing_service→ API 已查詢，等待選擇境內運送服務
+  choosing_mode   → 服務已選，等待選擇「空運/海運」
+  post_quote      → 報價已顯示，等待後續操作
 """
 
 import json
@@ -65,7 +67,8 @@ def _append_buffer(r, uid, text):
 
 
 def _clear_session(r, uid):
-    for suffix in ("state", "data", "buffer", "target"):
+    for suffix in ("state", "data", "buffer", "target",
+                    "services", "selected_svc", "selected_mode"):
         r.delete(_key(uid, suffix))
 
 
@@ -75,6 +78,52 @@ def _get_target(r, uid):
 
 def _set_target(r, uid, target_id):
     r.set(_key(uid, "target"), target_id, ex=QUOTE_TTL)
+
+
+# ─── Services Serialization ──────────────────────────────────────────────────
+
+def _set_services(r, uid, services: List[ServiceQuote]):
+    data = [
+        {"carrier": s.carrier, "name": s.name, "freight": s.freight,
+         "surcharges": s.surcharges, "tax": s.tax, "total": s.total,
+         "eta": s.eta, "surcharge_details": s.surcharge_details,
+         "source": s.source}
+        for s in services
+    ]
+    r.set(_key(uid, "services"), json.dumps(data, ensure_ascii=False), ex=QUOTE_TTL)
+
+
+def _get_services(r, uid) -> Optional[List[ServiceQuote]]:
+    raw = r.get(_key(uid, "services"))
+    if not raw:
+        return None
+    data = json.loads(raw)
+    return [
+        ServiceQuote(
+            carrier=d["carrier"], name=d["name"], freight=d["freight"],
+            surcharges=d["surcharges"], tax=d["tax"], total=d["total"],
+            eta=d["eta"], surcharge_details=d.get("surcharge_details", ""),
+            source=d.get("source", "TE"),
+        )
+        for d in data
+    ]
+
+
+def _set_selected_svc(r, uid, idx: int):
+    r.set(_key(uid, "selected_svc"), str(idx), ex=QUOTE_TTL)
+
+
+def _get_selected_svc(r, uid) -> Optional[int]:
+    raw = r.get(_key(uid, "selected_svc"))
+    return int(raw) if raw is not None else None
+
+
+def _set_selected_mode(r, uid, mode: str):
+    r.set(_key(uid, "selected_mode"), mode, ex=QUOTE_TTL)
+
+
+def _get_selected_mode(r, uid) -> Optional[str]:
+    return r.get(_key(uid, "selected_mode"))
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
@@ -140,12 +189,39 @@ def handle_quote_message(event: dict, user_id: str,
     if state == "correcting":
         return _on_correcting(r, user_id, target_id, text)
 
+    if state == "choosing_service":
+        if text.startswith("報價選擇服務_"):
+            try:
+                idx = int(text.split("_")[-1])
+            except ValueError:
+                line_push(target_id, "❌ 無效的選擇，請重新點選服務按鈕。")
+                return True
+            return _on_service_selected(r, user_id, target_id, idx)
+        line_push(target_id, "請從上方列表點選一個境內運送服務。")
+        return True
+
     if state == "choosing_mode":
         if text == "報價選擇空運":
             return _on_mode_selected(r, user_id, target_id, "加台空運")
         if text == "報價選擇海運":
             return _on_mode_selected(r, user_id, target_id, "加台海運")
         line_push(target_id, "請點選「✈️ 空運」或「🚢 海運」按鈕選擇運送方式。")
+        return True
+
+    if state == "post_quote":
+        if text == "報價切換空運":
+            return _on_mode_selected(r, user_id, target_id, "加台空運")
+        if text == "報價切換海運":
+            return _on_mode_selected(r, user_id, target_id, "加台海運")
+        if text == "報價選擇其他服務":
+            return _on_reselect_service(r, user_id, target_id)
+        if text == "報價處理新報價":
+            return _on_new_quote(r, user_id, target_id)
+        if text == "報價完成":
+            _clear_session(r, user_id)
+            line_push(target_id, "✅ 報價完成，感謝使用！")
+            return True
+        line_push(target_id, "請點選下方按鈕選擇操作。")
         return True
 
     return False
@@ -181,7 +257,7 @@ def _on_collecting(r, uid, target, text):
 
 
 def _on_confirmed(r, uid, target):
-    """User confirmed → decide next step based on postal code count."""
+    """User confirmed → call APIs for domestic quotes, show service selection."""
     data = _get_data(r, uid)
     if not data:
         line_push(target, "❌ 資料遺失，請重新輸入「開始報價」。")
@@ -189,16 +265,12 @@ def _on_confirmed(r, uid, target):
         return True
 
     postal_codes = data.get("postal_codes", [])
+    packages = [
+        Package(p["length"], p["width"], p["height"], p["weight"])
+        for p in data["packages"]
+    ]
 
-    if len(postal_codes) >= 2:
-        # Two postal codes → 加境內, skip mode selection
-        return _on_mode_selected(r, uid, target, "加境內")
-    elif len(postal_codes) == 1:
-        _set_state(r, uid, "choosing_mode")
-        flex = _build_mode_select_flex()
-        line_push_flex(target, "請選擇運送方式", flex)
-        return True
-    else:
+    if not postal_codes:
         line_push(
             target,
             "⚠️ 未偵測到郵遞區號。\n"
@@ -206,6 +278,26 @@ def _on_confirmed(r, uid, target):
         )
         _set_state(r, uid, "collecting")
         return True
+
+    from_postal = postal_codes[0]
+
+    if len(postal_codes) >= 2:
+        # 加境內: ship between two Canadian addresses
+        to_postal = postal_codes[1]
+    else:
+        # 加台空運/海運: ship to warehouse
+        to_postal = WAREHOUSE_POSTAL
+
+    line_push(target, "📡 正在查詢境內運費，請稍候…")
+
+    # Call APIs in background to avoid webhook timeout
+    threading.Thread(
+        target=_fetch_services_and_show,
+        args=(r, uid, target, from_postal, to_postal, packages, postal_codes),
+        daemon=True,
+    ).start()
+
+    return True
 
 
 def _on_rejected(r, uid, target):
@@ -264,13 +356,41 @@ def _on_correcting(r, uid, target, text):
     return True
 
 
-def _on_mode_selected(r, uid, target, mode):
-    """Mode determined → call APIs and deliver results (in background thread)."""
+def _on_service_selected(r, uid, target, idx):
+    """User picked a domestic service → decide next step."""
+    services = _get_services(r, uid)
+    if not services or idx < 0 or idx >= len(services):
+        line_push(target, "❌ 無效的服務選擇，請重新點選。")
+        return True
+
+    _set_selected_svc(r, uid, idx)
+
     data = _get_data(r, uid)
-    if not data:
+    postal_codes = data.get("postal_codes", []) if data else []
+
+    if len(postal_codes) >= 2:
+        # 加境內 → skip mode selection, go directly to results
+        return _on_mode_selected(r, uid, target, "加境內")
+
+    # 1 postal code → ask air/sea
+    _set_state(r, uid, "choosing_mode")
+    flex = _build_mode_select_flex()
+    line_push_flex(target, "請選擇運送方式", flex)
+    return True
+
+
+def _on_mode_selected(r, uid, target, mode):
+    """Mode determined → calculate and deliver results."""
+    data = _get_data(r, uid)
+    services = _get_services(r, uid)
+    selected_idx = _get_selected_svc(r, uid)
+
+    if not data or not services or selected_idx is None:
         line_push(target, "❌ 資料遺失，請重新輸入「開始報價」。")
         _clear_session(r, uid)
         return True
+
+    selected_svc = services[selected_idx] if selected_idx < len(services) else services[0]
 
     packages = [
         Package(p["length"], p["width"], p["height"], p["weight"])
@@ -290,23 +410,57 @@ def _on_mode_selected(r, uid, target, mode):
         _clear_session(r, uid)
         return True
 
-    # Clear session immediately so user can start a new one
-    _clear_session(r, uid)
+    _set_selected_mode(r, uid, mode)
+    _set_state(r, uid, "post_quote")
 
-    line_push(target, f"📡 正在查詢{mode}運費，請稍候…")
+    line_push(target, f"📡 正在計算{mode}報價…")
 
-    # Run API calls in a background thread to avoid webhook timeout
+    # Run in background to avoid blocking webhook
     threading.Thread(
-        target=_fetch_and_send_quote,
-        args=(target, mode, from_postal, to_postal, packages),
+        target=_calculate_and_send_quote,
+        args=(r, uid, target, mode, from_postal, to_postal,
+              packages, selected_svc, services),
         daemon=True,
     ).start()
 
     return True
 
 
-def _fetch_and_send_quote(target, mode, from_postal, to_postal, packages):
-    """Background: call TE + CP APIs, build messages, and push results."""
+def _on_reselect_service(r, uid, target):
+    """Post-quote: go back to service selection."""
+    services = _get_services(r, uid)
+    if not services:
+        line_push(target, "❌ 運送服務資料遺失，請重新輸入「開始報價」。")
+        _clear_session(r, uid)
+        return True
+
+    _set_state(r, uid, "choosing_service")
+    flex = _build_service_select_flex(services)
+    line_push_flex(target, "🚚 請選擇境內運送服務", flex)
+    return True
+
+
+def _on_new_quote(r, uid, target):
+    """Post-quote: start fresh quote (keep session alive)."""
+    target_id = _get_target(r, uid)
+    _clear_session(r, uid)
+    _set_state(r, uid, "collecting")
+    _set_target(r, uid, target_id)
+    line_push(
+        target,
+        "📝 新報價模式已啟動！\n\n"
+        "請貼上客人的訊息（包含包裹尺寸、重量、郵遞區號）。\n"
+        "可以一次貼上或分多次貼上，我會自動讀取資料。\n\n"
+        "💡 輸入「取消報價」可隨時退出。"
+    )
+    return True
+
+
+# ─── Background Workers ──────────────────────────────────────────────────────
+
+def _fetch_services_and_show(r, uid, target, from_postal, to_postal,
+                             packages, postal_codes):
+    """Background: call TE + CP APIs, store results, show service selection."""
     try:
         te_quotes = get_te_quotes(from_postal, to_postal, packages)
         cp_quotes = get_cp_quotes(from_postal, to_postal, packages)
@@ -315,29 +469,51 @@ def _fetch_and_send_quote(target, mode, from_postal, to_postal, packages):
 
         if not all_quotes:
             line_push(target, "❌ 無法取得運費報價，請稍後再試或手動使用報價計算器。")
+            _clear_session(r, uid)
             return
 
-        cheapest = all_quotes[0]
+        # Store all quotes
+        _set_services(r, uid, all_quotes)
+        _set_state(r, uid, "choosing_service")
+
+        # Build service selection flex (UPS/FedEx only from TE)
+        flex = _build_service_select_flex(all_quotes)
+        line_push_flex(target, "🚚 請選擇境內運送服務", flex)
+
+    except Exception as e:
+        log.error(f"[QuoteHandler] Service fetch error: {e}", exc_info=True)
+        line_push(target, f"❌ 查詢運費過程發生錯誤: {e}")
+        _clear_session(r, uid)
+
+
+def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
+                              packages, selected_svc, all_services):
+    """Background: calculate full quote with selected service, push results."""
+    try:
         box_weights = calculate_box_weights(packages, mode)
 
-        # Build canned text message
+        # Build canned text using the selected service
         quote_text = build_quote_text(
             mode, from_postal, to_postal,
-            packages, box_weights, cheapest, all_quotes,
+            packages, box_weights, selected_svc, all_services,
         )
 
-        # Build flex table
-        flex = _build_result_flex(all_quotes, mode)
+        # Build comparison flex (titled "境內段運費比較")
+        result_flex = _build_result_flex(all_services, "境內段")
 
-        # Push both messages
+        # Build post-quote action flex
+        action_flex = _build_post_quote_flex(mode)
+
+        # Push all messages (text + 2 flex)
         line_push_messages(target, [
             {"type": "text", "text": quote_text},
-            {"type": "flex", "altText": f"📊 {mode}運費比較表", "contents": flex},
+            {"type": "flex", "altText": "📊 境內段運費比較表", "contents": result_flex},
+            {"type": "flex", "altText": "接下來要做什麼？", "contents": action_flex},
         ])
 
     except Exception as e:
-        log.error(f"[QuoteHandler] Background quote error: {e}", exc_info=True)
-        line_push(target, f"❌ 報價過程發生錯誤: {e}")
+        log.error(f"[QuoteHandler] Quote calculation error: {e}", exc_info=True)
+        line_push(target, f"❌ 報價計算過程發生錯誤: {e}")
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -424,6 +600,93 @@ def _build_confirm_flex(parsed: ParsedInput) -> dict:
                             "text": "報價重新輸入"}},
             ],
         },
+    }
+
+
+def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
+    """Bubble listing UPS/FedEx services with Service | Cost | ETA | 選擇 button."""
+    body: list = [
+        {"type": "text", "text": "🚚 境內運送服務",
+         "weight": "bold", "size": "lg", "color": "#1a1a1a"},
+        {"type": "text", "text": "以下為 UPS / FedEx 境內運送報價，請選擇一項",
+         "size": "xs", "color": "#888888", "margin": "sm", "wrap": True},
+        {"type": "separator", "margin": "md"},
+        # Header row
+        {
+            "type": "box", "layout": "horizontal", "margin": "md",
+            "paddingStart": "sm", "paddingEnd": "sm",
+            "contents": [
+                {"type": "text", "text": "Service", "size": "xxs",
+                 "color": "#888888", "flex": 5, "weight": "bold"},
+                {"type": "text", "text": "支出", "size": "xxs",
+                 "color": "#888888", "flex": 2, "align": "end", "weight": "bold"},
+                {"type": "text", "text": "ETA", "size": "xxs",
+                 "color": "#888888", "flex": 3, "align": "end", "weight": "bold"},
+                {"type": "filler", "flex": 2},
+            ],
+        },
+        {"type": "separator", "margin": "xs"},
+    ]
+
+    count = 0
+    for idx, svc in enumerate(all_services):
+        # Only show UPS / FedEx (TE source)
+        if svc.source != "TE":
+            continue
+        count += 1
+
+        is_cheapest = (count == 1)  # first TE service (sorted by total)
+
+        row_contents: list = [
+            {
+                "type": "box", "layout": "vertical", "flex": 5,
+                "contents": [
+                    {"type": "text",
+                     "text": f"{svc.carrier} - {svc.name}",
+                     "size": "xxs", "weight": "bold", "wrap": True},
+                ],
+            },
+            {"type": "text", "text": f"${svc.total:.2f}", "size": "xxs",
+             "flex": 2, "align": "end", "gravity": "center",
+             "color": "#28a745" if is_cheapest else "#333333",
+             "weight": "bold" if is_cheapest else "regular"},
+            {"type": "text", "text": _short_eta(svc.eta), "size": "xxs",
+             "flex": 3, "align": "end", "gravity": "center",
+             "color": "#888888"},
+            {"type": "button", "style": "primary", "height": "sm", "flex": 2,
+             "color": "#28a745" if is_cheapest else "#007bff",
+             "action": {"type": "message",
+                        "label": "選擇",
+                        "text": f"報價選擇服務_{idx}"}},
+        ]
+
+        row = {
+            "type": "box", "layout": "horizontal",
+            "margin": "md", "spacing": "sm",
+            "alignItems": "center",
+            "contents": row_contents,
+        }
+
+        if is_cheapest:
+            row["backgroundColor"] = "#f0fff0"
+            row["cornerRadius"] = "md"
+            row["paddingAll"] = "sm"
+
+        body.append(row)
+
+        if count < 8:
+            body.append({"type": "separator", "margin": "xs"})
+
+        if count >= 8:
+            break
+
+    # Remove trailing separator
+    if body and body[-1].get("type") == "separator":
+        body.pop()
+
+    return {
+        "type": "bubble", "size": "mega",
+        "body": {"type": "box", "layout": "vertical", "contents": body},
     }
 
 
@@ -524,6 +787,68 @@ def _build_result_flex(services: List[ServiceQuote], mode: str) -> dict:
     }
 
 
+def _build_post_quote_flex(current_mode: str) -> dict:
+    """Post-quote action buttons: switch mode / reselect service / new quote / done."""
+    buttons: list = []
+
+    # Switch mode button (only for non-加境內)
+    if current_mode == "加台空運":
+        buttons.append({
+            "type": "button", "height": "sm", "style": "primary",
+            "color": "#17a2b8",
+            "action": {"type": "message",
+                       "label": "🚢 海運報價",
+                       "text": "報價切換海運"},
+        })
+    elif current_mode == "加台海運":
+        buttons.append({
+            "type": "button", "height": "sm", "style": "primary",
+            "color": "#007bff",
+            "action": {"type": "message",
+                       "label": "✈️ 空運報價",
+                       "text": "報價切換空運"},
+        })
+
+    buttons.extend([
+        {
+            "type": "button", "height": "sm", "style": "secondary",
+            "action": {"type": "message",
+                       "label": "🔄 選擇其他境內服務",
+                       "text": "報價選擇其他服務"},
+        },
+        {
+            "type": "button", "height": "sm", "style": "secondary",
+            "action": {"type": "message",
+                       "label": "📝 處理新報價",
+                       "text": "報價處理新報價"},
+        },
+        {
+            "type": "button", "height": "sm", "style": "primary",
+            "color": "#6c757d",
+            "action": {"type": "message",
+                       "label": "✅ 報價完成",
+                       "text": "報價完成"},
+        },
+    ])
+
+    return {
+        "type": "bubble",
+        "body": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "📋 接下來要做什麼？",
+                 "weight": "bold", "size": "lg"},
+                {"type": "text", "text": "請選擇後續操作",
+                 "size": "xs", "color": "#888888", "margin": "sm"},
+            ],
+        },
+        "footer": {
+            "type": "box", "layout": "vertical", "spacing": "sm",
+            "contents": buttons,
+        },
+    }
+
+
 # ─── Tiny Flex Helpers ────────────────────────────────────────────────────────
 
 def _kv_row(label: str, value: str) -> dict:
@@ -548,3 +873,14 @@ def _detail_row(label: str, value: str) -> dict:
              "size": "xs", "flex": 2, "align": "end"},
         ],
     }
+
+
+def _short_eta(eta: str) -> str:
+    """Shorten ETA for compact display in service table."""
+    if not eta or eta == "N/A":
+        return "N/A"
+    # If it's a date like "2026-02-24", show "02-24"
+    if len(eta) == 10 and eta[4] == "-":
+        return eta[5:]
+    # Truncate long text
+    return eta[:12] if len(eta) > 12 else eta
