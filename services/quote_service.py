@@ -575,7 +575,8 @@ def build_quote_text(mode: str,
     display_rate = effective_dom_rate + i15
 
     svc_label = f"{cheapest.carrier} - {cheapest.name}"
-    lines.append(f"💻系統顯示 {display_rate:.3f} CAD/kg via {svc_label}")
+    lines.append(f"💻系統顯示 {display_rate:.3f} CAD/kg")
+    lines.append(f"🚚使用境內服務: {svc_label}")
     lines.append("")
 
     # ── 4. Per-Box Details ───────────────────────────────────────────────

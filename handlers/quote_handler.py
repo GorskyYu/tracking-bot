@@ -499,7 +499,7 @@ def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
         )
 
         # Build comparison flex (titled "境內段運費比較")
-        result_flex = _build_result_flex(all_services, "境內段")
+        result_flex = _build_result_flex(all_services, "境內段", selected_svc)
 
         # Build post-quote action flex
         action_flex = _build_post_quote_flex(mode)
@@ -621,8 +621,8 @@ def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
                 {"type": "text", "text": "支出", "size": "xxs",
                  "color": "#888888", "flex": 3, "align": "end", "weight": "bold"},
                 {"type": "text", "text": "ETA", "size": "xxs",
-                 "color": "#888888", "flex": 3, "align": "end", "weight": "bold"},
-                {"type": "filler", "flex": 2},
+                 "color": "#888888", "flex": 2, "align": "end", "weight": "bold"},
+                {"type": "filler", "flex": 3},
             ],
         },
         {"type": "separator", "margin": "xs"},
@@ -652,9 +652,9 @@ def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
              "color": "#28a745" if is_cheapest else "#333333",
              "weight": "bold" if is_cheapest else "regular"},
             {"type": "text", "text": _short_eta(svc.eta), "size": "xxs",
-             "flex": 3, "align": "end", "gravity": "center",
+             "flex": 2, "align": "end", "gravity": "center",
              "color": "#888888"},
-            {"type": "button", "style": "primary", "height": "sm", "flex": 2,
+            {"type": "button", "style": "primary", "height": "sm", "flex": 3,
              "color": "#28a745" if is_cheapest else "#007bff",
              "action": {"type": "message",
                         "label": "繼續",
@@ -723,8 +723,8 @@ def _build_mode_select_flex() -> dict:
     }
 
 
-def _build_result_flex(services: List[ServiceQuote], mode: str) -> dict:
-    """Results-comparison bubble listing up to 8 services."""
+def _build_result_flex(services: List[ServiceQuote], mode: str, selected_svc: Optional[ServiceQuote] = None) -> dict:
+    """Results-comparison bubble listing up to 8 services, highlighting best & selected."""
     body = [
         {"type": "text", "text": f"📊 {mode}運費比較",
          "weight": "bold", "size": "xl", "color": "#1a1a1a"},
@@ -733,29 +733,67 @@ def _build_result_flex(services: List[ServiceQuote], mode: str) -> dict:
 
     for idx, svc in enumerate(services[:8]):
         is_best = (idx == 0)
-        rows: list = []
+        is_selected = False
+        if selected_svc:
+            # Match by name and carrier (assuming distinct enough for short list)
+            if svc.carrier == selected_svc.carrier and svc.name == selected_svc.name:
+                is_selected = True
 
-        # Badge for cheapest
+        rows: list = []
+        
+        # Badges row (if any)
+        badges = []
         if is_best:
-            rows.append({
+            badges.append({
                 "type": "box", "layout": "vertical",
                 "backgroundColor": "#28a745", "cornerRadius": "sm",
-                "paddingAll": "xs",
+                "paddingAll": "xs", "margin": "sm",
+                "width": "60px",
                 "contents": [
                     {"type": "text", "text": "⭐ 最低價", "size": "xxs",
                      "color": "#ffffff", "weight": "bold", "align": "center"},
                 ],
             })
+        
+        if is_selected:
+            badges.append({
+                "type": "box", "layout": "vertical",
+                "backgroundColor": "#dc3545", "cornerRadius": "sm",
+                "paddingAll": "xs", "margin": "sm",
+                "width": "60px",
+                "contents": [
+                    {"type": "text", "text": "✅ 已選擇", "size": "xxs",
+                     "color": "#ffffff", "weight": "bold", "align": "center"},
+                ],
+            })
+
+        if badges:
+            rows.append({
+                "type": "box", "layout": "horizontal",
+                "contents": badges
+            })
+
+        # Determine colors based on priority: Selected (Red) > Best (Green) > Normal
+        text_color = "#333333"
+        bg_color = None
+        
+        if is_selected:
+            text_color = "#dc3545"
+            bg_color = "#fff5f5"  # Light red background
+        elif is_best:
+            text_color = "#28a745"
+            bg_color = "#f0fff0"  # Light green background
 
         # Service name + total
         rows.append({
             "type": "box", "layout": "horizontal",
             "contents": [
                 {"type": "text", "text": f"{svc.carrier} - {svc.name}",
-                 "size": "sm", "weight": "bold", "flex": 5, "wrap": True},
+                 "size": "sm", "weight": "bold", "flex": 5, "wrap": True,
+                 "color": text_color},
                 {"type": "text", "text": f"${svc.total:.2f}",
                  "size": "sm", "weight": "bold", "flex": 2, "align": "end",
-                 "color": "#28a745" if is_best else "#333333"},
+                 "color": text_color},
             ],
         })
 
@@ -772,8 +810,9 @@ def _build_result_flex(services: List[ServiceQuote], mode: str) -> dict:
             "margin": "lg", "spacing": "xs",
             "contents": rows,
         }
-        if is_best:
-            svc_box["backgroundColor"] = "#f0fff0"
+        
+        if bg_color:
+            svc_box["backgroundColor"] = bg_color
             svc_box["cornerRadius"] = "md"
             svc_box["paddingAll"] = "sm"
 
