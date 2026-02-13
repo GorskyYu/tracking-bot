@@ -32,10 +32,12 @@ INTL_RATE_AIR_HEAVY = 10    # total intl weight >= 3 kg
 INTL_RATE_SEA = 5
 INTL_RATE_DOMESTIC = 0.5
 
-# Taiwan Domestic Fee (non-Greater Vancouver origin)
-TW_DOMESTIC_FEE_TWD = 240
+# Taiwan Domestic Fee (per-box, calculated from cuft weight)
 EXCHANGE_RATE = 24.0
-TW_DOMESTIC_FEE_CAD = TW_DOMESTIC_FEE_TWD / EXCHANGE_RATE
+
+# Eastern Canada postal prefixes (for Q3 rate markup formula)
+# NL(A), NS(B), PEI(C), NB(E), QC(G,H,J), ON(K,L,M,N,P)
+EASTERN_POSTAL_PREFIXES = frozenset("ABCEGHIJKLMNP")
 
 # Canada Post API (credentials from CP.js)
 CP_ENDPOINT = "https://soa-gw.canadapost.ca"
@@ -530,6 +532,43 @@ def is_greater_vancouver(postal: str) -> bool:
     return pc.startswith("V") and pc[1] in ("3", "4", "5", "6", "7")
 
 
+def calc_q3_rate(from_postal: str, total_dom_weight: float,
+                 cost_per_kg: float) -> float:
+    """Replicate Q3 formula from Google Sheet 報價計算器.
+
+    Eastern postcodes + light + cheap → floor of 3.0 CAD/kg.
+    Otherwise → max(2.5, cost_per_kg + 1).
+    """
+    first = from_postal.strip().upper()[:1] if from_postal.strip() else ""
+    is_eastern = first in EASTERN_POSTAL_PREFIXES
+    if is_eastern and total_dom_weight < 15 and cost_per_kg < 3:
+        return 3.0
+    return max(2.5, cost_per_kg + 1)
+
+
+def calc_tw_fee_ntd(pkg: Package) -> float:
+    """Replicate M column formula from Google Sheet.
+
+    cuft = L*W*H / 27000
+    fee = 0 if cuft==0; 150 if cuft<2; else (ceil(cuft)-2)*30 + 150.
+    """
+    cuft = (pkg.length * pkg.width * pkg.height) / 27000
+    if cuft < 1e-9:
+        return 0.0
+    if cuft < 2:
+        return 150.0
+    return round((math.ceil(cuft) - 2) * 30 + 150)
+
+
+def _is_date_str(s: str) -> bool:
+    """Check if string is a parseable YYYY-MM-DD date."""
+    try:
+        datetime.strptime(str(s).strip(), "%Y-%m-%d")
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
 # ─── Canned Message Builder ──────────────────────────────────────────────────
 
 def build_quote_text(mode: str,
@@ -547,22 +586,32 @@ def build_quote_text(mode: str,
 
     # ── 1. ETA ────────────────────────────────────────────────────────────
     eta = cheapest.eta
+    eta_is_date = _is_date_str(eta)
     if mode == "加台空運":
-        lines.append(f"🕒若今日寄件，預計 {eta} 抵達國際空運倉")
-        # Calculate arrival range (ETA + 3~8 business days)
-        eta_range = _calc_arrival_range(eta)
-        if eta_range:
-            lines.append(f"🕒台灣投遞 ETA：{eta_range[0]} ～ {eta_range[1]}")
+        if eta_is_date:
+            lines.append(f"🕒若今日寄件，預計 {eta} 抵達國際空運倉")
+            eta_range = _calc_arrival_range(eta)
+            if eta_range:
+                lines.append(f"🕒台灣投遞 ETA：{eta_range[0]} ～ {eta_range[1]}")
+            else:
+                lines.append("🕒台灣投遞 ETA：約抵達空運倉後 3～8 個工作日")
         else:
+            lines.append("🕒抵達國際空運倉 ETA：系統未提供")
             lines.append("🕒台灣投遞 ETA：約抵達空運倉後 3～8 個工作日")
         lines.append("🕒逢台加假日/颱風假/旺季延誤/店到店作業等則順延")
         lines.append("🕒實際投遞日期依物流狀況為準")
     elif mode == "加台海運":
-        lines.append(f"🕒若今日寄件，預計 {eta} 抵達國際海運倉")
+        if eta_is_date:
+            lines.append(f"🕒若今日寄件，預計 {eta} 抵達國際海運倉")
+        else:
+            lines.append("🕒抵達國際海運倉 ETA：系統未提供")
         lines.append("🕒海運包裹抵達海運倉後，運送時效約 1～3 個月")
         lines.append("🕒實際投遞日期依船期及港口狀況為準")
     elif mode == "加境內":
-        lines.append(f"🕒若今日寄件，預計 {eta} 抵達指定地址")
+        if eta_is_date:
+            lines.append(f"🕒若今日寄件，預計 {eta} 抵達指定地址")
+        else:
+            lines.append("🕒送達指定地址 ETA：系統未提供")
         lines.append("🕒實際投遞日期依物流狀況為準")
     lines.append("")
 
@@ -575,20 +624,22 @@ def build_quote_text(mode: str,
         lines.append(f"📮From: {fp}")
     lines.append("")
 
-    # Check for Taiwan domestic fee (Air freight + non-GV origin)
-    add_tw_fee = False
-    if mode == "加台空運" and not is_greater_vancouver(from_postal):
-        add_tw_fee = True
-
     # Compute derived values
     is_domestic = (mode == "加境內")
     total_dom_weight = sum(bw.dom_weight for bw in box_weights)
     total_intl_weight = sum(bw.intl_weight for bw in box_weights)
     i15 = get_i15_rate(mode, total_intl_weight)
 
-    # Effective per-kg rate from cheapest API total
-    effective_dom_rate = cheapest.total / total_dom_weight if total_dom_weight else 0
-    display_rate = effective_dom_rate + i15
+    # Q3-equivalent markup rate (replaces raw API rate / total_dom_weight)
+    cost_per_kg = cheapest.total / total_dom_weight if total_dom_weight else 0
+    q3 = calc_q3_rate(from_postal, total_dom_weight, cost_per_kg)
+
+    if is_domestic:
+        dom_rate = q3 + i15       # Q5 = Q3 + I15 (combined rate for 加境內)
+        display_rate = dom_rate
+    else:
+        dom_rate = q3              # H column = Q3
+        display_rate = q3 + i15    # header rate = H + I15
 
     svc_label = f"{cheapest.carrier} - {cheapest.name}"
     lines.append(f"💻系統顯示 {display_rate:.3f} CAD/kg")
@@ -598,7 +649,6 @@ def build_quote_text(mode: str,
     # ── 4. Per-Box Details ───────────────────────────────────────────────
     grand_total = 0.0
     box_subtotals = []
-    tw_fee_added = False  # Track whether TW fee has been added to a box
 
     for bw in box_weights:
         cmp = (">>" if bw.r_vol > 2 * bw.r_act
@@ -606,19 +656,20 @@ def build_quote_text(mode: str,
                      else ("<" if bw.r_vol < bw.r_act else "=")))
 
         if is_domestic:
-            box_cost = display_rate * bw.dom_weight
-            expr = f"{display_rate:.3f}*{bw.dom_weight:.1f}"
+            box_cost = dom_rate * bw.dom_weight
+            expr = f"{dom_rate:.3f}*{bw.dom_weight:.1f}"
         else:
-            dom_cost = effective_dom_rate * bw.dom_weight
+            dom_cost = dom_rate * bw.dom_weight
             intl_cost = i15 * bw.intl_weight
             box_cost = dom_cost + intl_cost
-            expr = f"{effective_dom_rate:.3f}*{bw.dom_weight:.1f} + {i15:.3f}*{bw.intl_weight:.1f}"
+            expr = f"{dom_rate:.3f}*{bw.dom_weight:.1f} + {i15:.3f}*{bw.intl_weight:.1f}"
 
-        # Add TW domestic fee inline (on first box)
-        if add_tw_fee and not tw_fee_added:
-            box_cost += TW_DOMESTIC_FEE_CAD
-            expr += f" + {TW_DOMESTIC_FEE_TWD:.0f}/{EXCHANGE_RATE:.1f}"
-            tw_fee_added = True
+        # Taiwan domestic fee per box (加台空運 only, based on cuft weight)
+        if mode == "加台空運":
+            tw_fee = calc_tw_fee_ntd(bw.pkg)
+            if tw_fee > 0:
+                box_cost += tw_fee / EXCHANGE_RATE
+                expr += f" + {tw_fee:.0f}/{EXCHANGE_RATE:.1f}"
 
         grand_total += box_cost
         box_subtotals.append(box_cost)
