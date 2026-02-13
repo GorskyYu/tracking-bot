@@ -36,7 +36,7 @@ def _detail_row(label: str, value: str) -> dict:
             {"type": "text", "text": label,
              "size": "xs", "color": "#888888", "flex": 3},
             {"type": "text", "text": value,
-             "size": "xs", "flex": 2, "align": "end"},
+             "size": "xs", "flex": 2, "align": "end", "wrap": True},
         ],
     }
 
@@ -47,7 +47,8 @@ def _short_eta(eta: str) -> str:
         return "N/A"
     if len(eta) == 10 and eta[4] == "-":
         return eta[5:]
-    return eta[:12] if len(eta) > 12 else eta
+    # Allow slightly longer text like "Not Guaranteed" (14 chars)
+    return eta[:16] if len(eta) > 16 else eta
 
 
 # ─── Confirm Flex ─────────────────────────────────────────────────────────────
@@ -195,6 +196,7 @@ def build_service_select_flex(all_services: List[ServiceQuote],
         row_contents.extend([
             {"type": "text", "text": _short_eta(svc.eta), "size": "xxs",
              "flex": 2, "align": "end", "gravity": "center",
+             "wrap": True,
              "color": "#888888"},
             {"type": "button", "style": "primary", "height": "sm", "flex": 4,
              "color": "#28a745" if is_cheapest else "#007bff",
