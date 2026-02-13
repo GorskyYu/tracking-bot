@@ -62,6 +62,7 @@ from handlers.vicky_handler import remind_vicky
 from handlers.ups_handler import handle_ups_logic
 from handlers.monday_webhook_handler import handle_monday_webhook
 from handlers.quote_handler import handle_quote_trigger, handle_quote_message, is_in_quote_session
+from handlers.quote_config import get_profile
 
 # 工作排程
 from jobs.ace_tasks import push_ace_today_shipments
@@ -233,7 +234,10 @@ def webhook():
 
         # ─── Quick Quote 報價流程 ─────────────────────────────────────────
         if mtype == "text" and text == "開始報價":
-            handle_quote_trigger(event, user_id, group_id, r)
+            profile = get_profile(group_id, user_id)
+            if profile:
+                handle_quote_trigger(event, user_id, group_id, r, profile)
+            # If profile is None, user/group not allowed — silently ignore
             continue
 
         # If user is in an active quote session, route message there first

@@ -28,8 +28,23 @@ from services.line_service import (
     line_push, line_reply, line_push_flex,
     line_reply_flex, line_push_messages,
 )
+from handlers.quote_config import (
+    QuoteProfile, DEFAULT_PROFILE, IRIS_PROFILE,
+    get_profile, is_warn_service, WARN_DISCLAIMER,
+)
+from handlers.quote_flex import (
+    build_confirm_flex, build_service_select_flex,
+    build_mode_select_flex, build_result_flex,
+    build_post_quote_flex,
+)
 
 log = logging.getLogger(__name__)
+
+# Profile lookup by name (for Redis serialization)
+_PROFILE_BY_NAME = {
+    "default": DEFAULT_PROFILE,
+    "iris": IRIS_PROFILE,
+}
 
 # ─── Redis Key Helpers ────────────────────────────────────────────────────────
 QUOTE_TTL = 600  # 10 minutes
@@ -68,7 +83,7 @@ def _append_buffer(r, uid, text):
 
 def _clear_session(r, uid):
     for suffix in ("state", "data", "buffer", "target",
-                    "services", "selected_svc", "selected_mode"):
+                    "services", "selected_svc", "selected_mode", "profile"):
         r.delete(_key(uid, suffix))
 
 
@@ -78,6 +93,17 @@ def _get_target(r, uid):
 
 def _set_target(r, uid, target_id):
     r.set(_key(uid, "target"), target_id, ex=QUOTE_TTL)
+
+
+# ─── Profile Serialization ───────────────────────────────────────────────────
+
+def _set_profile_name(r, uid, name: str):
+    r.set(_key(uid, "profile"), name, ex=QUOTE_TTL)
+
+
+def _resolve_profile(r, uid) -> QuoteProfile:
+    name = r.get(_key(uid, "profile")) or "default"
+    return _PROFILE_BY_NAME.get(name, DEFAULT_PROFILE)
 
 
 # ─── Services Serialization ──────────────────────────────────────────────────
@@ -134,7 +160,8 @@ def is_in_quote_session(r, user_id: str) -> bool:
 
 
 def handle_quote_trigger(event: dict, user_id: str,
-                         group_id: Optional[str], r) -> bool:
+                         group_id: Optional[str], r,
+                         profile: QuoteProfile = DEFAULT_PROFILE) -> bool:
     """Handle '開始報價' trigger.  Returns True if consumed."""
     reply_token = event.get("replyToken")
     target_id = group_id or user_id
@@ -142,6 +169,7 @@ def handle_quote_trigger(event: dict, user_id: str,
     _clear_session(r, user_id)
     _set_state(r, user_id, "collecting")
     _set_target(r, user_id, target_id)
+    _set_profile_name(r, user_id, profile.name)
 
     line_reply(
         reply_token,
@@ -161,6 +189,7 @@ def handle_quote_message(event: dict, user_id: str,
         return False
 
     target_id = _get_target(r, user_id)
+    profile = _resolve_profile(r, user_id)
 
     # ── universal cancel ──────────────────────────────────────────────────
     if text == "取消報價":
@@ -174,13 +203,14 @@ def handle_quote_message(event: dict, user_id: str,
 
     if state == "parsed":
         if text == "報價確認正確":
-            return _on_confirmed(r, user_id, target_id)
+            return _on_confirmed(r, user_id, target_id, profile)
         if text == "報價確認錯誤":
             return _on_rejected(r, user_id, target_id)
         if text == "報價重新輸入":
             _clear_session(r, user_id)
             _set_state(r, user_id, "collecting")
             _set_target(r, user_id, target_id)
+            _set_profile_name(r, user_id, profile.name)
             line_push(target_id, "已清除資料，請重新輸入包裹資訊。")
             return True
         # Any other text → treat as additional input, re-parse
@@ -196,27 +226,27 @@ def handle_quote_message(event: dict, user_id: str,
             except ValueError:
                 line_push(target_id, "❌ 無效的選擇，請重新點選服務按鈕。")
                 return True
-            return _on_service_selected(r, user_id, target_id, idx)
+            return _on_service_selected(r, user_id, target_id, idx, profile)
         line_push(target_id, "請從上方列表點選一個境內運送服務。")
         return True
 
     if state == "choosing_mode":
         if text == "報價選擇空運":
-            return _on_mode_selected(r, user_id, target_id, "加台空運")
+            return _on_mode_selected(r, user_id, target_id, "加台空運", profile)
         if text == "報價選擇海運":
-            return _on_mode_selected(r, user_id, target_id, "加台海運")
+            return _on_mode_selected(r, user_id, target_id, "加台海運", profile)
         line_push(target_id, "請點選「✈️ 空運」或「🚢 海運」按鈕選擇運送方式。")
         return True
 
     if state == "post_quote":
         if text == "報價切換空運":
-            return _on_mode_selected(r, user_id, target_id, "加台空運")
+            return _on_mode_selected(r, user_id, target_id, "加台空運", profile)
         if text == "報價切換海運":
-            return _on_mode_selected(r, user_id, target_id, "加台海運")
+            return _on_mode_selected(r, user_id, target_id, "加台海運", profile)
         if text == "報價選擇其他服務":
-            return _on_reselect_service(r, user_id, target_id)
+            return _on_reselect_service(r, user_id, target_id, profile)
         if text == "報價處理新報價":
-            return _on_new_quote(r, user_id, target_id)
+            return _on_new_quote(r, user_id, target_id, profile)
         if text == "報價完成":
             _clear_session(r, user_id)
             line_push(target_id, "✅ 報價完成，感謝使用！")
@@ -268,7 +298,7 @@ def _on_collecting(r, uid, target, text):
         _save_parsed(r, uid, parsed)
         _set_state(r, uid, "parsed")
 
-        flex = _build_confirm_flex(parsed)
+        flex = build_confirm_flex(parsed)
         line_push_flex(target, "📦 包裹資料確認", flex)
         return True
 
@@ -313,7 +343,7 @@ def _on_collecting(r, uid, target, text):
     return True
 
 
-def _on_confirmed(r, uid, target):
+def _on_confirmed(r, uid, target, profile):
     """User confirmed → call APIs for domestic quotes, show service selection."""
     data = _get_data(r, uid)
     if not data:
@@ -350,7 +380,8 @@ def _on_confirmed(r, uid, target):
     # Call APIs in background to avoid webhook timeout
     threading.Thread(
         target=_fetch_services_and_show,
-        args=(r, uid, target, from_postal, to_postal, packages, postal_codes),
+        args=(r, uid, target, from_postal, to_postal, packages, postal_codes,
+              profile),
         daemon=True,
     ).start()
 
@@ -408,12 +439,12 @@ def _on_correcting(r, uid, target, text):
     _set_state(r, uid, "parsed")
     r.set(_key(uid, "buffer"), text, ex=QUOTE_TTL)
 
-    flex = _build_confirm_flex(parsed)
+    flex = build_confirm_flex(parsed)
     line_push_flex(target, "📦 包裹資料確認", flex)
     return True
 
 
-def _on_service_selected(r, uid, target, idx):
+def _on_service_selected(r, uid, target, idx, profile):
     """User picked a domestic service → decide next step."""
     services = _get_services(r, uid)
     if not services or idx < 0 or idx >= len(services):
@@ -427,16 +458,20 @@ def _on_service_selected(r, uid, target, idx):
 
     if len(postal_codes) >= 2:
         # 加境內 → skip mode selection, go directly to results
-        return _on_mode_selected(r, uid, target, "加境內")
+        return _on_mode_selected(r, uid, target, "加境內", profile)
+
+    # Profile forces mode? (e.g. Iris → always 加台空運)
+    if not profile.allow_mode_select and profile.forced_mode:
+        return _on_mode_selected(r, uid, target, profile.forced_mode, profile)
 
     # 1 postal code → ask air/sea
     _set_state(r, uid, "choosing_mode")
-    flex = _build_mode_select_flex()
+    flex = build_mode_select_flex()
     line_push_flex(target, "請選擇運送方式", flex)
     return True
 
 
-def _on_mode_selected(r, uid, target, mode):
+def _on_mode_selected(r, uid, target, mode, profile):
     """Mode determined → calculate and deliver results."""
     data = _get_data(r, uid)
     services = _get_services(r, uid)
@@ -476,14 +511,14 @@ def _on_mode_selected(r, uid, target, mode):
     threading.Thread(
         target=_calculate_and_send_quote,
         args=(r, uid, target, mode, from_postal, to_postal,
-              packages, selected_svc, services),
+              packages, selected_svc, services, profile),
         daemon=True,
     ).start()
 
     return True
 
 
-def _on_reselect_service(r, uid, target):
+def _on_reselect_service(r, uid, target, profile):
     """Post-quote: go back to service selection."""
     services = _get_services(r, uid)
     if not services:
@@ -492,14 +527,18 @@ def _on_reselect_service(r, uid, target):
         return True
 
     _set_state(r, uid, "choosing_service")
-    flex = _build_service_select_flex(services)
+    flex = build_service_select_flex(services, profile)
     line_push_flex(target, "🚚 請選擇境內運送服務", flex)
     return True
 
 
-def _on_new_quote(r, uid, target):
+def _on_new_quote(r, uid, target, profile):
     """Post-quote: start fresh quote (keep session alive)."""
     target_id = _get_target(r, uid)
+    _clear_session(r, uid)
+    _set_state(r, uid, "collecting")
+    _set_target(r, uid, target_id)
+    _set_profile_name(r, uid, profile.name)
     _clear_session(r, uid)
     _set_state(r, uid, "collecting")
     _set_target(r, uid, target_id)
@@ -516,7 +555,7 @@ def _on_new_quote(r, uid, target):
 # ─── Background Workers ──────────────────────────────────────────────────────
 
 def _fetch_services_and_show(r, uid, target, from_postal, to_postal,
-                             packages, postal_codes):
+                             packages, postal_codes, profile):
     """Background: call TE + CP APIs, store results, show service selection."""
     try:
         te_quotes = get_te_quotes(from_postal, to_postal, packages)
@@ -531,10 +570,62 @@ def _fetch_services_and_show(r, uid, target, from_postal, to_postal,
 
         # Store all quotes
         _set_services(r, uid, all_quotes)
-        _set_state(r, uid, "choosing_service")
 
-        # Build service selection flex (UPS/FedEx only from TE)
-        flex = _build_service_select_flex(all_quotes)
+        # ── Profile: auto-select forced service (e.g. Iris → FEDEX_GROUND) ──
+        if not profile.allow_service_select and profile.forced_service:
+            forced_idx = None
+            for idx, svc in enumerate(all_quotes):
+                if profile.forced_service in svc.name:
+                    forced_idx = idx
+                    break
+
+            if forced_idx is None:
+                # Forced service not found ─ fall back to cheapest TE
+                for idx, svc in enumerate(all_quotes):
+                    if svc.source == "TE":
+                        forced_idx = idx
+                        break
+                if forced_idx is None:
+                    forced_idx = 0
+
+            _set_selected_svc(r, uid, forced_idx)
+
+            # Determine mode
+            if len(postal_codes) >= 2:
+                mode = "加境內"
+            elif not profile.allow_mode_select and profile.forced_mode:
+                mode = profile.forced_mode
+            else:
+                # Shouldn't happen for Iris, but fallback
+                _set_state(r, uid, "choosing_mode")
+                flex = build_mode_select_flex()
+                line_push_flex(target, "請選擇運送方式", flex)
+                return
+
+            selected_svc = all_quotes[forced_idx]
+            data = _get_data(r, uid)
+            pkgs = [Package(p["length"], p["width"], p["height"], p["weight"])
+                    for p in data["packages"]]
+
+            if mode == "加境內":
+                fp = postal_codes[0] if len(postal_codes) >= 1 else ""
+                tp = postal_codes[1] if len(postal_codes) >= 2 else ""
+            else:
+                fp = postal_codes[0] if postal_codes else ""
+                tp = WAREHOUSE_POSTAL
+
+            _set_selected_mode(r, uid, mode)
+            _set_state(r, uid, "post_quote")
+
+            _calculate_and_send_quote(
+                r, uid, target, mode, fp, tp,
+                pkgs, selected_svc, all_quotes, profile,
+            )
+            return
+
+        # ── Normal flow: show service selection ──
+        _set_state(r, uid, "choosing_service")
+        flex = build_service_select_flex(all_quotes, profile)
         line_push_flex(target, "🚚 請選擇境內運送服務", flex)
 
     except Exception as e:
@@ -544,7 +635,7 @@ def _fetch_services_and_show(r, uid, target, from_postal, to_postal,
 
 
 def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
-                              packages, selected_svc, all_services):
+                              packages, selected_svc, all_services, profile):
     """Background: calculate full quote with selected service, push results."""
     try:
         box_weights = calculate_box_weights(packages, mode)
@@ -556,17 +647,65 @@ def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
         )
 
         # Build comparison flex (titled "境內段運費比較")
-        result_flex = _build_result_flex(all_services, "境內段", selected_svc)
+        result_flex = build_result_flex(all_services, "境內段", selected_svc)
 
-        # Build post-quote action flex
-        action_flex = _build_post_quote_flex(mode)
+        # Build post-quote action flex (filtered by profile)
+        action_flex = build_post_quote_flex(mode, profile)
 
-        # Push all messages (text + 2 flex)
-        line_push_messages(target, [
-            {"type": "text", "text": quote_text},
-            {"type": "flex", "altText": "📊 境內段運費比較表", "contents": result_flex},
-            {"type": "flex", "altText": "接下來要做什麼？", "contents": action_flex},
-        ])
+        # ── Route messages based on profile visibility ──────────────────
+        group_msgs: list = []   # messages pushed to the group / default target
+        yves_msgs: list = []    # messages pushed privately to cost_push_target
+
+        # 1. Canned text
+        if profile.show_cost_in_group:
+            group_msgs.append({"type": "text", "text": quote_text})
+        else:
+            # Cost goes to profile.cost_push_target privately
+            if profile.cost_push_target:
+                yves_msgs.append({"type": "text", "text": quote_text})
+            # Group gets a simplified acknowledgement
+            group_msgs.append({
+                "type": "text",
+                "text": f"✅ {mode}報價已完成，報價資料已傳送給管理員。",
+            })
+
+        # 2. Warning for discrepant service
+        if is_warn_service(selected_svc.name):
+            warn_text = (
+                f"⚠️ 注意：您選擇的服務 {selected_svc.carrier} - {selected_svc.name} "
+                f"的系統報價可能與 TE 網站顯示不同，請務必進入 TE 網站確認金額。"
+            )
+            if profile.show_cost_in_group:
+                group_msgs.append({"type": "text", "text": warn_text})
+            elif profile.cost_push_target:
+                yves_msgs.append({"type": "text", "text": warn_text})
+
+        # 3. Result comparison flex
+        if profile.show_result_flex_in_group:
+            group_msgs.append({
+                "type": "flex", "altText": "📊 境內段運費比較表",
+                "contents": result_flex,
+            })
+        else:
+            if profile.result_flex_push_target:
+                yves_msgs.append({
+                    "type": "flex", "altText": "📊 境內段運費比較表",
+                    "contents": result_flex,
+                })
+
+        # 4. Post-quote action flex (always in group)
+        group_msgs.append({
+            "type": "flex", "altText": "接下來要做什麼？",
+            "contents": action_flex,
+        })
+
+        # Push to group
+        if group_msgs:
+            line_push_messages(target, group_msgs)
+
+        # Push private messages to cost_push_target
+        if yves_msgs and profile.cost_push_target:
+            line_push_messages(profile.cost_push_target, yves_msgs)
 
     except Exception as e:
         log.error(f"[QuoteHandler] Quote calculation error: {e}", exc_info=True)
@@ -585,425 +724,3 @@ def _save_parsed(r, uid, parsed: ParsedInput):
     }
     _set_data(r, uid, data)
 
-
-# ─── Flex Message Builders ────────────────────────────────────────────────────
-
-def _build_confirm_flex(parsed: ParsedInput) -> dict:
-    """Data-confirmation bubble with 正確 / 錯誤 / 重新輸入 buttons."""
-    body = [
-        {"type": "text", "text": "📦 包裹資料確認",
-         "weight": "bold", "size": "xl", "color": "#1a1a1a"},
-        {"type": "separator", "margin": "md"},
-    ]
-
-    for i, pkg in enumerate(parsed.packages):
-        body.append({
-            "type": "box", "layout": "vertical",
-            "margin": "lg", "spacing": "sm",
-            "contents": [
-                {"type": "text", "text": f"Box {i+1}",
-                 "weight": "bold", "size": "md", "color": "#333333"},
-                _kv_row("尺寸", f"{pkg.length:.0f} × {pkg.width:.0f} × {pkg.height:.0f} cm"),
-                _kv_row("重量", f"{pkg.weight:.1f} kg"),
-                _kv_row("材積重", f"{pkg.vol_weight:.2f} kg"),
-            ],
-        })
-        body.append({"type": "separator", "margin": "md"})
-
-    # Postal codes
-    if len(parsed.postal_codes) >= 2:
-        pc_text = f"{_fmt_postal(parsed.postal_codes[0])} → {_fmt_postal(parsed.postal_codes[1])}"
-    elif parsed.postal_codes:
-        pc_text = _fmt_postal(parsed.postal_codes[0])
-    else:
-        pc_text = "未偵測到"
-
-    body.extend([
-        {"type": "box", "layout": "vertical", "margin": "lg", "spacing": "sm",
-         "contents": [
-             {"type": "text", "text": "📮 郵遞區號",
-              "weight": "bold", "size": "md", "color": "#333333"},
-             {"type": "text", "text": pc_text, "size": "sm", "weight": "bold"},
-         ]},
-        {"type": "separator", "margin": "md"},
-        {"type": "text", "text": "請選擇您的操作：",
-         "size": "sm", "color": "#888888", "margin": "lg"},
-    ])
-
-    return {
-        "type": "bubble",
-        "body": {"type": "box", "layout": "vertical", "contents": body},
-        "footer": {
-            "type": "box", "layout": "vertical", "spacing": "sm",
-            "contents": [
-                {
-                    "type": "box", "layout": "horizontal", "spacing": "sm",
-                    "contents": [
-                        {"type": "button", "height": "sm", "style": "primary",
-                         "color": "#28a745",
-                         "action": {"type": "message",
-                                    "label": "正確",
-                                    "text": "報價確認正確"}},
-                        {"type": "button", "height": "sm", "style": "primary",
-                         "color": "#dc3545",
-                         "action": {"type": "message",
-                                    "label": "錯誤",
-                                    "text": "報價確認錯誤"}},
-                    ],
-                },
-                {"type": "button", "height": "sm", "style": "secondary",
-                 "action": {"type": "message",
-                            "label": "重新輸入",
-                            "text": "報價重新輸入"}},
-            ],
-        },
-    }
-
-
-def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
-    """Bubble listing UPS/FedEx services with Service | Cost | ETA | 選擇 button."""
-    body: list = [
-        {"type": "text", "text": "🚚 境內段運送服務",
-         "weight": "bold", "size": "lg", "color": "#1a1a1a"},
-        {"type": "text", "text": "以下為 UPS / FedEx 境內運送報價，請選擇一項",
-         "size": "xs", "color": "#888888", "margin": "sm", "wrap": True},
-        {"type": "separator", "margin": "md"},
-        # Header row
-        {
-            "type": "box", "layout": "horizontal", "margin": "md",
-            "paddingStart": "sm", "paddingEnd": "sm",
-            "contents": [
-                {"type": "text", "text": "Service", "size": "xxs",
-                 "color": "#888888", "flex": 3, "weight": "bold"},
-                {"type": "text", "text": "支出", "size": "xxs",
-                 "color": "#888888", "flex": 3, "align": "end", "weight": "bold"},
-                {"type": "text", "text": "ETA", "size": "xxs",
-                 "color": "#888888", "flex": 2, "align": "end", "weight": "bold"},
-                {"type": "filler", "flex": 4},
-            ],
-        },
-        {"type": "separator", "margin": "xs"},
-    ]
-
-    count = 0
-    for idx, svc in enumerate(all_services):
-        # Only show UPS / FedEx (TE source)
-        if svc.source != "TE":
-            continue
-        count += 1
-        
-        # Check against warning list
-        # Known discrepant services: FEDEX_EXPRESS_SAVER, STANDARD_OVERNIGHT, UPS Expedited
-        WARN_SERVICES = ["FEDEX_EXPRESS_SAVER", "STANDARD_OVERNIGHT", "UPS Expedited"]
-        has_warning = any(ws in svc.name for ws in WARN_SERVICES)
-
-        is_cheapest = (count == 1)  # first TE service (sorted by total)
-
-        # Service name box (flex 3)
-        svc_name_contents = [
-            {"type": "text", "text": f"{svc.carrier} - {svc.name}",
-             "size": "xxs", "weight": "bold", "wrap": True},
-        ]
-        
-        if has_warning:
-            svc_name_contents.append({
-                "type": "text", "text": "⚠️ 報價可能不準確",
-                "size": "xxs", "color": "#ffc107", "weight": "bold", "wrap": True,
-                "margin": "xs"
-            })
-
-        row_contents: list = [
-            {
-                "type": "box", "layout": "vertical", "flex": 3,
-                "contents": svc_name_contents,
-            },
-            {"type": "text", "text": f"${svc.total:.2f}", "size": "xxs",
-             "flex": 3, "align": "end", "gravity": "center",
-             "wrap": False,
-             "color": "#28a745" if is_cheapest else "#333333",
-             "weight": "bold" if is_cheapest else "regular"},
-            {"type": "text", "text": _short_eta(svc.eta), "size": "xxs",
-             "flex": 2, "align": "end", "gravity": "center",
-             "color": "#888888"},
-            {"type": "button", "style": "primary", "height": "sm", "flex": 4,
-             "color": "#28a745" if is_cheapest else "#007bff",
-             "action": {"type": "message",
-                        "label": "繼續",
-                        "text": f"報價選擇服務_{idx}"}},
-        ]
-
-        row = {
-            "type": "box", "layout": "horizontal",
-            "margin": "md", "spacing": "sm",
-            "alignItems": "center",
-            "contents": row_contents,
-        }
-
-        if is_cheapest:
-            row["backgroundColor"] = "#f0fff0"
-            row["cornerRadius"] = "md"
-            row["paddingAll"] = "sm"
-
-        body.append(row)
-
-        if count < 8:
-            body.append({"type": "separator", "margin": "xs"})
-
-        if count >= 8:
-            break
-
-    # Remove trailing separator
-    if body and body[-1].get("type") == "separator":
-        body.pop()
-        
-    # --- Add footer warning if any discrepant services were shown ---
-    # Since we can't easily check if *shown* rows had warnings without extra logic,
-    # we'll just add a general disclaimer at the bottom of the Bubble if needed,
-    # or consistently add it. User asked to "注記說這三個...".
-    
-    body.append({"type": "separator", "margin": "md"})
-    body.append({
-        "type": "text", 
-        "text": "⚠️ 注意：選擇 FEDEX_EXPRESS_SAVER, STANDARD_OVERNIGHT 或 UPS Expedited 時，系統報價可能與 TE 網站顯示不同。請務必進入 TE 網站再次確認金額。",
-        "size": "xxs", "color": "#ff9800", "wrap": True, "margin": "md"
-    })
-
-    return {
-        "type": "bubble", "size": "mega",
-        "body": {"type": "box", "layout": "vertical", "contents": body},
-    }
-
-
-def _build_mode_select_flex() -> dict:
-    """Bubble asking user to pick ✈️ 空運 or 🚢 海運."""
-    return {
-        "type": "bubble",
-        "body": {
-            "type": "box", "layout": "vertical",
-            "contents": [
-                {"type": "text", "text": "📦 請選擇運送方式",
-                 "weight": "bold", "size": "xl"},
-                {"type": "text", "wrap": True,
-                 "text": "偵測到一組郵遞區號，請選擇從加拿大寄往台灣的運送方式：",
-                 "size": "sm", "color": "#888888", "margin": "md"},
-            ],
-        },
-        "footer": {
-            "type": "box", "layout": "horizontal", "spacing": "sm",
-            "contents": [
-                {"type": "button", "height": "sm", "style": "primary",
-                 "color": "#007bff",
-                 "action": {"type": "message",
-                            "label": "✈️ 空運",
-                            "text": "報價選擇空運"}},
-                {"type": "button", "height": "sm", "style": "primary",
-                 "color": "#17a2b8",
-                 "action": {"type": "message",
-                            "label": "🚢 海運",
-                            "text": "報價選擇海運"}},
-            ],
-        },
-    }
-
-
-def _build_result_flex(services: List[ServiceQuote], mode: str, selected_svc: Optional[ServiceQuote] = None) -> dict:
-    """Results-comparison bubble listing up to 8 services, highlighting best & selected."""
-    body = [
-        {"type": "text", "text": f"📊 {mode}運費比較",
-         "weight": "bold", "size": "xl", "color": "#1a1a1a"},
-        {"type": "separator", "margin": "md"},
-    ]
-
-    for idx, svc in enumerate(services[:8]):
-        is_best = (idx == 0)
-        is_selected = False
-        if selected_svc:
-            # Match by name and carrier (assuming distinct enough for short list)
-            if svc.carrier == selected_svc.carrier and svc.name == selected_svc.name:
-                is_selected = True
-
-        rows: list = []
-        
-        # Badges row (if any)
-        badges = []
-        if is_best:
-            badges.append({
-                "type": "box", "layout": "vertical",
-                "backgroundColor": "#28a745", "cornerRadius": "sm",
-                "paddingAll": "xs", "margin": "sm",
-                "width": "60px",
-                "contents": [
-                    {"type": "text", "text": "⭐ 最低價", "size": "xxs",
-                     "color": "#ffffff", "weight": "bold", "align": "center"},
-                ],
-            })
-        
-        if is_selected:
-            badges.append({
-                "type": "box", "layout": "vertical",
-                "backgroundColor": "#dc3545", "cornerRadius": "sm",
-                "paddingAll": "xs", "margin": "sm",
-                "width": "60px",
-                "contents": [
-                    {"type": "text", "text": "✅ 已選擇", "size": "xxs",
-                     "color": "#ffffff", "weight": "bold", "align": "center"},
-                ],
-            })
-
-        if badges:
-            rows.append({
-                "type": "box", "layout": "horizontal",
-                "contents": badges
-            })
-
-        # Determine colors based on priority: Selected (Red) > Best (Green) > Normal
-        text_color = "#333333"
-        bg_color = None
-        
-        if is_selected:
-            text_color = "#dc3545"
-            bg_color = "#fff5f5"  # Light red background
-        elif is_best:
-            text_color = "#28a745"
-            bg_color = "#f0fff0"  # Light green background
-
-        # Service name + total
-        rows.append({
-            "type": "box", "layout": "horizontal",
-            "contents": [
-                {"type": "text", "text": f"{svc.carrier} - {svc.name}",
-                 "size": "sm", "weight": "bold", "flex": 5, "wrap": True,
-                 "color": text_color},
-                {"type": "text", "text": f"${svc.total:.2f}",
-                 "size": "sm", "weight": "bold", "flex": 2, "align": "end",
-                 "color": text_color},
-            ],
-        })
-
-        # Breakdown rows
-        rows.append(_detail_row("運費基價", f"${svc.freight:.2f}"))
-        if svc.surcharges > 0:
-            rows.append(_detail_row("附加費", f"${svc.surcharges:.2f}"))
-        if svc.tax > 0:
-            rows.append(_detail_row("稅金", f"${svc.tax:.2f}"))
-        rows.append(_detail_row("ETA", str(svc.eta)))
-
-        svc_box = {
-            "type": "box", "layout": "vertical",
-            "margin": "lg", "spacing": "xs",
-            "contents": rows,
-        }
-        
-        if bg_color:
-            svc_box["backgroundColor"] = bg_color
-            svc_box["cornerRadius"] = "md"
-            svc_box["paddingAll"] = "sm"
-
-        body.append(svc_box)
-
-        if idx < min(len(services), 8) - 1:
-            body.append({"type": "separator", "margin": "sm"})
-
-    return {
-        "type": "bubble", "size": "mega",
-        "body": {"type": "box", "layout": "vertical", "contents": body},
-    }
-
-
-def _build_post_quote_flex(current_mode: str) -> dict:
-    """Post-quote action buttons: switch mode / reselect service / new quote / done."""
-    buttons: list = []
-
-    # Switch mode button (only for non-加境內)
-    if current_mode == "加台空運":
-        buttons.append({
-            "type": "button", "height": "sm", "style": "primary",
-            "color": "#17a2b8",
-            "action": {"type": "message",
-                       "label": "🚢 海運報價",
-                       "text": "報價切換海運"},
-        })
-    elif current_mode == "加台海運":
-        buttons.append({
-            "type": "button", "height": "sm", "style": "primary",
-            "color": "#007bff",
-            "action": {"type": "message",
-                       "label": "✈️ 空運報價",
-                       "text": "報價切換空運"},
-        })
-
-    buttons.extend([
-        {
-            "type": "button", "height": "sm", "style": "secondary",
-            "action": {"type": "message",
-                       "label": "🔄 選擇其他境內服務",
-                       "text": "報價選擇其他服務"},
-        },
-        {
-            "type": "button", "height": "sm", "style": "secondary",
-            "action": {"type": "message",
-                       "label": "📝 處理新報價",
-                       "text": "報價處理新報價"},
-        },
-        {
-            "type": "button", "height": "sm", "style": "primary",
-            "color": "#6c757d",
-            "action": {"type": "message",
-                       "label": "✅ 報價完成",
-                       "text": "報價完成"},
-        },
-    ])
-
-    return {
-        "type": "bubble",
-        "body": {
-            "type": "box", "layout": "vertical",
-            "contents": [
-                {"type": "text", "text": "📋 接下來要做什麼？",
-                 "weight": "bold", "size": "lg"},
-                {"type": "text", "text": "請選擇後續操作",
-                 "size": "xs", "color": "#888888", "margin": "sm"},
-            ],
-        },
-        "footer": {
-            "type": "box", "layout": "vertical", "spacing": "sm",
-            "contents": buttons,
-        },
-    }
-
-
-# ─── Tiny Flex Helpers ────────────────────────────────────────────────────────
-
-def _kv_row(label: str, value: str) -> dict:
-    return {
-        "type": "box", "layout": "horizontal",
-        "contents": [
-            {"type": "text", "text": label,
-             "size": "sm", "color": "#888888", "flex": 2},
-            {"type": "text", "text": value,
-             "size": "sm", "flex": 5, "align": "end", "weight": "bold"},
-        ],
-    }
-
-
-def _detail_row(label: str, value: str) -> dict:
-    return {
-        "type": "box", "layout": "horizontal",
-        "contents": [
-            {"type": "text", "text": label,
-             "size": "xs", "color": "#888888", "flex": 3},
-            {"type": "text", "text": value,
-             "size": "xs", "flex": 2, "align": "end"},
-        ],
-    }
-
-
-def _short_eta(eta: str) -> str:
-    """Shorten ETA for compact display in service table."""
-    if not eta or eta == "N/A":
-        return "N/A"
-    # If it's a date like "2026-02-24", show "02-24"
-    if len(eta) == 10 and eta[4] == "-":
-        return eta[5:]
-    # Truncate long text
-    return eta[:12] if len(eta) > 12 else eta
