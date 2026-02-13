@@ -691,17 +691,31 @@ def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
         if svc.source != "TE":
             continue
         count += 1
+        
+        # Check against warning list
+        # Known discrepant services: FEDEX_EXPRESS_SAVER, STANDARD_OVERNIGHT, UPS Expedited
+        WARN_SERVICES = ["FEDEX_EXPRESS_SAVER", "STANDARD_OVERNIGHT", "UPS Expedited"]
+        has_warning = any(ws in svc.name for ws in WARN_SERVICES)
 
         is_cheapest = (count == 1)  # first TE service (sorted by total)
+
+        # Service name box (flex 3)
+        svc_name_contents = [
+            {"type": "text", "text": f"{svc.carrier} - {svc.name}",
+             "size": "xxs", "weight": "bold", "wrap": True},
+        ]
+        
+        if has_warning:
+            svc_name_contents.append({
+                "type": "text", "text": "⚠️ 報價可能不準確",
+                "size": "xxs", "color": "#ffc107", "weight": "bold", "wrap": True,
+                "margin": "xs"
+            })
 
         row_contents: list = [
             {
                 "type": "box", "layout": "vertical", "flex": 3,
-                "contents": [
-                    {"type": "text",
-                     "text": f"{svc.carrier} - {svc.name}",
-                     "size": "xxs", "weight": "bold", "wrap": True},
-                ],
+                "contents": svc_name_contents,
             },
             {"type": "text", "text": f"${svc.total:.2f}", "size": "xxs",
              "flex": 3, "align": "end", "gravity": "center",
@@ -741,6 +755,18 @@ def _build_service_select_flex(all_services: List[ServiceQuote]) -> dict:
     # Remove trailing separator
     if body and body[-1].get("type") == "separator":
         body.pop()
+        
+    # --- Add footer warning if any discrepant services were shown ---
+    # Since we can't easily check if *shown* rows had warnings without extra logic,
+    # we'll just add a general disclaimer at the bottom of the Bubble if needed,
+    # or consistently add it. User asked to "注記說這三個...".
+    
+    body.append({"type": "separator", "margin": "md"})
+    body.append({
+        "type": "text", 
+        "text": "⚠️ 注意：選擇 FEDEX_EXPRESS_SAVER, STANDARD_OVERNIGHT 或 UPS Expedited 時，系統報價可能與 TE 網站顯示不同。請務必進入 TE 網站再次確認金額。",
+        "size": "xxs", "color": "#ff9800", "wrap": True, "margin": "md"
+    })
 
     return {
         "type": "bubble", "size": "mega",
