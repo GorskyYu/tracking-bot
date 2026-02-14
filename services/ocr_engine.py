@@ -79,37 +79,13 @@ class OCRAgent:
         images = []
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         for page in doc:
-            # 1. Render using native PDF rotation first
+            # Strip /Rotate before rendering.
+            # FedEx (and most shipping) PDFs draw content in correct reading
+            # orientation already; the /Rotate tag is for PDF-viewer display
+            # and causes PyMuPDF to produce a rotated image that confuses OCR.
+            page.set_rotation(0)
             pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-            # 2. Smart Orientation Detection using Barcode
-            # Shipping labels usually have 1D barcodes that run parallel to text lines.
-            # If the barcode is "Vertical" (Tall), the image is likely rotated sideways.
-            try:
-                decoded = decode(img, symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.I25])
-                if decoded:
-                    # Find the largest barcode by area (main tracking barcode)
-                    main_bc = max(decoded, key=lambda o: o.rect.width * o.rect.height)
-                    w, h = main_bc.rect.width, main_bc.rect.height
-                    
-                    # If barcode is TALL (Vertical), rotate to make it WIDE (Horizontal)
-                    if h > w:
-                        log.info(f"[AutoRotate] Vertical barcode detected (W={w}, H={h}). Rotating 90 degrees.")
-                        # Rotate -90 (90 CW) is typically the correct fix for sideways labels
-                        img = img.rotate(-90, expand=True)
-                    else:
-                        log.info(f"[AutoRotate] Horizontal barcode detected (W={w}, H={h}). Keeping orientation.")
-                        
-                else:
-                    # No barcode found? Fallback to "Standard Label" heuristics.
-                    # If it's a huge landscape page, it might be a sideways 4x6 label.
-                    # But for now, we trust the PDF's native rotation if no barcode.
-                    pass
-
-            except Exception as e:
-                log.warning(f"[AutoRotate] Barcode detection failed: {e}")
-
             images.append(img)
         return images
 
