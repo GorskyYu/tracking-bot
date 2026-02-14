@@ -69,7 +69,7 @@ class OCRAgent:
     def __init__(self):
         """Initializes the worker with your OpenAI API keys."""
         self.api_key = os.getenv("OPENAI_API_KEY")
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4o") # UPGRADE to gpt-4o for reliability
         self.client = openai.Client(api_key=self.api_key)
 
     # --- SECTION 2: IMAGE PRE-PROCESSING (THE EYES) ---
@@ -79,15 +79,19 @@ class OCRAgent:
         images = []
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         for page in doc:
-            # Let PyMuPDF respect the page's native /Rotate attribute
-            # (do NOT override with set_rotation — invalid values like -45
-            #  corrupt the rendering and produce unreadable images for GPT)
+            # 1. Get original rotation
+            rotation = page.rotation
+            
+            # 2. Reset rotation to 0 to ensure we get the raw unrotated pixmap
+            #    This avoids ambiguity about whether get_pixmap applied it or not
+            page.set_rotation(0)
+            
             pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-            # Ensure portrait orientation for shipping labels
-            if img.width > img.height:
-                img = img.rotate(90, expand=True)
+            # 3. Manually apply the rotation using PIL (negative for CW)
+            if rotation != 0:
+                img = img.rotate(-rotation, expand=True)
 
             images.append(img)
         return images
