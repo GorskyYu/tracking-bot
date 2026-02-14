@@ -71,11 +71,16 @@ class OCRAgent:
         images = []
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         for page in doc:
-            # FORCE the exact rotation that worked for your grid
-            page.set_rotation(-45) 
-                
+            # Let PyMuPDF respect the page's native /Rotate attribute
+            # (do NOT override with set_rotation — invalid values like -45
+            #  corrupt the rendering and produce unreadable images for GPT)
             pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+            # Ensure portrait orientation for shipping labels
+            if img.width > img.height:
+                img = img.rotate(90, expand=True)
+
             images.append(img)
         return images
 
