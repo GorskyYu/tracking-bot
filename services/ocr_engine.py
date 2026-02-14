@@ -45,16 +45,21 @@ If a field is not clearly visible or does not exist, return an empty string "".
 Do NOT guess or invent any data.
 
 Look for:
-- "FROM" section: sender name, phone number, and any client/account code
+- "FROM" section: The sender area typically has multiple lines:
+    Line 1: Personal name (e.g. "Yu-Hsuan Lin")
+    Line 2: Shop name, brand name, or alias (e.g. "Lucien", "Vicky") — this is the client_id
+    Line 3+: Street address, city, province, postal code
+  The client_id is the SHORT word/name on its OWN LINE between the personal name and the address.
+  It is NOT part of the personal name and NOT part of the address.
 - "TO" section: receiver name, full street address, and postal/ZIP code
 - "REF", "INV", or "PO" fields: reference number
 
 Response JSON (every value must be a string):
 {
   "sender": {
-    "name": "exact name from the FROM section",
+    "name": "personal name only from the FROM section (exclude shop/alias name)",
     "phone": "phone number near FROM, or empty",
-    "client_id": "account code or alias printed below/near the sender name, or empty"
+    "client_id": "shop name or alias on its own line below the personal name, or empty"
   },
   "receiver": {
     "name": "exact name from the TO section",
