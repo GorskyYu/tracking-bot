@@ -39,21 +39,29 @@ Response Format:
 
 # STRICT FEDEX PROMPT: Expanded to capture Receiver Address for routing.
 FEDEX_SHIPPING_PROMPT = """
-Task: Extract sender info and receiver info from this FedEx label.
-Focus on the "TO" section for receiver address, and "FROM" for sender.
+Task: Extract sender and receiver info from this FedEx shipping label.
+IMPORTANT: Only extract text that is ACTUALLY PRINTED on the label.
+If a field is not clearly visible or does not exist, return an empty string "".
+Do NOT guess or invent any data.
 
-Response JSON:
+Look for:
+- "FROM" section: sender name, phone number, and any client/account code
+- "TO" section: receiver name, full street address, and postal/ZIP code
+- "REF", "INV", or "PO" fields: reference number
+
+Response JSON (every value must be a string):
 {
   "sender": {
-    "name": "string (From name)",
-    "client_id": "string (lines under name)"
+    "name": "exact name from the FROM section",
+    "phone": "phone number near FROM, or empty",
+    "client_id": "account code or alias printed below/near the sender name, or empty"
   },
   "receiver": {
-    "name": "string (To name)",
-    "address": "string (Full address line)",
-    "postal_code": "string (ZIP/Postal code e.g. V6X 1Z7)"
+    "name": "exact name from the TO section",
+    "address": "full street address from TO section",
+    "postal_code": "ZIP or postal code e.g. V6X 1Z7"
   },
-  "reference_number": "string (Ref #, PO #, Invoice #)"
+  "reference_number": "REF, INV, or PO number if present"
 }
 """
 
@@ -117,7 +125,9 @@ class OCRAgent:
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
         ]}]
         
-        response = self.client.chat.completions.create(model=self.model, messages=messages)
+        response = self.client.chat.completions.create(
+            model=self.model, messages=messages, temperature=0
+        )
         content = re.sub(r"```json|```", "", response.choices[0].message.content.strip()).strip()
         try:
             return json.loads(content)
@@ -144,10 +154,9 @@ class OCRAgent:
             # We capture the Sender, Client ID, and Reference in ONE box.
             log.info("[OCR] FedEx detected. Running Single-Zone extraction.")
             
-            # Expanded Area to capture 'TO' address (Top 60%)
-            # (Left: 0.0, Top: 0.0, Right: 1.0, Bottom: 0.60)
+            # Send the FULL label image — cropping removes context and
+            # increases hallucination risk with smaller vision models.
             res = self.extract_from_image(img, FEDEX_SHIPPING_PROMPT, 
-                                          crop_area=(0.0, 0.0, 1.0, 0.60), 
                                           debug_name="fedex_single_area_scan")
 
             data = {
