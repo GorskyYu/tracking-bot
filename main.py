@@ -327,31 +327,57 @@ def webhook():
                         continue
 
 
-                # ── 空運 / 海運 PDF：需要 3 個數值 ──
+
+                # ── 空運 / 海運 PDF：需要 3 個數值 (或 2 個數值自動拆分) ──
                 else:
                     if len(nums) == 3:
                         expense, canada_price, intl_price = nums
                         ok, msg, item_name = monday_service.update_expense_and_rates(
                             last_pid, expense, canada_price, intl_price, last_bid, last_sub_bid, False
                         )
-                        if ok:
-                            line_push(group_id,
-                                f"✅ 錄入成功\n"
-                                f"📌 項目: {item_name}\n"
-                                f"💰 加境內支出: ${expense}\n"
-                                f"🇨🇦 加拿大單價: ${canada_price}\n"
-                                f"🌍 國際單價: ${intl_price}")
-                            r.delete("global_last_pdf_parent")
+                    elif len(nums) == 2:
+                        # [成本] [合拼單價]
+                        expense, total_unit = nums
+                        pkg_count, pkg_weight = monday_service.get_subitem_metrics(last_pid)
+                        
+                        # Logic: 1 package AND weight < 3kg => Intl=14, Canada=Total-14
+                        # Otherwise => Intl=10, Canada=Total-10
+                        if pkg_count == 1 and 0 < pkg_weight < 3.0:
+                            intl_price = 14.0
+                            canada_price = total_unit - 14.0
+                            logic_msg = f"(1包裹且{pkg_weight}kg<3kg -> 國際14)"
                         else:
-                            line_push(group_id, f"❌ 錄入失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
-                        continue
+                            intl_price = 10.0
+                            canada_price = total_unit - 10.0
+                            logic_msg = f"(一般情況 -> 國際10)"
+
+                        ok, msg, item_name = monday_service.update_expense_and_rates(
+                            last_pid, expense, canada_price, intl_price, last_bid, last_sub_bid, False
+                        )
+                        # Append logic explanation to success message
+                        if ok:
+                            msg += f" {logic_msg}"
+
                     else:
                         line_push(group_id,
-                            f"❌ 格式錯誤！空運/海運 PDF 請輸入 3 個數值：\n"
-                            f"[加境內支出] [加拿大單價] [國際單價]\n"
-                            f"例如：43.10 2.5 10\n"
+                            f"❌ 格式錯誤！空運/海運 PDF 請輸入 3 個數值 (直接指定) 或 2 個數值 (自動拆分)：\n"
+                            f"格式1: [加境內支出] [加拿大單價] [國際單價]\n"
+                            f"格式2: [加境內支出] [合計單價]\n"
                             f"⚠️ 如某欄為 0 請輸入 0")
                         continue
+
+                    # Common success logic for both branches
+                    if ok:
+                        line_push(group_id,
+                            f"✅ 錄入成功\n"
+                            f"📌 項目: {item_name}\n"
+                            f"💰 加境內支出: ${expense}\n"
+                            f"🇨🇦 加拿大單價: ${canada_price}\n"
+                            f"🌍 國際單價: ${intl_price}")
+                        r.delete("global_last_pdf_parent")
+                    else:
+                        line_push(group_id, f"❌ 錄入失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
+                    continue
 
 
         # ─── 查看帳單觸發入口 ───

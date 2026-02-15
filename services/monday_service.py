@@ -375,7 +375,53 @@ class MondaySyncService:
         except Exception as e:
             log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
             self.line_push(self.line_status_group, f"ERROR [PDF→Monday] {e}")
+
+    def get_subitem_metrics(self, parent_id):
+        """
+        獲取該父項目下所有子項目的數量與總重量 (用於自動算費邏輯)
+        Returns: (count, total_weight)
+        """
+        query = f'''
+        query {{
+          items (ids: [{parent_id}]) {{
+            subitems {{
+              id
+              column_values(ids: ["numeric__1"]) {{
+                text
+              }}
+            }}
+          }}
+        }}
+        '''
+        try:
+            resp = self._post_with_backoff(self.api_url, {"query": query})
+            data = resp.json().get("data", {}).get("items", [])
+            if not data:
+                return 0, 0.0
             
+            subitems = data[0].get("subitems", [])
+            count = len(subitems)
+            total_weight = 0.0
+            
+            for sub in subitems:
+                cvs = sub.get("column_values", [])
+                if cvs:
+                    w_text = cvs[0].get("text", "")
+                    try:
+                        # 處理可能含單位的重量字串 (e.g. "2.5 kg")
+                        # 這裡假設 text 是純數字或帶單位
+                        val = re.sub(r"[^\d\.]", "", w_text)
+                        if val:
+                            total_weight += float(val)
+                    except ValueError:
+                        pass
+            
+            return count, total_weight
+            
+        except Exception as e:
+            log.error(f"[get_subitem_metrics] Failed to get metrics for {parent_id}: {e}")
+            return 0, 0.0
+
     # 修正：參數增加 board_id
     def update_domestic_expense(self, parent_id, amount, group_id, board_id):
         """檢查並錄入境內支出金額 (舊版，保留向下相容)"""
