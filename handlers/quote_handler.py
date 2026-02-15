@@ -22,7 +22,7 @@ from services.quote_service import (
     parse_package_input, try_parse_structured,
     get_te_quotes, get_cp_quotes,
     calculate_box_weights, build_quote_text,
-    WAREHOUSE_POSTAL, _fmt_postal,
+    WAREHOUSE_POSTAL, _fmt_postal, is_greater_vancouver,
 )
 from services.line_service import (
     line_push, line_reply, line_push_flex,
@@ -768,6 +768,50 @@ def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
     """Background: calculate full quote with selected service, push results."""
     try:
         box_weights = calculate_box_weights(packages, mode)
+
+        # ── Handle GV Local Delivery Injection ──────────────────────────────
+        gv_to_warehouse = (
+            from_postal and to_postal
+            and is_greater_vancouver(from_postal)
+            and to_postal.upper().replace(" ", "") == WAREHOUSE_POSTAL.upper().replace(" ", "")
+        )
+
+        if gv_to_warehouse:
+            # Create GV Dropoff service (Free)
+            gv_dropoff = ServiceQuote(
+                carrier="大溫地區",
+                name="Drop Off",
+                freight=0, surcharges=0, tax=0, total=0,
+                eta="自行送至指定地點",
+                source="GV"
+            )
+            all_services.append(gv_dropoff)
+
+            # Create GV Pickup service (only if fee > 0 or user chose it)
+            if pickup_fee > 0 or gv_delivery == "pickup":
+                gv_pickup = ServiceQuote(
+                    carrier="大溫地區",
+                    name="上門取件",
+                    freight=pickup_fee, surcharges=0, tax=0, total=pickup_fee,
+                    eta="預約取件",
+                    source="GV"
+                )
+                all_services.append(gv_pickup)
+
+            # Re-sort services by price
+            all_services.sort(key=lambda s: s.total)
+
+            # Update selected_svc to point to our new object if GV mode was chosen
+            if gv_delivery == "pickup":
+                for s in all_services:
+                    if s.source == "GV" and s.name == "上門取件":
+                        selected_svc = s
+                        break
+            elif gv_delivery == "dropoff":
+                for s in all_services:
+                    if s.source == "GV" and s.name == "Drop Off":
+                        selected_svc = s
+                        break
 
         # Build canned text using the selected service
         quote_text = build_quote_text(

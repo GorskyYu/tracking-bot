@@ -165,6 +165,64 @@ def build_service_select_flex(all_services: List[ServiceQuote],
     })
     body.append({"type": "separator", "margin": "xs"})
 
+    # ── Greater Vancouver Local Delivery Options ──────────────────────────
+    gv_to_warehouse = (
+        from_postal and to_postal
+        and is_greater_vancouver(from_postal)
+        and to_postal.upper().replace(" ", "") == WAREHOUSE_POSTAL.upper().replace(" ", "")
+    )
+    if gv_to_warehouse:
+        body.append({"type": "separator", "margin": "md"})
+        body.append({
+            "type": "text", "text": "🏠 大溫地區配送選項",
+            "weight": "bold", "size": "sm", "color": "#1a1a1a", "margin": "md",
+        })
+        body.append({
+            "type": "text",
+            "text": "寄件地在大溫地區，請優先選擇以下本地配送方式",
+            "size": "xxs", "color": "#888888", "wrap": True, "margin": "xs",
+        })
+        # Drop off (First)
+        body.append({
+            "type": "box", "layout": "horizontal",
+            "margin": "md", "spacing": "sm", "alignItems": "center",
+            "contents": [
+                {"type": "box", "layout": "vertical", "flex": 6,
+                 "contents": [
+                     {"type": "text", "text": "📦 大溫地區 Drop Off",
+                      "size": "xs", "weight": "bold", "wrap": True},
+                     {"type": "text", "text": "自行送至指定地點",
+                      "size": "xxs", "color": "#888888"},
+                 ]},
+                {"type": "button", "style": "primary", "height": "sm", "flex": 4,
+                 "color": "#6f42c1",
+                 "action": {"type": "message",
+                            "label": "選擇",
+                            "text": "報價選擇GV_DROPOFF"}},
+            ],
+        })
+        body.append({"type": "separator", "margin": "xs"})
+        # Pick Up (Second)
+        body.append({
+            "type": "box", "layout": "horizontal",
+            "margin": "md", "spacing": "sm", "alignItems": "center",
+            "contents": [
+                {"type": "box", "layout": "vertical", "flex": 6,
+                 "contents": [
+                     {"type": "text", "text": "🚗 大溫地區上門取件",
+                      "size": "xs", "weight": "bold", "wrap": True},
+                     {"type": "text", "text": "需加收取件費",
+                      "size": "xxs", "color": "#888888"},
+                 ]},
+                {"type": "button", "style": "primary", "height": "sm", "flex": 4,
+                 "color": "#6f42c1",
+                 "action": {"type": "message",
+                            "label": "選擇",
+                            "text": "報價選擇GV取件"}},
+            ],
+        })
+        body.append({"type": "separator", "margin": "xs"})
+
     count = 0
     for idx, svc in enumerate(all_services):
         if svc.source != "TE":
@@ -230,63 +288,6 @@ def build_service_select_flex(all_services: List[ServiceQuote],
     # Remove trailing separator
     if body and body[-1].get("type") == "separator":
         body.pop()
-
-    # ── Greater Vancouver Local Delivery Options ──────────────────────────
-    gv_to_warehouse = (
-        from_postal and to_postal
-        and is_greater_vancouver(from_postal)
-        and to_postal.upper().replace(" ", "") == WAREHOUSE_POSTAL.upper().replace(" ", "")
-    )
-    if gv_to_warehouse:
-        body.append({"type": "separator", "margin": "md"})
-        body.append({
-            "type": "text", "text": "🏠 大溫地區配送選項",
-            "weight": "bold", "size": "sm", "color": "#1a1a1a", "margin": "md",
-        })
-        body.append({
-            "type": "text",
-            "text": "寄件地在大溫地區，可選擇以下本地配送方式",
-            "size": "xxs", "color": "#888888", "wrap": True, "margin": "xs",
-        })
-        # 上門取件
-        body.append({
-            "type": "box", "layout": "horizontal",
-            "margin": "md", "spacing": "sm", "alignItems": "center",
-            "contents": [
-                {"type": "box", "layout": "vertical", "flex": 6,
-                 "contents": [
-                     {"type": "text", "text": "🚗 大溫地區上門取件",
-                      "size": "xs", "weight": "bold", "wrap": True},
-                     {"type": "text", "text": "需加收取件費",
-                      "size": "xxs", "color": "#888888"},
-                 ]},
-                {"type": "button", "style": "primary", "height": "sm", "flex": 4,
-                 "color": "#6f42c1",
-                 "action": {"type": "message",
-                            "label": "選擇",
-                            "text": "報價選擇GV取件"}},
-            ],
-        })
-        body.append({"type": "separator", "margin": "xs"})
-        # Drop off
-        body.append({
-            "type": "box", "layout": "horizontal",
-            "margin": "md", "spacing": "sm", "alignItems": "center",
-            "contents": [
-                {"type": "box", "layout": "vertical", "flex": 6,
-                 "contents": [
-                     {"type": "text", "text": "📦 大溫地區 Drop Off",
-                      "size": "xs", "weight": "bold", "wrap": True},
-                     {"type": "text", "text": "自行送至指定地點",
-                      "size": "xxs", "color": "#888888"},
-                 ]},
-                {"type": "button", "style": "primary", "height": "sm", "flex": 4,
-                 "color": "#6f42c1",
-                 "action": {"type": "message",
-                            "label": "選擇",
-                            "text": "報價選擇GV_DROPOFF"}},
-            ],
-        })
 
     # Warning disclaimer
     body.append({"type": "separator", "margin": "md"})
