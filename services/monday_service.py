@@ -343,43 +343,34 @@ class MondaySyncService:
             extra_hint = ""
             if is_auto_rate:
                 extra_hint = "\n⚡ ***自動單價模式***：請僅輸入【加境內成本】即可 (加拿大單價各為 2.5 / 國際由系統自動補 10)"
-            elif is_domestic:
-                extra_hint = "\n請輸入：[加境內支出] [加拿大單價]"
+
+            # --- 10. 🟢 發送合併通知 (Status + Prompt) ---
+            pdf_group_id = os.getenv("LINE_GROUP_ID_PDF") or self.line_status_group
+
+            if is_domestic:
+                prompt_msg = (
+                    f"📄 PDF 處理完成 ─ {parent_name}{extra_hint}\n"
+                    f"🏷 單號: {tracking_str}\n"
+                    f"📍 去向: {board_display_name}\n"
+                    f"🧠 邏輯: {decision_reason}\n\n"
+                    f"💡 請在此群組輸入以下格式完成錄入：\n"
+                    f"[加境內支出] [加拿大單價]\n"
+                    f"例如：43.10 2.5\n"
+                    f"⚠️ 如某欄為 0 請輸入 0"
+                )
             else:
-                extra_hint = "\n請輸入：[加境內支出] [加拿大單價] [國際單價]"
-
-            msg = (
-                f"📄 PDF 處理完成{extra_hint}\n"
-                f"單號: {tracking_str}\n"
-                f"去向: {board_display_name}\n"
-                f"邏輯: {decision_reason}"
-            )
-            self.line_push(self.line_status_group, msg)
-
-            # --- 10. 🟢 發送錄入提示到 PDF 群組 ---
-            pdf_group_id = os.getenv("LINE_GROUP_ID_PDF")
-            if pdf_group_id:
-                if is_domestic:
-                    prompt_msg = (
-                        f"📄 PDF 處理完成 ─ {parent_name}\n"
-                        f"🏷 單號: {tracking_str}\n"
-                        f"📍 去向: {board_display_name}\n\n"
-                        f"💡 請在此群組輸入以下格式完成錄入：\n"
-                        f"[加境內支出] [加拿大單價]\n"
-                        f"例如：43.10 2.5\n"
-                        f"⚠️ 如某欄為 0 請輸入 0"
-                    )
-                else:
-                    prompt_msg = (
-                        f"📄 PDF 處理完成 ─ {parent_name}\n"
-                        f"🏷 單號: {tracking_str}\n"
-                        f"📍 去向: {board_display_name}\n\n"
-                        f"💡 請在此群組輸入以下格式完成錄入：\n"
-                        f"[加境內支出] [加拿大單價] [國際單價]\n"
-                        f"例如：43.10 2.5 10\n"
-                        f"⚠️ 如某欄為 0 請輸入 0"
-                    )
-                self.line_push(pdf_group_id, prompt_msg)
+                prompt_msg = (
+                    f"📄 PDF 處理完成 ─ {parent_name}{extra_hint}\n"
+                    f"🏷 單號: {tracking_str}\n"
+                    f"📍 去向: {board_display_name}\n"
+                    f"🧠 邏輯: {decision_reason}\n\n"
+                    f"💡 請在此群組輸入以下格式完成錄入：\n"
+                    f"[加境內支出] [加拿大單價] [國際單價]\n"
+                    f"例如：43.10 2.5 10\n"
+                    f"⚠️ 如某欄為 0 請輸入 0"
+                )
+            
+            self.line_push(pdf_group_id, prompt_msg)
 
         except Exception as e:
             log.error(f"[PDF→Monday] Monday sync failed: {e}", exc_info=True)
