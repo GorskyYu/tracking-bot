@@ -368,12 +368,17 @@ def webhook():
 
                     # Common success logic for both branches
                     if ok:
-                        line_push(group_id,
+                        success_msg = (
                             f"✅ 錄入成功\n"
                             f"📌 項目: {item_name}\n"
                             f"💰 加境內支出: ${expense}\n"
                             f"🇨🇦 加拿大單價: ${canada_price}\n"
-                            f"🌍 國際單價: ${intl_price}")
+                            f"🌍 國際單價: ${intl_price}"
+                        )
+                        if 'logic_msg' in locals():
+                            success_msg += f"\n💡 計算邏輯: {logic_msg}"
+                        
+                        line_push(group_id, success_msg)
                         r.delete("global_last_pdf_parent")
                     else:
                         line_push(group_id, f"❌ 錄入失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
