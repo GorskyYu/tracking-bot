@@ -83,7 +83,8 @@ def _append_buffer(r, uid, text):
 
 def _clear_session(r, uid):
     for suffix in ("state", "data", "buffer", "target",
-                    "services", "selected_svc", "selected_mode", "profile"):
+                    "services", "selected_svc", "selected_mode", "profile",
+                    "gv_delivery", "pickup_fee"):
         r.delete(_key(uid, suffix))
 
 
@@ -150,6 +151,24 @@ def _set_selected_mode(r, uid, mode: str):
 
 def _get_selected_mode(r, uid) -> Optional[str]:
     return r.get(_key(uid, "selected_mode"))
+
+
+def _set_gv_delivery(r, uid, delivery_type: str):
+    """Store GV local delivery type: 'pickup' or 'dropoff'."""
+    r.set(_key(uid, "gv_delivery"), delivery_type, ex=QUOTE_TTL)
+
+
+def _get_gv_delivery(r, uid) -> Optional[str]:
+    return r.get(_key(uid, "gv_delivery"))
+
+
+def _set_pickup_fee(r, uid, fee: float):
+    r.set(_key(uid, "pickup_fee"), str(fee), ex=QUOTE_TTL)
+
+
+def _get_pickup_fee(r, uid) -> Optional[float]:
+    raw = r.get(_key(uid, "pickup_fee"))
+    return float(raw) if raw is not None else None
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
@@ -228,6 +247,10 @@ def handle_quote_message(event: dict, user_id: str,
                 line_push(target_id, "❌ 無效的選擇，請重新點選服務按鈕。")
                 return True
             return _on_service_selected(r, user_id, target_id, idx, profile)
+        if text == "報價選擇GV取件":
+            return _on_gv_pickup(r, user_id, target_id, profile)
+        if text == "報價選擇GV_DROPOFF":
+            return _on_gv_dropoff(r, user_id, target_id, profile)
         line_push(target_id, "請從上方列表點選一個境內運送服務。")
         return True
 
@@ -239,6 +262,9 @@ def handle_quote_message(event: dict, user_id: str,
         line_push(target_id, "請點選「✈️ 空運」或「🚢 海運」按鈕選擇運送方式。")
         return True
 
+    if state == "entering_pickup_fee":
+        return _on_pickup_fee_entered(r, user_id, target_id, text, profile)
+
     if state == "post_quote":
         if text == "報價切換空運":
             return _on_mode_selected(r, user_id, target_id, "加台空運", profile)
@@ -246,7 +272,7 @@ def handle_quote_message(event: dict, user_id: str,
             return _on_mode_selected(r, user_id, target_id, "加台海運", profile)
         if text == "報價選擇其他服務":
             return _on_reselect_service(r, user_id, target_id, profile)
-        if text == "報價處理新報價":
+        if text in ("處理新報價", "報價處理新報價"):
             return _on_new_quote(r, user_id, target_id, profile)
         if text == "報價完成":
             _clear_session(r, user_id)
@@ -262,10 +288,21 @@ def handle_quote_message(event: dict, user_id: str,
 
 def _on_collecting(r, uid, target, text):
     """Parse message text and show confirm flex or partial status."""
-    _append_buffer(r, uid, text)
-    full_text = _get_buffer(r, uid)
-
-    parsed = parse_package_input(full_text)
+    # First: try parsing ONLY the new text to detect complete re-entry.
+    # This prevents duplicate boxes when user re-enters everything.
+    new_only_parsed = parse_package_input(text)
+    if (new_only_parsed
+        and new_only_parsed.packages
+        and new_only_parsed.postal_codes
+        and all(p.length > 0 and p.width > 0 and p.height > 0 and p.weight > 0
+                for p in new_only_parsed.packages)):
+        # New text alone is a complete valid set → replace buffer entirely
+        r.set(_key(uid, "buffer"), text, ex=QUOTE_TTL)
+        parsed = new_only_parsed
+    else:
+        _append_buffer(r, uid, text)
+        full_text = _get_buffer(r, uid)
+        parsed = parse_package_input(full_text)
 
     # 1. Nothing found at all (or parse error)
     if not parsed or (not parsed.packages and not parsed.postal_codes):
@@ -506,16 +543,87 @@ def _on_mode_selected(r, uid, target, mode, profile):
     _set_selected_mode(r, uid, mode)
     _set_state(r, uid, "post_quote")
 
+    gv_delivery = _get_gv_delivery(r, uid)
+    pickup_fee = _get_pickup_fee(r, uid) or 0
+
     line_push(target, f"📡 正在計算{mode}報價…")
 
     # Run in background to avoid blocking webhook
     threading.Thread(
         target=_calculate_and_send_quote,
         args=(r, uid, target, mode, from_postal, to_postal,
-              packages, selected_svc, services, profile),
+              packages, selected_svc, services, profile,
+              gv_delivery, pickup_fee),
         daemon=True,
     ).start()
 
+    return True
+
+
+def _auto_select_cheapest_te(r, uid):
+    """Auto-select cheapest TE service for GV local delivery."""
+    services = _get_services(r, uid)
+    if not services:
+        return
+    for idx, svc in enumerate(services):
+        if svc.source == "TE":
+            _set_selected_svc(r, uid, idx)
+            return
+    # Fallback to cheapest overall
+    _set_selected_svc(r, uid, 0)
+
+
+def _on_gv_pickup(r, uid, target, profile):
+    """User chose 大溫地區上門取件 → ask for pickup fee."""
+    _set_gv_delivery(r, uid, "pickup")
+    _auto_select_cheapest_te(r, uid)
+    _set_state(r, uid, "entering_pickup_fee")
+    line_push(
+        target,
+        "🚗 您選擇了「大溫地區上門取件」\n\n"
+        "請輸入取件費用（CAD），例如：15\n\n"
+        "💡 輸入「取消報價」可隨時退出。"
+    )
+    return True
+
+
+def _on_gv_dropoff(r, uid, target, profile):
+    """User chose 大溫地區 drop off → go straight to mode selection."""
+    _set_gv_delivery(r, uid, "dropoff")
+    _set_pickup_fee(r, uid, 0)
+    _auto_select_cheapest_te(r, uid)
+
+    # Skip mode select for GV local → always 加台空運
+    if not profile.allow_mode_select and profile.forced_mode:
+        return _on_mode_selected(r, uid, target, profile.forced_mode, profile)
+
+    _set_state(r, uid, "choosing_mode")
+    flex = build_mode_select_flex()
+    line_push_flex(target, "請選擇運送方式", flex)
+    return True
+
+
+def _on_pickup_fee_entered(r, uid, target, text, profile):
+    """User entered pickup fee amount → validate and proceed."""
+    import re as _re
+    fee_match = _re.match(r'^[\d.]+$', text.strip())
+    if not fee_match:
+        line_push(
+            target,
+            "❌ 請輸入正確的數字金額（例如：15），或輸入「取消報價」退出。"
+        )
+        return True
+
+    fee = float(text.strip())
+    _set_pickup_fee(r, uid, fee)
+
+    # Skip mode select for GV local → default behaviour
+    if not profile.allow_mode_select and profile.forced_mode:
+        return _on_mode_selected(r, uid, target, profile.forced_mode, profile)
+
+    _set_state(r, uid, "choosing_mode")
+    flex = build_mode_select_flex()
+    line_push_flex(target, "請選擇運送方式", flex)
     return True
 
 
@@ -527,8 +635,18 @@ def _on_reselect_service(r, uid, target, profile):
         _clear_session(r, uid)
         return True
 
+    data = _get_data(r, uid)
+    postal_codes = data.get("postal_codes", []) if data else []
+    from_postal = postal_codes[0] if postal_codes else ""
+    if len(postal_codes) >= 2:
+        to_postal = postal_codes[1]
+    else:
+        to_postal = WAREHOUSE_POSTAL
+
     _set_state(r, uid, "choosing_service")
-    flex = build_service_select_flex(services, profile)
+    flex = build_service_select_flex(services, profile,
+                                     from_postal=from_postal,
+                                     to_postal=to_postal)
     line_push_flex(target, "🚚 請選擇境內運送服務", flex)
     return True
 
@@ -540,9 +658,6 @@ def _on_new_quote(r, uid, target, profile):
     _set_state(r, uid, "collecting")
     _set_target(r, uid, target_id)
     _set_profile_name(r, uid, profile.name)
-    _clear_session(r, uid)
-    _set_state(r, uid, "collecting")
-    _set_target(r, uid, target_id)
     line_push(
         target,
         "📝 新報價模式已啟動！\n\n"
@@ -624,15 +739,21 @@ def _fetch_services_and_show(r, uid, target, from_postal, to_postal,
             _set_selected_mode(r, uid, mode)
             _set_state(r, uid, "post_quote")
 
+            gv_delivery = _get_gv_delivery(r, uid)
+            pickup_fee = _get_pickup_fee(r, uid) or 0
+
             _calculate_and_send_quote(
                 r, uid, target, mode, fp, tp,
                 pkgs, selected_svc, all_quotes, profile,
+                gv_delivery, pickup_fee,
             )
             return
 
         # ── Normal flow: show service selection ──
         _set_state(r, uid, "choosing_service")
-        flex = build_service_select_flex(all_quotes, profile)
+        flex = build_service_select_flex(all_quotes, profile,
+                                         from_postal=from_postal,
+                                         to_postal=to_postal)
         line_push_flex(target, "🚚 請選擇境內運送服務", flex)
 
     except Exception as e:
@@ -642,7 +763,8 @@ def _fetch_services_and_show(r, uid, target, from_postal, to_postal,
 
 
 def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
-                              packages, selected_svc, all_services, profile):
+                              packages, selected_svc, all_services, profile,
+                              gv_delivery=None, pickup_fee=0):
     """Background: calculate full quote with selected service, push results."""
     try:
         box_weights = calculate_box_weights(packages, mode)
@@ -651,6 +773,7 @@ def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
         quote_text = build_quote_text(
             mode, from_postal, to_postal,
             packages, box_weights, selected_svc, all_services,
+            gv_delivery=gv_delivery, pickup_fee=pickup_fee,
         )
 
         # Build comparison flex (titled "境內段運費比較")

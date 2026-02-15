@@ -191,7 +191,15 @@ PARSE_SYSTEM_PROMPT = """你是一個包裹資訊提取助手。從客戶訊息�
    - "7公斤" "7kg" "7 kilos" → 7
    - "15磅" "15 lbs" → 6.9（1磅≈0.45359kg，15*0.45359=6.803...，請無條件進位到一位小數即6.9）
      **重要：重量換算也必須無條件進位到小數點下第一位。**
-   - **如果數字單獨出現且沒有單位，若格式類似尺寸（三個數字連在一起）判斷為尺寸；若是單一數字（如 "8.8"）或 "8.8 5"，請判斷為重量 (kg)。**
+   - **如果數字單獨出現且沒有單位，若格式類似尺寸（三個數字連在一起）判斷為尺寸；若是單一數字（如 "8.8", "12", "27"）或 "8.8 5"，請判斷為重量 (kg)。整數和小數都視為重量。**
+   - **當尺寸（L*W*H）和重量分開在不同行時，要能正確配對。例如：**
+     ```
+     113*50*20
+     12
+     80*40*30
+     27
+     ```
+     **表示 Box1: 113x50x20, 12kg；Box2: 80x40x30, 27kg。緊接在尺寸行後的單一數字就是該包裹的重量。**
 3. 郵遞區號是加拿大格式：字母數字字母 數字字母數字（如 V6X1Z7, B2V1R9, T2P3G5）
 4. 如果有多個包裹，分別列出每個的尺寸和重量
 5. **支援更正/更新邏輯**：如果輸入的文本包含「更正」「修改」或與前文數字衝突的更新，請以最新的數值為準。例如：
@@ -578,11 +586,14 @@ def build_quote_text(mode: str,
                      packages: List[Package],
                      box_weights: List[BoxWeights],
                      cheapest: ServiceQuote,
-                     all_services: List[ServiceQuote]) -> str:
+                     all_services: List[ServiceQuote],
+                     gv_delivery: str = None,
+                     pickup_fee: float = 0) -> str:
     """
     Build the '罐頭訊息' canned message, mimicking buildReportText_ in
     writeCostSummary.js as closely as possible.
     """
+    is_gv_local = gv_delivery in ("pickup", "dropoff")
     lines = [f"👉{mode}初步報價：", ""]
 
     # ── 1. ETA ────────────────────────────────────────────────────────────
@@ -623,6 +634,14 @@ def build_quote_text(mode: str,
         lines.append(f"📮{fp} → {tp}")
     else:
         lines.append(f"📮From: {fp}")
+
+    # GV local delivery type
+    if is_gv_local:
+        if gv_delivery == "pickup":
+            lines.append("🚚投遞方式: 大溫地區上門取件")
+        else:
+            lines.append("🚚投遞方式: 大溫地區 Drop Off")
+
     lines.append("")
 
     # Compute derived values
@@ -691,16 +710,28 @@ def build_quote_text(mode: str,
         lines.append("")
 
     # ── 5. Total ─────────────────────────────────────────────────────────
-    if len(box_subtotals) > 1:
-        parts = " + ".join(f"{s:.2f}" for s in box_subtotals)
-        lines.append(f"💲Total Cost: {parts} = {grand_total:.2f} CAD")
+    if is_gv_local and gv_delivery == "pickup" and pickup_fee > 0:
+        # GV pickup: show shipping + pickup fee breakdown
+        if len(box_subtotals) > 1:
+            parts = " + ".join(f"{s:.2f}" for s in box_subtotals)
+            lines.append(f"🚚運費: {parts} = {grand_total:.2f} CAD")
+        else:
+            lines.append(f"🚚運費: {grand_total:.2f} CAD")
+        lines.append(f"📅上門取件: {pickup_fee:.0f} CAD（直接 e-Transfer 或支付現金給小幫手）")
+        final_total = grand_total + pickup_fee
+        lines.append(f"💲Total Cost: {grand_total:.2f}+{pickup_fee:.0f} = {final_total:.2f} CAD")
     else:
-        lines.append(f"💲Total Cost: {grand_total:.2f} CAD")
+        if len(box_subtotals) > 1:
+            parts = " + ".join(f"{s:.2f}" for s in box_subtotals)
+            lines.append(f"💲Total Cost: {parts} = {grand_total:.2f} CAD")
+        else:
+            lines.append(f"💲Total Cost: {grand_total:.2f} CAD")
     lines.append("")
 
     # ── 6. Footer ────────────────────────────────────────────────────────
-    lines.append("🚚使用 UPS / FedEx / Purolator 寄送時，可憑運單上的追蹤碼查詢配送進度。")
-    lines.append("")
+    if not is_gv_local:
+        lines.append("🚚使用 UPS / FedEx / Purolator 寄送時，可憑運單上的追蹤碼查詢配送進度。")
+        lines.append("")
 
     if mode == "加境內":
         lines.extend([

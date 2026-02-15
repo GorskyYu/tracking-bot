@@ -8,7 +8,8 @@ business logic in quote_handler.py.
 from typing import List, Optional
 
 from services.quote_service import (
-    ParsedInput, ServiceQuote, _fmt_postal,
+    ParsedInput, ServiceQuote, _fmt_postal, is_greater_vancouver,
+    WAREHOUSE_POSTAL,
 )
 from handlers.quote_config import (
     QuoteProfile, is_warn_service, WARN_DISCLAIMER,
@@ -111,14 +112,14 @@ def build_confirm_flex(parsed: ParsedInput) -> dict:
                         {"type": "button", "height": "sm", "style": "primary",
                          "color": "#dc3545",
                          "action": {"type": "message",
-                                    "label": "錯誤",
-                                    "text": "報價錯誤"}},
+                                    "label": "重新輸入",
+                                    "text": "報價重新輸入"}},
                     ],
                 },
                 {"type": "button", "height": "sm", "style": "secondary",
                  "action": {"type": "message",
-                            "label": "重新輸入",
-                            "text": "報價重新輸入"}},
+                            "label": "取消報價",
+                            "text": "取消報價"}},
             ],
         },
     }
@@ -127,8 +128,12 @@ def build_confirm_flex(parsed: ParsedInput) -> dict:
 # ─── Service Selection Flex ───────────────────────────────────────────────────
 
 def build_service_select_flex(all_services: List[ServiceQuote],
-                              profile: QuoteProfile) -> dict:
-    """Bubble listing UPS/FedEx services with Service | Cost | ETA | button."""
+                              profile: QuoteProfile,
+                              from_postal: str = "",
+                              to_postal: str = "") -> dict:
+    """Bubble listing UPS/FedEx services with Service | Cost | ETA | button.
+    If from_postal is Greater Vancouver and to_postal is warehouse,
+    also adds local delivery options."""
     show_cost = profile.show_cost_in_group
 
     body: list = [
@@ -226,6 +231,63 @@ def build_service_select_flex(all_services: List[ServiceQuote],
     if body and body[-1].get("type") == "separator":
         body.pop()
 
+    # ── Greater Vancouver Local Delivery Options ──────────────────────────
+    gv_to_warehouse = (
+        from_postal and to_postal
+        and is_greater_vancouver(from_postal)
+        and to_postal.upper().replace(" ", "") == WAREHOUSE_POSTAL.upper().replace(" ", "")
+    )
+    if gv_to_warehouse:
+        body.append({"type": "separator", "margin": "md"})
+        body.append({
+            "type": "text", "text": "🏠 大溫地區配送選項",
+            "weight": "bold", "size": "sm", "color": "#1a1a1a", "margin": "md",
+        })
+        body.append({
+            "type": "text",
+            "text": "寄件地在大溫地區，可選擇以下本地配送方式",
+            "size": "xxs", "color": "#888888", "wrap": True, "margin": "xs",
+        })
+        # 上門取件
+        body.append({
+            "type": "box", "layout": "horizontal",
+            "margin": "md", "spacing": "sm", "alignItems": "center",
+            "contents": [
+                {"type": "box", "layout": "vertical", "flex": 6,
+                 "contents": [
+                     {"type": "text", "text": "🚗 大溫地區上門取件",
+                      "size": "xs", "weight": "bold", "wrap": True},
+                     {"type": "text", "text": "需加收取件費",
+                      "size": "xxs", "color": "#888888"},
+                 ]},
+                {"type": "button", "style": "primary", "height": "sm", "flex": 4,
+                 "color": "#6f42c1",
+                 "action": {"type": "message",
+                            "label": "選擇",
+                            "text": "報價選擇GV取件"}},
+            ],
+        })
+        body.append({"type": "separator", "margin": "xs"})
+        # Drop off
+        body.append({
+            "type": "box", "layout": "horizontal",
+            "margin": "md", "spacing": "sm", "alignItems": "center",
+            "contents": [
+                {"type": "box", "layout": "vertical", "flex": 6,
+                 "contents": [
+                     {"type": "text", "text": "📦 大溫地區 Drop Off",
+                      "size": "xs", "weight": "bold", "wrap": True},
+                     {"type": "text", "text": "自行送至指定地點",
+                      "size": "xxs", "color": "#888888"},
+                 ]},
+                {"type": "button", "style": "primary", "height": "sm", "flex": 4,
+                 "color": "#6f42c1",
+                 "action": {"type": "message",
+                            "label": "選擇",
+                            "text": "報價選擇GV_DROPOFF"}},
+            ],
+        })
+
     # Warning disclaimer
     body.append({"type": "separator", "margin": "md"})
     body.append({
@@ -236,6 +298,15 @@ def build_service_select_flex(all_services: List[ServiceQuote],
     return {
         "type": "bubble", "size": "mega",
         "body": {"type": "box", "layout": "vertical", "contents": body},
+        "footer": {
+            "type": "box", "layout": "vertical", "spacing": "sm",
+            "contents": [
+                {"type": "button", "height": "sm", "style": "secondary",
+                 "action": {"type": "message",
+                            "label": "取消報價",
+                            "text": "取消報價"}},
+            ],
+        },
     }
 
 
@@ -256,18 +327,27 @@ def build_mode_select_flex() -> dict:
             ],
         },
         "footer": {
-            "type": "box", "layout": "horizontal", "spacing": "sm",
+            "type": "box", "layout": "vertical", "spacing": "sm",
             "contents": [
-                {"type": "button", "height": "sm", "style": "primary",
-                 "color": "#007bff",
+                {
+                    "type": "box", "layout": "horizontal", "spacing": "sm",
+                    "contents": [
+                        {"type": "button", "height": "sm", "style": "primary",
+                         "color": "#007bff",
+                         "action": {"type": "message",
+                                    "label": "✈️ 空運",
+                                    "text": "報價選擇空運"}},
+                        {"type": "button", "height": "sm", "style": "primary",
+                         "color": "#17a2b8",
+                         "action": {"type": "message",
+                                    "label": "🚢 海運",
+                                    "text": "報價選擇海運"}},
+                    ],
+                },
+                {"type": "button", "height": "sm", "style": "secondary",
                  "action": {"type": "message",
-                            "label": "✈️ 空運",
-                            "text": "報價選擇空運"}},
-                {"type": "button", "height": "sm", "style": "primary",
-                 "color": "#17a2b8",
-                 "action": {"type": "message",
-                            "label": "🚢 海運",
-                            "text": "報價選擇海運"}},
+                            "label": "取消報價",
+                            "text": "取消報價"}},
             ],
         },
     }
@@ -412,7 +492,7 @@ def build_post_quote_flex(current_mode: str, profile: QuoteProfile) -> dict:
             "type": "button", "height": "sm", "style": "secondary",
             "action": {"type": "message",
                        "label": "📝 處理新報價",
-                       "text": "報價處理新報價"},
+                       "text": "處理新報價"},
         })
 
     if "done" in allowed:
