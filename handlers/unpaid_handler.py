@@ -1072,7 +1072,7 @@ def _send_help_detail(reply_token, category):
 • credit [金額] [日期] [說明]
   錄入折讓並分攤 (如: credit 346.13 260120 Dec折讓)
 • credit [金額] [客戶ID] [日期] [說明]
-  指定客戶錄入折讓
+  指定客戶錄入折讓並分攤 (如: credit 346.13 Vicky 260120 Dec折讓)
 • credit [日期] [說明]
   修改現有折讓名稱 (無金額模式)"""
     elif category == "other":
