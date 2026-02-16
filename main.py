@@ -245,8 +245,8 @@ def webhook():
             if handle_quote_message(event, user_id, group_id, text, r):
                 continue
 
-        # --- 費用錄入邏輯：僅限 PDF Scanning 群組觸發 ---
-        if group_id == PDF_GROUP_ID:
+        # --- 費用錄入邏輯：允許在所有支援 PDF 的群組觸發 ---
+        if group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, JOYCE_GROUP_ID, IRIS_GROUP_ID, PDF_GROUP_ID, ACE_GROUP_ID, SOQUICK_GROUP_ID}:
             redis_val = r.get("global_last_pdf_parent")
             # 檢查是否有待錄入的 PDF 項目 且 訊息看起來像數字輸入
             if redis_val and "|" in redis_val and re.match(r'^\d+(?:\.\d+)?(?:[\s,;]+\d+(?:\.\d+)?)*$', text.strip()):
@@ -418,21 +418,21 @@ def webhook():
                 ):
                     continue
         
-        # 目前功能指令 (僅限管理員私訊)
+        # 目前功能指令 (僅限管理員私訊 或 PDF群組)
         if text.strip() == "目前功能" or text.startswith("help:"):
             current_user_id = src.get("userId")
             current_group_id = src.get("groupId")
             is_admin = (current_user_id == YVES_USER_ID or current_user_id == GORSKY_USER_ID)
             
             # Allow "help:..." in DMs or if admin wants to debug, but mainly for "目前功能" menu
-            # "目前功能" should be DM only to avoid spamming groups
-            if is_admin and not current_group_id:
+            # "目前功能" should be DM only to avoid spamming groups, except for PDF group
+            if is_admin and (not current_group_id or current_group_id == PDF_GROUP_ID):
                 handle_unpaid_event(
-                    current_user_id,  # sender_id (positional)
-                    text,             # message_text (positional)
-                    event["replyToken"],  # reply_token (positional)
+                    current_group_id if current_group_id else current_user_id,  # sender_id (group or user)
+                    text,             # message_text
+                    event["replyToken"],  # reply_token
                     user_id=current_user_id,
-                    group_id=None
+                    group_id=current_group_id
                 )
                 continue
         

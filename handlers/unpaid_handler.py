@@ -19,7 +19,8 @@ from config import (
     IRIS_GROUP_ID, 
     VICKY_GROUP_ID, 
     YUMI_GROUP_ID,
-    ANGELA_GROUP_ID
+    ANGELA_GROUP_ID,
+    PDF_GROUP_ID
 )
 
 # 建立對應表：只要指令來自這個群組，就自動查詢對應的名稱
@@ -1098,8 +1099,8 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     parts = message_text.strip().split()
     text_lower = message_text.strip().lower()
     
-    # 處理目前功能指令 (僅限管理員私訊)
-    if message_text.strip() == "目前功能" and is_admin and not group_id:
+    # 處理目前功能指令 (僅限管理員私訊 或 PDF群組)
+    if message_text.strip() == "目前功能" and is_admin and (not group_id or group_id == PDF_GROUP_ID):
         _send_help_menu(reply_token)
         return
 
