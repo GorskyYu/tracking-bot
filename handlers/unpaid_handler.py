@@ -1802,7 +1802,8 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
     1. 建立折讓: credit <amount> [client] <date> [desc]
     2. 修改折讓: credit [client] <date> <desc> (無金額)
     """
-    if user_id not in ADMIN_USER_IDS:
+    # 允許管理員 或者 PDF Group 的成員使用
+    if user_id not in ADMIN_USER_IDS and group_id != PDF_GROUP_ID:
         return reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
 
     parts = message_text.strip().split()
