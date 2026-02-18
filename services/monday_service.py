@@ -104,8 +104,9 @@ class MondaySyncService:
             if ref_no and "-" in ref_no and len(ref_no) > 19:
                 ref_no = ref_no.rsplit('-', 1)[0]
             
-            # 2. 提取追蹤號碼 (Google Sheet 同步移至 Monday 建立後)
+            # 2. 同步 Google Sheet (先執行，不依賴 Monday 結果)
             all_tracking_numbers = full_data.get("all_tracking_numbers", []) or []
+            self._sync_to_google_sheet(ref_no, all_tracking_numbers)
 
             # 3. 處理名稱與代理人判定 (含 混合式邏輯判定)
             _is_karl_lagerfeld = False  # 追蹤是否為 Karl Lagerfeld 來源
@@ -323,9 +324,6 @@ class MondaySyncService:
                     log.info(f"[PDF→Monday] Domestic carrier set to: {carrier_label}")
 
             log.info(f"[PDF→Monday] Monday sync completed for {parent_name}")
-
-            # --- 8.5 🟢 Google Sheet 同步 (在 Monday 建立後執行) ---
-            self._sync_to_google_sheet(ref_no, all_tracking_numbers)
 
             # --- 9. 🟢 發送詳細通知到狀態群組 ---
             tracking_str = ", ".join(all_tracking_numbers) if all_tracking_numbers else "無單號"
