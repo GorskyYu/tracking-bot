@@ -171,9 +171,15 @@ class OCRAgent:
             # --- Fedex Reference Number清洗邏輯 ---
             raw_ref = (data.get("reference_number") or "").strip()
             if raw_ref:
+                # 1. 移除前綴 (REF, INV, PO, No., Reference, Invoice, Purchase Order) 及其後的符號(: . -)
+                # 使用 ignorecase 旗標
+                clean_ref = re.sub(r'^(REF|INV|PO|No\.?|Reference|Invoice|Purchase Order)[\s:.-]*', '', raw_ref, flags=re.IGNORECASE).strip()
+                
+                # 2. 移除後綴 (-1, -2 wait)
                 # 使用 Regex 正則表達式移除結尾的 -1, -2 等後綴
                 # r'-\d+$' 表示匹配字串結尾的「橫槓+數字」
-                clean_ref = re.sub(r'-\d+$', '', raw_ref).strip()
+                clean_ref = re.sub(r'-\d+$', '', clean_ref).strip()
+                
                 data["reference_number"] = clean_ref
                 log.info(f"[OCR CLEAN] Original: {raw_ref} -> Cleaned: {clean_ref}")
 
