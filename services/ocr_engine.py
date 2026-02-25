@@ -45,28 +45,26 @@ If a field is not clearly visible or does not exist, return an empty string "".
 Do NOT guess or invent any data.
 
 Look for:
-- "FROM" section: The sender area typically has multiple lines:
-    Line 1: Personal name (e.g. "Yu-Hsuan Lin")
-    Line 2: Shop name, brand name, or alias (e.g. "Lucien", "Vicky") — this is the client_id
-    Line 3+: Street address, city, province, postal code
-  The client_id is the SHORT word/name on its OWN LINE between the personal name and the address.
-  It is NOT part of the personal name and NOT part of the address.
-- "TO" section: receiver name, full street address, and postal/ZIP code
-- "REF", "INV", or "PO" fields: reference number
+- "FROM" section: sender name, phone number, and client code/alias
+- "TO" section: receiver name, full street address, postal/ZIP code
+- Multiple reference fields may exist: "REF:", "INV:", "PO:"
+  PRIORITY: Extract the value from "REF:" field FIRST if it exists.
+  If no "REF:", then use "INV:", then "PO:" as fallback.
+  Return ONLY the value after the colon (no prefix).
 
 Response JSON (every value must be a string):
 {
   "sender": {
-    "name": "personal name only from the FROM section (exclude shop/alias name)",
+    "name": "personal name only from the FROM section",
     "phone": "phone number near FROM, or empty",
-    "client_id": "shop name or alias on its own line below the personal name, or empty"
+    "client_id": "shop/alias code or empty"
   },
   "receiver": {
     "name": "exact name from the TO section",
     "address": "full street address from TO section",
     "postal_code": "ZIP or postal code e.g. V6X 1Z7"
   },
-  "reference_number": "REF, INV, or PO number if present"
+  "reference_number": "VALUE AFTER REF: (timestamp, number, etc.) - NO LABEL PREFIX, or empty if none"
 }
 """
 
@@ -169,17 +167,12 @@ class OCRAgent:
             }
 
             # --- Fedex Reference Number清洗邏輯 ---
+            # The reference_number from GPT-4o is already the prioritized value without the "REF:" prefix
+            # We just need to remove the trailing -N suffix
             raw_ref = (data.get("reference_number") or "").strip()
             if raw_ref:
-                # 1. 移除前綴 (REF, INV, PO, No., Reference, Invoice, Purchase Order) 及其後的符號(: . -)
-                # 使用 ignorecase 旗標
-                clean_ref = re.sub(r'^(REF|INV|PO|No\.?|Reference|Invoice|Purchase Order)[\s:.-]*', '', raw_ref, flags=re.IGNORECASE).strip()
-                
-                # 2. 移除後綴 (-1, -2 wait)
-                # 使用 Regex 正則表達式移除結尾的 -1, -2 等後綴
-                # r'-\d+$' 表示匹配字串結尾的「橫槓+數字」
-                clean_ref = re.sub(r'-\d+$', '', clean_ref).strip()
-                
+                # Remove trailing -digit suffix (e.g., "-1", "-2")
+                clean_ref = re.sub(r'-\d+$', '', raw_ref).strip()
                 data["reference_number"] = clean_ref
                 log.info(f"[OCR CLEAN] Original: {raw_ref} -> Cleaned: {clean_ref}")
 
