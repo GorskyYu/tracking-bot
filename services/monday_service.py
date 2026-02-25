@@ -76,7 +76,7 @@ class MondaySyncService:
 
             if not row_idx:
                 log.warning(f"[GSHEET] '{ref_no}' not found in A:A. Skip sheet write.")
-                return
+                return f"⚠️ [PDF→空運表單] 未找到對應 REF: {ref_no}"
 
             # 填入最多 3 筆追蹤碼到 S, T, U 欄
             for i, tn in enumerate(tracking_numbers[:3], start=1):
@@ -88,11 +88,11 @@ class MondaySyncService:
             ws.format(cell_f, fmt)
             
             log.info(f"[GSHEET] Row {row_idx} updated & highlighted.")
-            self.line_push(self.line_status_group, "[PDF→空運表單]已同步到Tracking Tab")
+            return "✅ [PDF→空運表單] 已同步 Tracking"
 
         except Exception as sheet_err:
             log.error(f"[GSHEET] Sync error: {sheet_err}")
-            self.line_push(self.line_status_group, f"⚠️ Sheet 同步失敗: {str(sheet_err)}")
+            return f"⚠️ [PDF→空運表單] Sheet 同步失敗: {str(sheet_err)}"
 
     def run_sync(self, full_data, pdf_bytes, original_filename, redis_client, group_id):
         """
@@ -101,12 +101,15 @@ class MondaySyncService:
         try:
             # 1. 處理參考編號
             ref_no = (full_data.get("reference_number") or "").strip()
-            if ref_no and "-" in ref_no and len(ref_no) > 19:
-                ref_no = ref_no.rsplit('-', 1)[0]
-            
+            # Remove trailing -N if present (secondary check in case OCR engine missed it)
+            if ref_no and "-" in ref_no:
+                 # Check if it ends with -digit
+                 if re.search(r'-\d+$', ref_no):
+                    ref_no = re.sub(r'-\d+$', '', ref_no).strip()
+
             # 2. 同步 Google Sheet (先執行，不依賴 Monday 結果)
             all_tracking_numbers = full_data.get("all_tracking_numbers", []) or []
-            self._sync_to_google_sheet(ref_no, all_tracking_numbers)
+            gs_sync_msg = self._sync_to_google_sheet(ref_no, all_tracking_numbers)
 
             # 3. 處理名稱與代理人判定 (含 混合式邏輯判定)
             _is_karl_lagerfeld = False  # 追蹤是否為 Karl Lagerfeld 來源
@@ -345,9 +348,14 @@ class MondaySyncService:
             # --- 10. 🟢 發送合併通知 (Status + Prompt) ---
             pdf_group_id = os.getenv("LINE_GROUP_ID_PDF") or self.line_status_group
 
+            # Blend Google Sheet sync status message into the report
+            # If gs_sync_msg is None or not a string, use empty
+            final_gs_msg = f"\n{gs_sync_msg}" if ('gs_sync_msg' in locals() and gs_sync_msg and isinstance(gs_sync_msg, str)) else ""
+
             if is_domestic:
                 prompt_msg = (
                     f"📄 PDF 處理完成 ─ {parent_name}{extra_hint}\n"
+                    f"{final_gs_msg}\n"
                     f"🏷 單號: {tracking_str}\n"
                     f"📍 去向: {board_display_name}\n"
                     f"🧠 邏輯: {decision_reason}\n\n"
@@ -359,6 +367,7 @@ class MondaySyncService:
             else:
                 prompt_msg = (
                     f"📄 PDF 處理完成 ─ {parent_name}{extra_hint}\n"
+                    f"{final_gs_msg}\n"
                     f"🏷 單號: {tracking_str}\n"
                     f"📍 去向: {board_display_name}\n"
                     f"🧠 邏輯: {decision_reason}\n\n"

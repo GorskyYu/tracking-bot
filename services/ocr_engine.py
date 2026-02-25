@@ -169,7 +169,7 @@ class OCRAgent:
             }
 
             # --- Fedex Reference Number清洗邏輯 ---
-            raw_ref = data.get("reference_number", "")
+            raw_ref = (data.get("reference_number") or "").strip()
             if raw_ref:
                 # 使用 Regex 正則表達式移除結尾的 -1, -2 等後綴
                 # r'-\d+$' 表示匹配字串結尾的「橫槓+數字」
