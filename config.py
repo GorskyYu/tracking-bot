@@ -37,6 +37,7 @@ VICKY_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_VICKY")
 YUMI_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_YUMI")
 IRIS_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_IRIS")
 ANGELA_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_ANGELA")
+JASMINE_GROUP_ID: Optional[str] = "C6b7f4440af6fd44b0558e010dadb65d2"
 JOYCE_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_JOYCE")
 PDF_GROUP_ID: Optional[str] = os.getenv("LINE_GROUP_ID_PDF")
 
@@ -79,6 +80,7 @@ MISSING_CONFIRM: str = "這幾位還沒有按申報相符"
 VICKY_NAMES: Set[str] = {"顧家琪", "顧志忠", "周佩樺", "顧郭蓮梅", "廖芯儀", "林寶玲", "高懿欣", "崔書鳳", "周志明"}
 YUMI_NAMES: Set[str] = {"劉淑燕", "竇永裕", "劉淑玫", "劉淑茹", "陳富美", "劉福祥", "郭淨崑", "陳卉怡", "洪瑜駿", "李祈霈", "邱啓倫", "許霈珩"}
 IRIS_NAMES: Set[str] = {"廖偉廷", "廖本堂", "李成艷", "廖雅璇"}
+JASMINE_NAMES: Set[str] = {"何苡甄"}
 ANGELA_NAMES: Set[str] = {"蕭仁富", "呂鎰利", "謝秀珠"}
 YVES_NAMES = {
     "梁穎琦",

@@ -19,6 +19,7 @@ from config import (
     ACE_GROUP_ID,
     ANGELA_GROUP_ID,
     IRIS_GROUP_ID,
+    JASMINE_GROUP_ID,
     SOQUICK_GROUP_ID,
     VICKY_GROUP_ID,
     YUMI_GROUP_ID,
@@ -34,6 +35,7 @@ from config import (
     # names/filters
     ANGELA_NAMES,
     IRIS_NAMES,
+    JASMINE_NAMES,
     VICKY_NAMES,
     YUMI_NAMES,
     YVES_NAMES,
@@ -89,6 +91,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
     vicky: List[str] = []
     yumi: List[str] = []
     iris: List[str] = []
+    jasmine: List[str] = []
     angela: List[str] = []
     fallback_map: Dict[str, List[str]] = {}
 
@@ -115,6 +118,8 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
                 yumi.append(full_msg)
             elif recipient in IRIS_NAMES:
                 iris.append(full_msg)
+            elif recipient in JASMINE_NAMES:
+                jasmine.append(full_msg)
             elif recipient in ANGELA_NAMES:
                 angela.append(full_msg)
             else:
@@ -148,6 +153,8 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
                 yumi.append(full_msg)
             elif recipient in IRIS_NAMES:
                 iris.append(full_msg)
+            elif recipient in JASMINE_NAMES:
+                jasmine.append(full_msg)
             elif recipient in ANGELA_NAMES:
                 angela.append(full_msg)
             else:
@@ -172,6 +179,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID, yumi)
     push(IRIS_GROUP_ID, iris)
+    push(JASMINE_GROUP_ID, jasmine)
     push(ANGELA_GROUP_ID, angela)
 
     #--- 3. ACE 試算表反查與打包分組 (名字一條、內容一條) ---
@@ -214,7 +222,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
                 if sheet_recipient in fallback_map and sheet_recipient not in matched_recipients:
                     # Column C (index 2) = 寄件人 (sender)
                     sender = row[2].strip() if len(row) > 2 else "未知寄件人"
-                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
+                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
                         if sender not in sender_to_bundles:
                             sender_to_bundles[sender] = []
                         sender_to_bundles[sender].extend(fallback_map[sheet_recipient])
@@ -345,6 +353,7 @@ def handle_ace_customs_tax(event: Dict[str, Any]) -> None:
     vicky: List[str] = []
     yumi:  List[str] = []
     iris:  List[str] = []
+    jasmine: List[str] = []
     angela: List[str] = []
     fallback_sender_lines: Dict[str, List[str]] = {}   # sender → lines
     unmapped_lines: List[str] = []
@@ -370,6 +379,8 @@ def handle_ace_customs_tax(event: Dict[str, Any]) -> None:
                 yumi.append(display_line)
             elif target == IRIS_GROUP_ID:
                 iris.append(display_line)
+            elif target == JASMINE_GROUP_ID:
+                jasmine.append(display_line)
             elif target == ANGELA_GROUP_ID:
                 angela.append(display_line)
             continue
@@ -384,6 +395,8 @@ def handle_ace_customs_tax(event: Dict[str, Any]) -> None:
             yumi.append(display_line)
         elif sender in IRIS_NAMES:
             iris.append(display_line)
+        elif sender in JASMINE_NAMES:
+            jasmine.append(display_line)
         elif sender in ANGELA_NAMES:
             angela.append(display_line)
         else:
@@ -401,6 +414,7 @@ def handle_ace_customs_tax(event: Dict[str, Any]) -> None:
     push(VICKY_GROUP_ID, vicky)
     push(YUMI_GROUP_ID, yumi)
     push(IRIS_GROUP_ID, iris)
+    push(JASMINE_GROUP_ID, jasmine)
     push(ANGELA_GROUP_ID, angela)
 
     # ── 6. Fallback to admins ─────────────────────────────────────────
@@ -420,7 +434,7 @@ def handle_ace_customs_tax(event: Dict[str, Any]) -> None:
                     text="\n".join(unmapped_lines)))
 
     log.info(f"[ACE TAX] Done. vicky={len(vicky)} yumi={len(yumi)} "
-             f"iris={len(iris)} angela={len(angela)} "
+             f"iris={len(iris)} jasmine={len(jasmine)} angela={len(angela)} "
              f"fallback_senders={len(fallback_sender_lines)} unmapped={len(unmapped_lines)}")
 
 def handle_soquick_full_notification(event: Dict[str, Any]) -> None:
@@ -679,7 +693,7 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                     # Column C (index 2) is sender
                     sender = (row[2] if len(row) > 2 else "").strip()
                     log.info(f"[Missing Confirm] Row {row_idx}: declarer={declarer}, sender={sender}")
-                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
+                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
                         senders.add(sender)
             
             log.info(f"[Missing Confirm] Found senders to notify: {senders}")
@@ -881,7 +895,7 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
                 # 確保每個收件人只會被 extend 一次
                 if sheet_recipient in fallback_map and sheet_recipient not in matched_recipients:
                     sender = row[2].strip() if len(row) > 2 else "未知寄件人"
-                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
+                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
                         if sender not in sender_to_bundles:
                             sender_to_bundles[sender] = []
                         sender_to_bundles[sender].extend(fallback_map[sheet_recipient])
