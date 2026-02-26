@@ -511,6 +511,36 @@ def _create_item_row(item, currency="cad"):
                 ]
             )
         )
+        
+        # 3. 第三行：追加費用 (若有)
+        addt_cad = item.get("addt_cad", 0.0)
+        addt_twd = item.get("addt_twd", 0.0)
+        
+        if addt_cad != 0:
+            addt_cad_prefix = "-" if addt_cad < 0 else ""
+            addt_cad_color = '#1DB446' if addt_cad < 0 else None
+            row_contents.append(
+                BoxComponent(
+                    layout='horizontal',
+                    contents=[
+                        TextComponent(text="追加加幣收費", size='xs', color='#aaaaaa', flex=4),
+                        TextComponent(text=f"{addt_cad_prefix}${abs(addt_cad):.2f}", size='xs', align='end', color=addt_cad_color, flex=2)
+                    ]
+                )
+            )
+            
+        if addt_twd != 0:
+            addt_twd_prefix = "-" if addt_twd < 0 else ""
+            addt_twd_color = '#1DB446' if addt_twd < 0 else None
+            row_contents.append(
+                BoxComponent(
+                    layout='horizontal',
+                    contents=[
+                        TextComponent(text="追加台幣收費", size='xs', color='#aaaaaa', flex=4),
+                        TextComponent(text=f"{addt_twd_prefix}NT${abs(addt_twd):.0f}", size='xs', align='end', color=addt_twd_color, flex=2)
+                    ]
+                )
+            )
     
     return BoxComponent(layout='vertical', margin='md', contents=row_contents)
 
@@ -1313,6 +1343,10 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
         cad_price = _extract_float(raw_cad)
         intl_price = _extract_float(raw_intl)
         
+        # Extract additional fees
+        addt_cad = _extract_float(subitem_cols.get(COL_ADDT_CAD, "0"))
+        addt_twd = _extract_float(subitem_cols.get(COL_ADDT_TWD, "0"))
+        
         # Extract bill_date from subitem columns
         bill_date = subitem_cols.get(COL_BILL_DATE, "").strip()
         
@@ -1332,6 +1366,8 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
             "intl_shipping_rate": intl_price,
             "raw_cad_domestic_rate": raw_cad,
             "raw_intl_shipping_rate": raw_intl,
+            "addt_cad": addt_cad,
+            "addt_twd": addt_twd,
             "parent_cad_paid": _extract_float(parent_cols.get(COL_CAD_PAID, "0")),
             "parent_twd_paid": _extract_float(parent_cols.get(COL_TWD_PAID, "0")),
             "parent_rate": rate,
