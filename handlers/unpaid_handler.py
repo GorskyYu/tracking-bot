@@ -544,6 +544,10 @@ def _create_item_row(item, currency="cad"):
                     ]
                 )
             )
+            
+    # 為了避免 Flex Message 超過 30KB 限制，如果 row_contents 太多，我們只保留前幾個
+    if len(row_contents) > 5:
+        row_contents = row_contents[:5]
     
     return BoxComponent(layout='vertical', margin='md', contents=row_contents)
 
@@ -615,7 +619,20 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                 )
             
             # Items under this parent date
-            for item in parent_group["items"]:
+            # Limit items to prevent Flex Message from exceeding 30KB
+            max_items_per_parent = 15
+            for i, item in enumerate(parent_group["items"]):
+                if i >= max_items_per_parent:
+                    body_contents.append(
+                        BoxComponent(
+                            layout='horizontal',
+                            margin='md',
+                            contents=[
+                                TextComponent(text=f"...還有 {len(parent_group['items']) - max_items_per_parent} 個項目未顯示", size='xs', color='#aaaaaa', flex=1)
+                            ]
+                        )
+                    )
+                    break
                 body_contents.append(_create_item_row(item, currency))
                 
             # 🟢 Check for Available Credit or Previous Deficit
