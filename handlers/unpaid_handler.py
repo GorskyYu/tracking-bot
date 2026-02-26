@@ -453,18 +453,24 @@ def _create_item_row(item, currency="cad"):
     
     if is_discount_path:
         # ─── 折讓特例路徑 ───
-        # 1. 第一行：顯示母項目全名 + 金額
+        # 決定顯示名稱：如果 parent_name 包含折讓就用 parent_name，否則用 sub_name
+        if "折讓" in parent_name:
+            discount_display = parent_name
+        else:
+            discount_display = sub_name if sub_name else parent_name
+        
+        # 只顯示一行：折讓名稱 + 金額，不顯示 specs、不顯示追加費用
         row_contents.append(
             BoxComponent(
                 layout='horizontal',
                 contents=[
-                    TextComponent(text=parent_name, flex=4, size='sm', wrap=True, weight='bold'),
+                    TextComponent(text=discount_display, flex=4, size='sm', wrap=True, weight='bold'),
                     TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold', color=price_color)
                 ]
             )
         )
-        # 2. 第二行：若子項目名稱存在且不等於母項目名，則顯示子項目名 (不顯示分隔符)
-        if sub_name and sub_name != parent_name:
+        # 第二行：若子項目名稱存在且不等於主顯示名，則顯示子項目名
+        if sub_name and sub_name != discount_display:
             row_contents.append(
                 BoxComponent(
                     layout='horizontal',
