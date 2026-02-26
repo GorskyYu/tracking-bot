@@ -6,7 +6,7 @@ from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD
 from utils.permissions import is_authorized_for_event, ADMIN_USER_IDS
 from utils.line_reply import reply_text, reply_message
 from config import line_bot_api
-from linebot.models import TextSendMessage, QuickReply, QuickReplyButton, MessageAction, FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, SeparatorComponent
+from linebot.models import TextSendMessage, QuickReply, QuickReplyButton, MessageAction, FlexSendMessage, BubbleContainer, CarouselContainer, BoxComponent, TextComponent, SeparatorComponent
 from threading import Thread
 from redis_client import r
 import logging
@@ -554,7 +554,9 @@ def _create_item_row(item, currency="cad"):
     return BoxComponent(layout='vertical', margin='md', contents=row_contents)
 
 def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
-    """Builds a Flex Bubble for a single client.
+    """Builds a Flex Message for a single client.
+    If the content is too large for a single bubble (30KB limit), it will be split
+    into multiple bubbles using a CarouselContainer.
     is_paid_bill: If True, displays total in green; if False, displays total in red
     currency: 'cad' or 'twd' - determines which currency to display
     """
@@ -575,123 +577,82 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             break
     if default_rate <= 0: default_rate = 1.0
     
-    # Header
-    header = BoxComponent(
-        layout='vertical',
-        contents=[
-            TextComponent(text=display_name, size='xl', weight='bold')
-        ]
-    )
-    
-    # Body
-    body_contents = []
+    # ----- Build sections (one per parent_date) -----
+    # Each section is a list of body components that belong together
+    sections = []
     
     sorted_bill_dates = sorted(dates_data.keys())
     for bill_idx, bill_date_key in enumerate(sorted_bill_dates):
         bill_date_group = dates_data[bill_date_key]
         
-        # Add Separator between bill dates
+        # Bill Date header components
+        bill_header_parts = []
         if bill_idx > 0:
-            body_contents.append(SeparatorComponent(margin='lg'))
-
-        # Bill Date Subheader
+            bill_header_parts.append(SeparatorComponent(margin='lg'))
         if bill_date_key:
-            # Format bill_date: "2026-01-20" -> "出帳日：260120" or show "未出帳" as is
             if bill_date_key == "未出帳":
                 display_date = "未出帳"
-            elif len(bill_date_key) == 10 and bill_date_key[4] == '-' and bill_date_key[7] == '-':  # ISO format YYYY-MM-DD
-                # Convert to YYMMDD format: "2026-01-20" -> "260120"
+            elif len(bill_date_key) == 10 and bill_date_key[4] == '-' and bill_date_key[7] == '-':
                 display_date = f"出帳日：{bill_date_key[2:4]}{bill_date_key[5:7]}{bill_date_key[8:10]}"
             else:
                 display_date = f"出帳日：{bill_date_key}"
-            
-            body_contents.append(
+            bill_header_parts.append(
                 TextComponent(text=display_date, weight='bold', margin='lg', size='md', color='#1DB446')
             )
         
-        # Loop through parent dates within this bill date
         sorted_parent_dates = sorted(bill_date_group["parent_dates"].keys())
         for parent_idx, parent_date in enumerate(sorted_parent_dates):
             parent_group = bill_date_group["parent_dates"][parent_date]
             
-            # Parent Date Section Header
+            # Build one section per parent_date
+            section_parts = []
+            
+            # Add bill date header only for the first parent_date in each bill_date
+            if parent_idx == 0 and bill_header_parts:
+                section_parts.extend(bill_header_parts)
+            
             if parent_date:
-                body_contents.append(
+                section_parts.append(
                     TextComponent(text=parent_date, weight='bold', margin='md', size='sm', color='#555555')
                 )
             
-            # Items under this parent date
-            # 為了避免 Flex Message 超過 30KB 限制，我們需要限制每個母項目下的包裹數量
-            # 但為了不影響總金額，我們只在顯示上做限制
-            max_items_per_parent = 15
-            for i, item in enumerate(parent_group["items"]):
-                if i >= max_items_per_parent:
-                    body_contents.append(
-                        BoxComponent(
-                            layout='horizontal',
-                            margin='md',
-                            contents=[
-                                TextComponent(text=f"...還有 {len(parent_group['items']) - max_items_per_parent} 個項目未顯示", size='xs', color='#aaaaaa', flex=1)
-                            ]
-                        )
-                    )
-                    break
-                body_contents.append(_create_item_row(item, currency))
+            # All items under this parent date (NO LIMIT)
+            for item in parent_group["items"]:
+                section_parts.append(_create_item_row(item, currency))
                 
-            # 🟢 Check for Available Credit or Previous Deficit
+            # Available Credit / Deficit
             available_credit = parent_group.get("available_credit", 0.0)
-            
-            # Case 1: Positive Credit (We have extra money from parent payment)
             if available_credit > 0.005:
                 if currency.lower() == "twd":
                     credit_disp = f"-NT${available_credit * default_rate:.0f}"
                 else:
                     credit_disp = f"-${available_credit:.2f}"
-                
-                body_contents.append(
-                    BoxComponent(
-                        layout='horizontal',
-                        margin='md',
-                        contents=[
-                            TextComponent(text="已收款", flex=4, size='sm', color='#1DB446'),
-                            TextComponent(text=credit_disp, flex=2, align='end', size='sm', color='#1DB446', weight='bold')
-                        ]
-                    )
+                section_parts.append(
+                    BoxComponent(layout='horizontal', margin='md', contents=[
+                        TextComponent(text="已收款", flex=4, size='sm', color='#1DB446'),
+                        TextComponent(text=credit_disp, flex=2, align='end', size='sm', color='#1DB446', weight='bold')
+                    ])
                 )
-            
-            # Case 2: Negative Credit (Deficit / Unpaid Previous)
             elif available_credit < -0.005:
-                # Note: Deficit increases the bill, so it is a positive number addition
                 deficit_val = abs(available_credit)
                 if currency.lower() == "twd":
                     deficit_disp = f"NT${deficit_val * default_rate:.0f}"
                 else:
                     deficit_disp = f"${deficit_val:.2f}"
-                
-                body_contents.append(
-                    BoxComponent(
-                        layout='horizontal',
-                        margin='md',
-                        contents=[
-                            TextComponent(text="⚠️ 上期未扣完", flex=4, size='sm', color='#ff3333'),
-                            TextComponent(text=deficit_disp, flex=2, align='end', size='sm', color='#ff3333', weight='bold')
-                        ]
-                    )
+                section_parts.append(
+                    BoxComponent(layout='horizontal', margin='md', contents=[
+                        TextComponent(text="⚠️ 上期未扣完", flex=4, size='sm', color='#ff3333'),
+                        TextComponent(text=deficit_disp, flex=2, align='end', size='sm', color='#ff3333', weight='bold')
+                    ])
                 )
-
-            # Parent Date Subtotal
-            body_contents.append(SeparatorComponent(margin='sm'))
+            
+            # Subtotal
+            section_parts.append(SeparatorComponent(margin='sm'))
             subtotal = parent_group['subtotal']
-
             sub_is_negative = subtotal < -0.005
             is_zero = abs(subtotal) < 0.005
-
-            if is_zero:
-                sub_val_color = None
-            elif sub_is_negative:
-                sub_val_color = '#1DB446'
-            else:
-                sub_val_color = None
+            sub_val_color = '#1DB446' if sub_is_negative else None
+            if is_zero: sub_val_color = None
 
             if currency.lower() == "twd":
                 sub_disp_val = subtotal * default_rate
@@ -707,19 +668,16 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                     prefix = "-" if subtotal < 0 else ""
                     subtotal_display = f"{prefix}${abs(subtotal):.2f}"
 
-            body_contents.append(
-                BoxComponent(
-                    layout='horizontal',
-                    margin='sm',
-                    contents=[
-                        TextComponent(text="Subtotal", flex=4, size='sm', color='#555555'),
-                        TextComponent(text=subtotal_display, flex=2, align='end', size='sm', weight='bold', color=sub_val_color)
-                     ]
-                )
+            section_parts.append(
+                BoxComponent(layout='horizontal', margin='sm', contents=[
+                    TextComponent(text="Subtotal", flex=4, size='sm', color='#555555'),
+                    TextComponent(text=subtotal_display, flex=2, align='end', size='sm', weight='bold', color=sub_val_color)
+                ])
             )
+            
+            sections.append(section_parts)
 
-    # Footer (Total)
-    # Calculate subtotal (sum of all item prices before paid/discount deductions)
+    # ----- Build footer -----
     subtotal_raw = 0.0
     total_paid = 0.0
     total_discount = 0.0
@@ -727,127 +685,148 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
 
     for bill_data in dates_data.values():
         for parent_data in bill_data.get("parent_dates", {}).values():
-            # Sum up item prices for subtotal
             for item in parent_data.get("items", []):
                 price_val = item.get("price_val", 0.0)
-                # Negative price items are discounts (折讓分攤)
                 if price_val < 0:
                     total_discount += abs(price_val)
                 else:
                     subtotal_raw += price_val
-
-            # Paid calculation logic update:
-            # Only sum up the "Available Credit" if it is positive (meaning it covered some cost).
-            # Do NOT sum "Previous Deficit" as Paid.
             available_credit = parent_data.get("available_credit", 0.0)
             if available_credit > 0:
                 total_paid += available_credit
     
-    # 總支付金額 (green) - cash paid amount (excluding discount)
     if currency.lower() == "twd":
         paid_display_val = f"NT${total_paid * default_rate:.0f}"
     else:
         paid_display_val = f"${total_paid:.2f}"
     
     footer_contents.append(
-        BoxComponent(
-            layout='horizontal',
-            margin='md',
-            contents=[
-                TextComponent(text="總支付金額", flex=3, size='md', weight='bold'),
-                TextComponent(text=paid_display_val, flex=3, align='end', size='md', weight='bold', color='#1DB446')
-            ]
-        )
+        BoxComponent(layout='horizontal', margin='md', contents=[
+            TextComponent(text="總支付金額", flex=3, size='md', weight='bold'),
+            TextComponent(text=paid_display_val, flex=3, align='end', size='md', weight='bold', color='#1DB446')
+        ])
     )
     
-    # 總折讓金額 (green) - only show if there's discount
     if total_discount > 0:
         if currency.lower() == "twd":
             total_discount_display = f"NT${total_discount * default_rate:.0f}"
         else:
             total_discount_display = f"${total_discount:.2f}"
-        
         footer_contents.append(
-            BoxComponent(
-                layout='horizontal',
-                margin='sm',
-                contents=[
-                    TextComponent(text="總折讓金額", flex=3, size='md', weight='bold'),
-                    TextComponent(text=total_discount_display, flex=3, align='end', size='md', weight='bold', color='#1DB446')
-                ]
-            )
+            BoxComponent(layout='horizontal', margin='sm', contents=[
+                TextComponent(text="總折讓金額", flex=3, size='md', weight='bold'),
+                TextComponent(text=total_discount_display, flex=3, align='end', size='md', weight='bold', color='#1DB446')
+            ])
         )
     
     footer_contents.append(SeparatorComponent(margin='md'))
     
-    # 已結清金額 (green) - actual paid + discount
     combined_paid = total_paid + total_discount
     if combined_paid > 0:
         if currency.lower() == "twd":
             total_paid_display = f"NT${combined_paid * default_rate:.0f}"
         else:
             total_paid_display = f"${combined_paid:.2f}"
-        
         footer_contents.append(
-            BoxComponent(
-                layout='horizontal',
-                margin='md',
-                contents=[
-                    TextComponent(text="已結清金額", flex=3, size='lg', weight='bold'),
-                    TextComponent(text=total_paid_display, flex=3, align='end', size='lg', weight='bold', color='#1DB446')
-                ]
-            )
+            BoxComponent(layout='horizontal', margin='md', contents=[
+                TextComponent(text="已結清金額", flex=3, size='lg', weight='bold'),
+                TextComponent(text=total_paid_display, flex=3, align='end', size='lg', weight='bold', color='#1DB446')
+            ])
         )
     
-    # 應付餘額 (red, or green if zero/negative)
     if currency.lower() == "twd":
         tot_disp_val = total * default_rate
-        # 若四捨五入後為 0，強制移除負號
         if round(abs(tot_disp_val)) == 0:
             prefix = ""
         else:
             prefix = "-" if tot_disp_val < 0 else ""
         total_display = f"{prefix}NT${abs(tot_disp_val):.0f}"
     else:
-        # 若四捨五入後為 0.00，強制移除負號
         if round(abs(total), 2) == 0:
              prefix = ""
         else:
              prefix = "-" if total < 0 else ""
         total_display = f"{prefix}${abs(total):.2f}"
     
-    # Determine color for Total Due
-    if abs(total) < 0.005:  # Effectively zero
-        total_color = None  # Default grey/black
+    if abs(total) < 0.005:
+        total_color = None
     elif total < 0:
-        total_color = '#1DB446' # Green for credit balance
+        total_color = '#1DB446'
     else:
-        total_color = '#FF4B4B' # Red for due amount
+        total_color = '#FF4B4B'
 
     footer_contents.append(
-        BoxComponent(
-            layout='horizontal',
-            margin='md',
-            contents=[
-                TextComponent(text="應付餘額", flex=3, size='lg', weight='bold'),
-                TextComponent(text=total_display, flex=3, align='end', size='lg', weight='bold', color=total_color)
-            ]
+        BoxComponent(layout='horizontal', margin='md', contents=[
+            TextComponent(text="應付餘額", flex=3, size='lg', weight='bold'),
+            TextComponent(text=total_display, flex=3, align='end', size='lg', weight='bold', color=total_color)
+        ])
+    )
+    
+    footer = BoxComponent(layout='vertical', spacing='sm', contents=footer_contents)
+    
+    # ----- Pack sections into bubbles (max ~25KB body per bubble to leave room for header/footer) -----
+    MAX_BODY_SIZE = 20000  # conservative limit in bytes for the body JSON
+    
+    bubbles = []
+    current_body = []
+    current_size = 0
+    
+    for section in sections:
+        # Estimate section size by converting to string
+        section_size = len(json.dumps([_component_to_dict(c) for c in section], ensure_ascii=False).encode('utf-8'))
+        
+        # If adding this section would exceed the limit, finalize current bubble
+        if current_body and (current_size + section_size > MAX_BODY_SIZE):
+            bubbles.append(current_body)
+            current_body = []
+            current_size = 0
+        
+        current_body.extend(section)
+        current_size += section_size
+    
+    # Don't forget the last bubble
+    if current_body:
+        bubbles.append(current_body)
+    
+    # If no bubbles (shouldn't happen), create one empty
+    if not bubbles:
+        bubbles = [[TextComponent(text="沒有項目", size='sm')]]
+    
+    # Build bubble containers
+    bubble_containers = []
+    for idx, body_contents in enumerate(bubbles):
+        is_last = (idx == len(bubbles) - 1)
+        page_label = f" ({idx + 1}/{len(bubbles)})" if len(bubbles) > 1 else ""
+        
+        header = BoxComponent(layout='vertical', contents=[
+            TextComponent(text=f"{display_name}{page_label}", size='xl', weight='bold')
+        ])
+        
+        bubble = BubbleContainer(
+            header=header,
+            body=BoxComponent(layout='vertical', contents=body_contents),
+            footer=footer if is_last else None
         )
-    )
+        bubble_containers.append(bubble)
     
-    footer = BoxComponent(
-        layout='vertical',
-        spacing='sm',
-        contents=footer_contents
-    )
-    
-    bubble = BubbleContainer(
-        header=header,
-        body=BoxComponent(layout='vertical', contents=body_contents),
-        footer=footer
-    )
-    
-    return FlexSendMessage(alt_text=f"Bill for {display_name}", contents=bubble)
+    # Single bubble -> FlexSendMessage with BubbleContainer
+    # Multiple bubbles -> FlexSendMessage with CarouselContainer
+    if len(bubble_containers) == 1:
+        return FlexSendMessage(alt_text=f"Bill for {display_name}", contents=bubble_containers[0])
+    else:
+        # Carousel supports up to 12 bubbles
+        carousel = CarouselContainer(contents=bubble_containers[:12])
+        return FlexSendMessage(alt_text=f"Bill for {display_name}", contents=carousel)
+
+def _component_to_dict(component):
+    """Convert a LINE SDK component to a dict for size estimation."""
+    try:
+        return component.as_json_dict()
+    except:
+        try:
+            return json.loads(str(component))
+        except:
+            return {}
 
 def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, filter_date=None, is_group_chat=False):
     """Background thread worker.
