@@ -897,37 +897,22 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
                         
                         count_added = 0
                         for d_item in date_items:
-                            # Only add if not strictly "Paid" (to avoid cluttering if mostly unpaid)
-                            # BUT user wants it "like bill view", so maybe we should keep even paid ones if they are part of the bill?
-                            # The 'bill' command shows everything. The 'unpaid' command usually shows only unpaid.
-                            # However, if we don't include the paid ones, the 'credit calculation' might be wrong?
-                            # _group_items_by_client calculates credit based on fetched items?
-                            # NO, _group_items_by_client calculates 'available_credit' by:
-                            #   1. Summing parent fees (paid_amount)
-                            #   2. Subtracting paid subitems (fetched via _fetch_paid_subitems_total)
-                            
-                            # So we ONLY need to add items that are part of the bill but have NO status (like Discounts).
-                            # If an item is explicitly "Paid" (Status=Paid), fetch_unpaid skipped it.
-                            # If we add it back now, it will appear in the list.
-                            # Do we want PAID items in the UNPAID list?
-                            # User said: "Show paid amount".
-                            # If we include Paid items, they will be shown as rows.
-                            # If we EXCLUDE Paid items, but include Discount (Status Empty), that is safer.
-                            
+                            # 只添加真正需要的项目：折让项目或状态为空的项目
+                            # 排除明确为已付款状态的项目
                             if d_item["id"] not in existing_ids:
-                                # Start with a safety check: status
-                                # We don't have status in d_item dict (it's processed).
-                                # But we can check via logic or just trust that if it's bill dated, it's relevant.
-                                # Let's add it. The grouping logic handles display.
-                                # Wait, if we add "Paid" items, they will show up as items.
-                                # The user probably doesn't want to see "Paid" items in "Unpaid" list unless they are partial?
-                                # But the user explicitly said "like view bill".
-                                # Let's add everything for that Date.
-                                results.append(d_item)
-                                existing_ids.add(d_item["id"])
-                                count_added += 1
+                                # 检查是否为折让项目 (包含关键字)
+                                is_discount = ("折讓" in d_item.get("parent_name", "") or 
+                                             "折讓" in d_item.get("sub_name", ""))
+                                
+                                # 检查原始状态 - 我们需要重新查询状态信息
+                                # 由于 d_item 已经经过处理，原始状态信息可能丢失
+                                # 所以只添加折让项目，不添加其他项目
+                                if is_discount:
+                                    results.append(d_item)
+                                    existing_ids.add(d_item["id"])
+                                    count_added += 1
                         
-                        logging.info(f"[unpaid_worker] Added {count_added} related items for date {yymmdd}")
+                        logging.info(f"[unpaid_worker] Added {count_added} discount items for date {yymmdd}")
                         
                     except Exception as e:
                         logging.error(f"[unpaid_worker] Error expanding date {b_date}: {e}")
