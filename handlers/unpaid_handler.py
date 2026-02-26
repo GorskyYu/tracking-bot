@@ -770,15 +770,15 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     
     footer = BoxComponent(layout='vertical', spacing='sm', contents=footer_contents)
     
-    # ----- Pack sections into bubbles (max ~25KB body per bubble to leave room for header/footer) -----
-    MAX_BODY_SIZE = 15000  # Reduced: Carousel limit is 50KB total. If we have multiple bubbles, each must be smaller.
+    # ----- Pack sections into bubbles (max ~10KB body per bubble to be safe for carousel) -----
+    MAX_BODY_SIZE = 9000  # Conservative limit to keep total carousel size under 50KB JSON limit
     
     bubbles = []
     current_body = []
     current_size = 0
     
     for section in sections:
-        # Estimate section size by converting to string
+        # Estimate section size
         section_size = len(json.dumps([_component_to_dict(c) for c in section], ensure_ascii=False).encode('utf-8'))
         
         # If adding this section would exceed the limit, finalize current bubble
@@ -790,18 +790,22 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
         current_body.extend(section)
         current_size += section_size
     
-    # Don't forget the last bubble
     if current_body:
         bubbles.append(current_body)
     
-    # If no bubbles (shouldn't happen), create one empty
     if not bubbles:
         bubbles = [[TextComponent(text="沒有項目", size='sm')]]
     
     # Build bubble containers
     bubble_containers = []
+    # Footer is only needed on the very last bubble of the entire set
+    # OR we can replicate it. Replicating adds size.
+    # User usually wants to see total at the end.
+    
     for idx, body_contents in enumerate(bubbles):
-        is_last = (idx == len(bubbles) - 1)
+        # Only show footer on the last bubble of the WHOLE sequence
+        is_last_overall = (idx == len(bubbles) - 1)
+        
         page_label = f" ({idx + 1}/{len(bubbles)})" if len(bubbles) > 1 else ""
         
         header = BoxComponent(layout='vertical', contents=[
@@ -811,18 +815,27 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
         bubble = BubbleContainer(
             header=header,
             body=BoxComponent(layout='vertical', contents=body_contents),
-            footer=footer if is_last else None
+            footer=footer if is_last_overall else None
         )
         bubble_containers.append(bubble)
     
-    # Single bubble -> FlexSendMessage with BubbleContainer
-    # Multiple bubbles -> FlexSendMessage with CarouselContainer
-    if len(bubble_containers) == 1:
-        return FlexSendMessage(alt_text=f"Bill for {display_name}", contents=bubble_containers[0])
-    else:
-        # Carousel supports up to 12 bubbles
-        carousel = CarouselContainer(contents=bubble_containers[:12])
-        return FlexSendMessage(alt_text=f"Bill for {display_name}", contents=carousel)
+    # Split bubbles into chunks to avoid 50KB single message limit
+    # A safe bet is max 4 bubbles per carousel if they are ~10KB each (plus overhead)
+    MAX_BUBBLES_PER_CAROUSEL = 4
+    messages = []
+    
+    for i in range(0, len(bubble_containers), MAX_BUBBLES_PER_CAROUSEL):
+        chunk = bubble_containers[i:i + MAX_BUBBLES_PER_CAROUSEL]
+        
+        if len(chunk) == 1:
+            # Single bubble -> BubbleContainer (limit is loose, ~30KB+ is fine usually)
+            messages.append(FlexSendMessage(alt_text=f"Bill for {display_name} ({i//MAX_BUBBLES_PER_CAROUSEL + 1})", contents=chunk[0]))
+        else:
+            # Multiple bubbles -> Carousel
+            carousel = CarouselContainer(contents=chunk)
+            messages.append(FlexSendMessage(alt_text=f"Bill for {display_name} ({i//MAX_BUBBLES_PER_CAROUSEL + 1})", contents=carousel))
+            
+    return messages
 
 def _component_to_dict(component):
     """Convert a LINE SDK component to a dict for size estimation."""
@@ -1013,8 +1026,12 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
         # Send one Flex Message per client
         for canonical_name, client_data in grouped_clients.items():
             try:
-                flex_message = _create_client_flex_message(client_data)
-                line_bot_api.push_message(destination_id, flex_message)
+                # flex_messages is now a LIST of FlexSendMessage objects
+                flex_messages = _create_client_flex_message(client_data)
+                
+                # Push the messages (up to 5 can be sent in one push_message call)
+                # But creating multiple push calls is safer if we exceed 5 (though unlikely with current limits)
+                line_bot_api.push_message(destination_id, flex_messages)
             except Exception as e:
                 logging.error(f"Error sending flex for {canonical_name}: {e}")
                 line_bot_api.push_message(destination_id, TextSendMessage(text=f"❌ 發送 {canonical_name} 帳單時發生錯誤 (可能是內容過長)。"))
@@ -1462,8 +1479,8 @@ def _bill_worker(destination_id, client_filter, date_val, currency="cad"):
             return
 
         for client_name, client_data in grouped.items():
-            flex = _create_client_flex_message(client_data, currency=currency)
-            line_bot_api.push_message(destination_id, flex)
+            flexs = _create_client_flex_message(client_data, currency=currency)
+            line_bot_api.push_message(destination_id, flexs)
             
     except Exception as e:
         logging.error(f"Bill worker failed: {e}")
@@ -1588,8 +1605,8 @@ def _paid_worker(destination_id, client_filter, date_val):
 
         for client_name, client_data in grouped.items():
             # 使用相同的 Flex Message 格式，但標記為 paid bill (總額顯示綠色)
-            flex = _create_client_flex_message(client_data, is_paid_bill=True)
-            line_bot_api.push_message(destination_id, flex)
+            flexs = _create_client_flex_message(client_data, is_paid_bill=True)
+            line_bot_api.push_message(destination_id, flexs)
             
     except Exception as e:
         logging.error(f"Paid worker failed: {e}\n{traceback.format_exc()}")
