@@ -413,6 +413,34 @@ def _group_items_by_client(items, filter_name=None, filter_date=None, skip_paid_
         parent_group["subtotal"] += item["price_val"]
         client_data["total"] += item["price_val"]
 
+    # 🟢 Filter out fully settled parent_dates (subtotal ≈ 0) from unpaid view
+    # This prevents showing discount items that have been fully offset by credits
+    if not skip_paid_subitems_calc:  # Only filter for unpaid view, not bill view
+        for client_name in list(raw_clients.keys()):
+            client_data = raw_clients[client_name]
+            for bill_date_key in list(client_data["data"].keys()):
+                bill_date_group = client_data["data"][bill_date_key]
+                
+                # Filter parent_dates with subtotal ≈ 0
+                settled_parent_dates = []
+                for parent_date, parent_group in bill_date_group["parent_dates"].items():
+                    if abs(parent_group["subtotal"]) < 0.01:  # Considered fully settled
+                        settled_parent_dates.append(parent_date)
+                        # Remove from client total
+                        client_data["total"] -= parent_group["subtotal"]
+                
+                # Remove settled parent_dates
+                for parent_date in settled_parent_dates:
+                    del bill_date_group["parent_dates"][parent_date]
+                
+                # If no parent_dates left in this bill_date, remove the entire bill_date
+                if not bill_date_group["parent_dates"]:
+                    del client_data["data"][bill_date_key]
+            
+            # If no data left for this client, remove the client
+            if not client_data["data"]:
+                del raw_clients[client_name]
+
     return raw_clients
 
 def _create_item_row(item, currency="cad"):
