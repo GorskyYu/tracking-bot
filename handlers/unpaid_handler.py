@@ -49,8 +49,8 @@ COL_WEIGHT = "箱子重量"
 COL_PRICE = "加幣應收"
 COL_CAD_PRICE = "加拿大單價"
 COL_INTL_PRICE = "國際單價"
-COL_ADDT_CAD = "追加加幣支出"
-COL_ADDT_TWD = "追加台幣支出"
+COL_ADDT_CAD = "numbers9__1"
+COL_ADDT_TWD = "numeric_Mjj2bhK9"
 COL_CAD_PAID ="加幣實收"
 COL_TWD_PAID ="台幣實收"
 COL_COLLECTOR = "收款人"
@@ -86,18 +86,19 @@ def _map_column_values(column_values_list):
     if not column_values_list:
         return mapped
     for cv in column_values_list:
+        val = cv.get("display_value")
+        if val is None:
+            val = cv.get("text")
+        if val is None:
+            val = ""
+            
         if cv.get("column") and cv["column"].get("title"):
              title = cv["column"]["title"].strip()
-             # Prioritize display_value for Formula columns
-             val = cv.get("display_value")
-             
-             if val is None:
-                 val = cv.get("text")
-                 
-             if val is None:
-                 val = ""
-                 
              mapped[title] = str(val)
+             
+        if cv.get("id"):
+             mapped[cv["id"]] = str(val)
+             
     return mapped
 
 def _fetch_col_id_by_title(board_id, title):
@@ -162,6 +163,7 @@ def fetch_unpaid_items_globally():
                         id
                         name
                         column_values {
+                            id
                             ... on FormulaValue { display_value }
                             text
                             column { title }
@@ -170,6 +172,7 @@ def fetch_unpaid_items_globally():
                             id
                             name
                             column_values {
+                                id
                                 ... on FormulaValue { display_value }
                                 text
                                 column { title }
@@ -1292,11 +1295,11 @@ def fetch_items_by_bill_date(target_date_yyyymmdd):
             ) {
                 items {
                     id name
-                    column_values { ... on FormulaValue { display_value } text column { title } }
+                    column_values { id ... on FormulaValue { display_value } text column { title } }
                     parent_item {
                         id
                         name
-                        column_values { ... on FormulaValue { display_value } text column { title } }
+                        column_values { id ... on FormulaValue { display_value } text column { title } }
                     }
                 }
             }
@@ -1477,11 +1480,11 @@ def fetch_paid_items_by_bill_date(target_date_yyyymmdd):
             ) {
                 items {
                     id name
-                    column_values { ... on FormulaValue { display_value } text column { title } }
+                    column_values { id ... on FormulaValue { display_value } text column { title } }
                     parent_item {
                         id
                         name
-                        column_values { ... on FormulaValue { display_value } text column { title } }
+                        column_values { id ... on FormulaValue { display_value } text column { title } }
                     }
                 }
             }
@@ -1594,11 +1597,11 @@ def fetch_and_tag_unpaid_today():
             ) {
                 items {
                     id name
-                    column_values { ... on FormulaValue { display_value } text column { title } }
+                    column_values { id ... on FormulaValue { display_value } text column { title } }
                     parent_item {
                         id
                         name
-                        column_values { ... on FormulaValue { display_value } text column { title } }
+                        column_values { id ... on FormulaValue { display_value } text column { title } }
                     }
                 }
             }
