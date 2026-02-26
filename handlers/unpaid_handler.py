@@ -771,7 +771,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     footer = BoxComponent(layout='vertical', spacing='sm', contents=footer_contents)
     
     # ----- Pack sections into bubbles (max ~25KB body per bubble to leave room for header/footer) -----
-    MAX_BODY_SIZE = 25000  # Increased limit to try to fit more in one bubble
+    MAX_BODY_SIZE = 15000  # Reduced: Carousel limit is 50KB total. If we have multiple bubbles, each must be smaller.
     
     bubbles = []
     current_body = []
