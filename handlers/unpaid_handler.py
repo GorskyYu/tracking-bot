@@ -620,7 +620,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             
             # Items under this parent date
             # Limit items to prevent Flex Message from exceeding 30KB
-            max_items_per_parent = 15
+            max_items_per_parent = 5
             for i, item in enumerate(parent_group["items"]):
                 if i >= max_items_per_parent:
                     body_contents.append(
