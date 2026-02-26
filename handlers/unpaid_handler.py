@@ -464,7 +464,7 @@ def _create_item_row(item, currency="cad"):
             BoxComponent(
                 layout='horizontal',
                 contents=[
-                    TextComponent(text=discount_display, flex=4, size='sm', wrap=True, weight='bold'),
+                    TextComponent(text=discount_display, flex=4, size='sm', wrap=True),
                     TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold', color=price_color)
                 ]
             )
@@ -771,7 +771,7 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
     footer = BoxComponent(layout='vertical', spacing='sm', contents=footer_contents)
     
     # ----- Pack sections into bubbles (max ~25KB body per bubble to leave room for header/footer) -----
-    MAX_BODY_SIZE = 20000  # conservative limit in bytes for the body JSON
+    MAX_BODY_SIZE = 25000  # Increased limit to try to fit more in one bubble
     
     bubbles = []
     current_body = []
