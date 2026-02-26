@@ -219,8 +219,9 @@ def fetch_unpaid_items_globally():
 _paid_subitems_cache = {}
 
 def clear_paid_subitems_cache():
-    global _paid_subitems_cache
+    global _paid_subitems_cache, _all_subitems_cache
     _paid_subitems_cache = {}
+    _all_subitems_cache = {}
 
 def _fetch_paid_subitems_total(parent_id, subitem_board_id):
     """
@@ -283,6 +284,48 @@ def _fetch_paid_subitems_total(parent_id, subitem_board_id):
     # Store in cache
     _paid_subitems_cache[cache_key] = total_paid_subitems
     return total_paid_subitems
+
+# Cache for all subitems total
+_all_subitems_cache = {}
+
+def _fetch_all_subitems_total(parent_id, subitem_board_id):
+    """
+    Fetches the sum of '加幣應收' (COL_PRICE) for ALL subitems under a parent,
+    regardless of status. This includes discount items.
+    Returns the true net receivable amount for this parent.
+    """
+    cache_key = f"all_{subitem_board_id}_{parent_id}"
+    if cache_key in _all_subitems_cache:
+        return _all_subitems_cache[cache_key]
+
+    query = """
+    query ($item_id: [ID!]) {
+        items (ids: $item_id) {
+            subitems {
+                id
+                column_values {
+                    id
+                    text
+                    ... on FormulaValue { display_value }
+                    column { title }
+                }
+            }
+        }
+    }
+    """
+    res = _monday_request(query, {"item_id": [int(parent_id)]})
+    
+    total = 0.0
+    if res and "data" in res and res["data"]["items"]:
+        parent = res["data"]["items"][0]
+        if parent and "subitems" in parent and parent["subitems"]:
+            for sub in parent["subitems"]:
+                cols = _map_column_values(sub.get("column_values", []))
+                price = _extract_float(cols.get(COL_PRICE, "0"))
+                total += price
+    
+    _all_subitems_cache[cache_key] = total
+    return total
 
 def _resolve_client_name(name):
     """Resolve client name using manual alias mapping."""
@@ -1853,16 +1896,22 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id, group_id=No
 
                     subitem_board_id = sample_item.get("board_id")
                     rate = sample_item.get("parent_rate", 1.0)
-                    
-                    # Calculate remaining balance for this parent item
-                    remaining_balance_cad = parent_group.get("subtotal", 0)
+                    if rate <= 0: rate = 1.0
                     
                     # Get existing paid amounts
                     existing_cad_paid = sample_item.get("parent_cad_paid", 0)
                     existing_twd_paid = sample_item.get("parent_twd_paid", 0)
                     
+                    # Calculate TRUE remaining balance including discount items
+                    # Use _fetch_all_subitems_total to get net receivable (includes discounts)
+                    all_subitems_total = _fetch_all_subitems_total(parent_id, subitem_board_id)
+                    total_already_paid = existing_cad_paid + (existing_twd_paid / rate)
+                    remaining_balance_cad = all_subitems_total - total_already_paid
+                    
+                    logging.info(f"[paid_worker] Parent {parent_date_str}: all_subitems={all_subitems_total:.2f}, already_paid={total_already_paid:.2f}, remaining={remaining_balance_cad:.2f}")
+                    
                     # Check if already fully paid
-                    if remaining_balance_cad <= 0:
+                    if remaining_balance_cad <= 0.01:
                         distribution_log.append(f"⏭️ {bill_date_str}/{parent_date_str}: 已全額付清，跳過")
                         continue
                     
