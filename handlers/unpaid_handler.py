@@ -427,7 +427,7 @@ def _create_item_row(item, currency="cad"):
     is_domestic = item.get("is_domestic", False)
 
     # 判斷是否為「折讓」特例路徑
-    is_discount_path = "折讓" in parent_name
+    is_discount_path = "折讓" in parent_name or "折讓" in sub_name
 
     # 不論原始文字為何，統一由 price_val 轉為兩位小數
     price_val = item.get("price_val", 0.0)
