@@ -519,31 +519,33 @@ def _create_item_row(item, currency="cad"):
         addt_cad = item.get("addt_cad", 0.0)
         addt_twd = item.get("addt_twd", 0.0)
         
-        if addt_cad != 0:
-            addt_cad_prefix = "-" if addt_cad < 0 else ""
-            addt_cad_color = '#1DB446' if addt_cad < 0 else None
-            row_contents.append(
-                BoxComponent(
-                    layout='horizontal',
-                    contents=[
-                        TextComponent(text="追加加幣收費", size='xs', color='#aaaaaa', flex=4),
-                        TextComponent(text=f"{addt_cad_prefix}${abs(addt_cad):.2f}", size='xs', align='end', color=addt_cad_color, flex=2)
-                    ]
+        # 折讓案不顯示追加費用
+        if not is_discount_path:
+            if addt_cad != 0:
+                addt_cad_prefix = "-" if addt_cad < 0 else ""
+                addt_cad_color = '#1DB446' if addt_cad < 0 else None
+                row_contents.append(
+                    BoxComponent(
+                        layout='horizontal',
+                        contents=[
+                            TextComponent(text="追加加幣收費", size='xs', color='#aaaaaa', flex=4),
+                            TextComponent(text=f"{addt_cad_prefix}${abs(addt_cad):.2f}", size='xs', align='end', color=addt_cad_color, flex=2)
+                        ]
+                    )
                 )
-            )
-            
-        if addt_twd != 0:
-            addt_twd_prefix = "-" if addt_twd < 0 else ""
-            addt_twd_color = '#1DB446' if addt_twd < 0 else None
-            row_contents.append(
-                BoxComponent(
-                    layout='horizontal',
-                    contents=[
-                        TextComponent(text="追加台幣收費", size='xs', color='#aaaaaa', flex=4),
-                        TextComponent(text=f"{addt_twd_prefix}NT${abs(addt_twd):.0f}", size='xs', align='end', color=addt_twd_color, flex=2)
-                    ]
+                
+            if addt_twd != 0:
+                addt_twd_prefix = "-" if addt_twd < 0 else ""
+                addt_twd_color = '#1DB446' if addt_twd < 0 else None
+                row_contents.append(
+                    BoxComponent(
+                        layout='horizontal',
+                        contents=[
+                            TextComponent(text="追加台幣收費", size='xs', color='#aaaaaa', flex=4),
+                            TextComponent(text=f"{addt_twd_prefix}NT${abs(addt_twd):.0f}", size='xs', align='end', color=addt_twd_color, flex=2)
+                        ]
+                    )
                 )
-            )
             
     # 為了節省空間，如果只有一行，我們直接回傳該行，不包在 vertical box 裡
     if len(row_contents) == 1:
@@ -619,7 +621,21 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                 )
             
             # Items under this parent date
-            for item in parent_group["items"]:
+            # 為了避免 Flex Message 超過 30KB 限制，我們需要限制每個母項目下的包裹數量
+            # 但為了不影響總金額，我們只在顯示上做限制
+            max_items_per_parent = 15
+            for i, item in enumerate(parent_group["items"]):
+                if i >= max_items_per_parent:
+                    body_contents.append(
+                        BoxComponent(
+                            layout='horizontal',
+                            margin='md',
+                            contents=[
+                                TextComponent(text=f"...還有 {len(parent_group['items']) - max_items_per_parent} 個項目未顯示", size='xs', color='#aaaaaa', flex=1)
+                            ]
+                        )
+                    )
+                    break
                 body_contents.append(_create_item_row(item, currency))
                 
             # 🟢 Check for Available Credit or Previous Deficit
