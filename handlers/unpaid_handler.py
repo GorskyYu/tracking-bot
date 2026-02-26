@@ -286,11 +286,13 @@ def _resolve_client_name(name):
     clean = name.strip()
     return CLIENT_ALIASES.get(clean, clean)
 
-def _group_items_by_client(items, filter_name=None, filter_date=None):
+def _group_items_by_client(items, filter_name=None, filter_date=None, skip_paid_subitems_calc=False):
     """
     Groups items by Client -> Bill Date -> Parent Date.
     Returns: { canonical_name: { display, total, data: { bill_date: { parent_dates: { parent_date: { items:[], subtotal, paid_amount } } } } } }
     filter_date: Optional YYYYMMDD string to filter by specific date
+    skip_paid_subitems_calc: If True, use total_paid_cad directly as available_credit
+                            (for bill views where all items are shown, not just unpaid)
     """
     raw_clients = {} 
 
@@ -376,17 +378,16 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
             if rate <= 0: rate = 1.0
             total_paid_cad = item.get("parent_cad_paid", 0) + (item.get("parent_twd_paid", 0) / rate)
             
-            # 🟢 New Logic: Calculate Available Credit based on Paid Subitems
-            subitem_board_id = item.get("board_id")
-            parent_id = item.get("parent_id")
-            
-            # Fetch Sum of Prices of Subitems already marked as PAID
-            paid_subitems_total = _fetch_paid_subitems_total(parent_id, subitem_board_id)
-            
-            # Credit = Parent Paid (Wallet) - Spent on Paid Items
-            # If Positive: We have money left to pay for current items.
-            # If Negative: We are in deficit from previous items.
-            available_credit = total_paid_cad - paid_subitems_total
+            # 🟢 Calculate Available Credit
+            if skip_paid_subitems_calc:
+                # Bill view: all items (paid + unpaid) are shown, so credit = total paid directly
+                available_credit = total_paid_cad
+            else:
+                # Unpaid view: only unpaid items shown, so subtract already-paid subitems
+                subitem_board_id = item.get("board_id")
+                parent_id = item.get("parent_id")
+                paid_subitems_total = _fetch_paid_subitems_total(parent_id, subitem_board_id)
+                available_credit = total_paid_cad - paid_subitems_total
 
             bill_date_group["parent_dates"][parent_date] = {
                 "items": [],
@@ -1349,8 +1350,8 @@ def _bill_worker(destination_id, client_filter, date_val, currency="cad"):
             line_bot_api.push_message(destination_id, TextSendMessage(text=f"📅 {date_val} 沒有找到任何出帳項目。"))
             return
 
-        # ✅ 直接複用原本的群組邏輯 (會自動按 Parent 分類並計算實收)
-        grouped = _group_items_by_client(results, client_filter)
+        # ✅ 直接複用原本的群組邏輯 (skip_paid_subitems_calc=True: 帳單顯示所有項目，已付款直接顯示)
+        grouped = _group_items_by_client(results, client_filter, skip_paid_subitems_calc=True)
         if not grouped:
             line_bot_api.push_message(destination_id, TextSendMessage(text=f"🔍 在 {date_val} 找不到屬於 {client_filter} 的項目。"))
             return
@@ -1474,8 +1475,8 @@ def _paid_worker(destination_id, client_filter, date_val):
             line_bot_api.push_message(destination_id, TextSendMessage(text="未找到帳單，請檢查日期、所在群組或Abowbow ID。"))
             return
 
-        # 使用相同的分組和顯示邏輯（與 unpaid 一致）
-        grouped = _group_items_by_client(results, client_filter)
+        # 使用相同的分組和顯示邏輯（skip_paid_subitems_calc=True: 已付款帳單直接顯示付款金額）
+        grouped = _group_items_by_client(results, client_filter, skip_paid_subitems_calc=True)
         if not grouped:
             line_bot_api.push_message(destination_id, TextSendMessage(text="未找到帳單，請檢查日期、所在群組或Abowbow ID。"))
             return
