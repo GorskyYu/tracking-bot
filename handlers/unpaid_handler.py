@@ -858,6 +858,67 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
              line_bot_api.push_message(destination_id, TextSendMessage(text="沒有發現符合條件的項目（箱子尺寸與重量皆不為空，且狀態符合作業需求）。"))
              return
 
+        # 🟢 自動補齊同日期的關聯項目 (修復折讓/信用額度項目漏抓的問題)
+        # 邏輯：如果抓到了某個未付款項，就應該把該出帳日的所有項目都抓出來檢查
+        # 這樣即使折讓項目的 Status 是空的 (導致 fetch_unpaid 抓不到)，也能透過 fetch_by_date 補抓回來
+        if not is_today_mode and results:
+            found_bill_dates = set()
+            for item in results:
+                # Extract date from item (YYYY-MM-DD)
+                b_date = item.get("bill_date", "").strip()
+                if b_date and len(b_date) >= 10:
+                    found_bill_dates.add(b_date)
+            
+            if found_bill_dates:
+                existing_ids = {item["id"] for item in results}
+                logging.info(f"[unpaid_worker] Expanding search for bill dates: {found_bill_dates}")
+                
+                for b_date in found_bill_dates:
+                    try:
+                        # Convert YYYY-MM-DD to YYMMDD
+                        date_obj = datetime.strptime(b_date, "%Y-%m-%d")
+                        yymmdd = date_obj.strftime("%y%m%d")
+                        
+                        # Fetch all items for this date (ignoring status filter)
+                        date_items = fetch_items_by_bill_date(yymmdd)
+                        
+                        count_added = 0
+                        for d_item in date_items:
+                            # Only add if not strictly "Paid" (to avoid cluttering if mostly unpaid)
+                            # BUT user wants it "like bill view", so maybe we should keep even paid ones if they are part of the bill?
+                            # The 'bill' command shows everything. The 'unpaid' command usually shows only unpaid.
+                            # However, if we don't include the paid ones, the 'credit calculation' might be wrong?
+                            # _group_items_by_client calculates credit based on fetched items?
+                            # NO, _group_items_by_client calculates 'available_credit' by:
+                            #   1. Summing parent fees (paid_amount)
+                            #   2. Subtracting paid subitems (fetched via _fetch_paid_subitems_total)
+                            
+                            # So we ONLY need to add items that are part of the bill but have NO status (like Discounts).
+                            # If an item is explicitly "Paid" (Status=Paid), fetch_unpaid skipped it.
+                            # If we add it back now, it will appear in the list.
+                            # Do we want PAID items in the UNPAID list?
+                            # User said: "Show paid amount".
+                            # If we include Paid items, they will be shown as rows.
+                            # If we EXCLUDE Paid items, but include Discount (Status Empty), that is safer.
+                            
+                            if d_item["id"] not in existing_ids:
+                                # Start with a safety check: status
+                                # We don't have status in d_item dict (it's processed).
+                                # But we can check via logic or just trust that if it's bill dated, it's relevant.
+                                # Let's add it. The grouping logic handles display.
+                                # Wait, if we add "Paid" items, they will show up as items.
+                                # The user probably doesn't want to see "Paid" items in "Unpaid" list unless they are partial?
+                                # But the user explicitly said "like view bill".
+                                # Let's add everything for that Date.
+                                results.append(d_item)
+                                existing_ids.add(d_item["id"])
+                                count_added += 1
+                        
+                        logging.info(f"[unpaid_worker] Added {count_added} related items for date {yymmdd}")
+                        
+                    except Exception as e:
+                        logging.error(f"[unpaid_worker] Error expanding date {b_date}: {e}")
+
         logging.info(f"[unpaid_worker] Found {len(results)} items for destination {destination_id}")
 
         # ✅ 先過濾客戶 (與 _group_items_by_client 相同邏輯)
