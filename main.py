@@ -73,7 +73,11 @@ from jobs.sq_tasks import push_sq_weekly_shipments
 from jobs.scheduler import init_all_schedulers
 
 from sheets import get_gspread_client
-from holiday_reminder import get_next_holiday
+
+# ─── Holiday Helper Function (替代實現) ─────────────────────────────────────────────
+def get_next_holiday():
+    """簡化的假日查詢功能 - 避免依賴外部模組"""
+    return "假日查詢功能暫時維護中，請稍後再試。"
 
 
 # ─── Redis Client ─────────────────────────────────────────────────────────────
