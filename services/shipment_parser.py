@@ -257,7 +257,7 @@ class ShipmentParserService:
         push_to(self.cfg['IRIS_GROUP_ID'], iris_batch)
 
     def handle_soquick_full_notification(self, event):
-        """處理 Soquick 全體通知邏輯"""
+        """處理 Soquick 全體通知邏輯，包含動態團隊分配與散客 Fallback"""
         text = event["message"]["text"]
         if not ("您好，請" in text and "按" in text and "申報相符" in text):
             return
@@ -269,13 +269,95 @@ class ShipmentParserService:
             footer_idx = len(lines)
             
         recipients = lines[:footer_idx]
-        vicky_batch = sorted(list(set([r for r in recipients if r in self.cfg['VICKY_NAMES']])))
-        yumi_batch  = sorted(list(set([r for r in recipients if r in self.cfg['YUMI_NAMES']])))
         
-        def push_group(group, batch):
-            if not batch: return
-            msg = "\n".join(batch) + "\n\n您好，請提醒以上認證人按申報相符"
-            self._safe_line_push(group, msg)
+        # 🔧 修正：使用動態名單和完整的 fallback 邏輯
+        yves_names = self._get_yves_names()
+        vicky_names = self._get_team_names("Vicky")
+        yumi_names = self._get_team_names("Yumi")
+        
+        vicky_batch = []
+        yumi_batch = []
+        unknown_recipients = []  # 新增：收集不在任何團隊的收件人
+        
+        log.info(f"[SoquickNotification] Processing {len(recipients)} recipients")
+        
+        for recipient in recipients:
+            recipient_name = recipient.strip()
+            if not recipient_name:
+                continue
+                
+            log.info(f"[SoquickNotification] Processing: {recipient_name}")
+            
+            if recipient_name in vicky_names:
+                log.info(f"[SoquickNotification] {recipient_name} → Vicky team")
+                vicky_batch.append(recipient_name)
+            elif recipient_name in yumi_names:
+                log.info(f"[SoquickNotification] {recipient_name} → Yumi team")
+                yumi_batch.append(recipient_name)
+            elif recipient_name in self.cfg.get('IRIS_NAMES', set()):
+                log.info(f"[SoquickNotification] {recipient_name} → Iris team (skip)")
+                pass  # Iris 成員跳過
+            elif recipient_name in yves_names:
+                log.info(f"[SoquickNotification] {recipient_name} → Yves team (skip fallback)")
+                pass  # Yves 成員不需要 fallback
+            else:
+                log.info(f"[SoquickNotification] {recipient_name} → Unknown, adding to fallback")
+                unknown_recipients.append(recipient_name)
+        
+        # 發送到各團隊群組
+        def push_group(group_id, batch):
+            if not batch: 
+                return
+            unique_batch = sorted(list(set(batch)))
+            msg = "\n".join(unique_batch) + "\n\n您好，請提醒以上認證人按申報相符"
+            self._safe_line_push(group_id, msg)
 
         push_group(self.cfg['VICKY_GROUP_ID'], vicky_batch)
         push_group(self.cfg['YUMI_GROUP_ID'], yumi_batch)
+        
+        # 🔧 新增：處理不在任何團隊的收件人 Fallback 邏輯
+        if unknown_recipients:
+            log.info(f"[SoquickNotification] Found unknown recipients: {unknown_recipients}")
+            
+            try:
+                gs = self.get_gspread()
+                ss = gs.open_by_url(self.cfg['ACE_SHEET_URL'])
+                ws = ss.sheet1
+                all_rows = ws.get_all_values()
+                
+                sender_groups = defaultdict(list)
+                found_recipients = set()
+                
+                for recipient_name in unknown_recipients:
+                    for row in reversed(all_rows):
+                        row_customs_name = row[6].strip() if len(row) > 6 else ""  # Column G: 清關人
+                        
+                        if row_customs_name == recipient_name:
+                            sender = row[2].strip() if len(row) > 2 else ""  # Column C: 寄件人
+                            phone = row[7].strip() if len(row) > 7 else ""   # Column H: 清關電話
+                            
+                            if sender and sender not in self.cfg.get('EXCLUDED_SENDERS', []):
+                                phone_part = f" {phone}" if phone else ""
+                                sender_groups[sender].append(f"{recipient_name}{phone_part}")
+                                found_recipients.add(recipient_name)
+                                break
+                
+                # 發送給管理員
+                for sender, declarants in sender_groups.items():
+                    declarant_list = "\n".join(declarants)
+                    simple_msg = f"以下申報人尚未按申報相符，再麻煩通知：\n{declarant_list}"
+                    
+                    # 先發送寄件人名字，再發送通知內容
+                    for admin_id in [self.cfg['YVES_USER_ID'], self.cfg['GORSKY_USER_ID']]:
+                        if admin_id:
+                            self._safe_line_push(admin_id, sender)
+                            self._safe_line_push(admin_id, simple_msg)
+                
+                # 處理表單中找不到的收件人
+                unfound_recipients = [name for name in unknown_recipients if name not in found_recipients]
+                if unfound_recipients:
+                    unfound_msg = f"以下申報人表單無資料：\n" + "\n".join(unfound_recipients)
+                    self._safe_line_push(self.cfg['YVES_USER_ID'], unfound_msg)
+                    
+            except Exception as e:
+                log.error(f"[SoquickNotification] Fallback error: {e}", exc_info=True)
