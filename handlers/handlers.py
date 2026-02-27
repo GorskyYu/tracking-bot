@@ -8,6 +8,91 @@ from utils.dynamic_names import get_dynamic_names_manager
 import os
 import re
 import json
+import logging
+
+log = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# New Dynamic Sender Mapping Functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_sender_team_mapping(sender_name: str) -> Optional[str]:
+    """
+    Map sender name from 打包資料表 col E to appropriate team group
+    
+    Args:
+        sender_name: Name from spreadsheet column E
+        
+    Returns:
+        Team identifier ('MM', 'AD', 'KT', 'Yves') or None if no mapping found
+    """
+    manager = get_dynamic_names_manager()
+    if not manager:
+        log.warning("[SenderMapping] Dynamic names manager not available")
+        return None
+        
+    group_title = manager.get_sender_group_mapping(sender_name)
+    if not group_title:
+        return None
+        
+    # Map group titles to team identifiers
+    group_upper = group_title.upper()
+    if '(MM)' in group_upper:
+        return 'MM'
+    elif '(AD)' in group_upper:
+        return 'AD'
+    elif '(KT)' in group_upper:
+        return 'KT'
+    elif any(pattern in group_upper for pattern in ['SQ', 'ACE', 'SOQUICK']):
+        return 'Yves'
+        
+    return None
+
+def get_dynamic_team_members(team_identifier: str) -> Set[str]:
+    """
+    Get team members dynamically from Monday board
+    
+    Args:
+        team_identifier: 'MM', 'AD', 'KT', 'Yves', 'Vicky', or 'Yumi'
+        
+    Returns:
+        Set of member names for the team
+    """
+    manager = get_dynamic_names_manager()
+    if not manager:
+        log.warning(f"[TeamMembers] Dynamic names manager not available for team {team_identifier}")
+        return set()
+        
+    # For existing teams (Vicky, Yumi, Yves)
+    if team_identifier == 'Vicky':
+        return manager.get_team_names('Vicky')
+    elif team_identifier == 'Yumi':
+        return manager.get_team_names('Yumi')
+    elif team_identifier == 'Yves':
+        return manager.get_yves_names()
+    
+    # For new dynamic mappings (MM, AD, KT)
+    group_patterns = {
+        'MM': '(MM)',
+        'AD': '(AD)',
+        'KT': '(KT)'
+    }
+    
+    if team_identifier in group_patterns:
+        # Find the group containing the pattern and get its members
+        try:
+            groups = manager.sender_mapper._get_all_groups()
+            pattern = group_patterns[team_identifier]
+            
+            for group in groups:
+                group_title = group.get('title', '').upper()
+                if pattern.upper() in group_title:
+                    return manager.get_group_members(group['title'])
+                    
+        except Exception as e:
+            log.error(f"[TeamMembers] Error getting members for team {team_identifier}: {e}")
+    
+    return set()
 import requests
 import pytz
 from datetime import datetime, timedelta, timezone

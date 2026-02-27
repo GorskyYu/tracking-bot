@@ -5,6 +5,128 @@ from threading import Lock
 
 log = logging.getLogger(__name__)
 
+class SenderGroupMapper:
+    """Maps sender names to Monday board groups using dynamic lookup"""
+    
+    def __init__(self, monday_service=None):
+        self.monday_service = monday_service
+        self._group_cache = {}
+        self._cache_time = None
+        self.cache_duration = timedelta(hours=1)
+        
+    def map_sender_to_group(self, sender_name: str) -> Optional[str]:
+        """
+        Map sender name to Monday board group based on patterns
+        
+        Args:
+            sender_name: The sender name from column E (打包資料表)
+            
+        Returns:
+            The matched group title or None if no match found
+        """
+        if not sender_name:
+            return None
+            
+        sender_upper = sender_name.strip().upper()
+        
+        # Direct abbreviation mapping
+        abbreviation_map = {
+            'MM': '(MM)',
+            'AD': '(AD)', 
+            'KT': '(KT)'
+        }
+        
+        # Check for direct abbreviation matches first
+        if sender_upper in abbreviation_map:
+            target_pattern = abbreviation_map[sender_upper]
+            return self._find_group_containing_pattern(target_pattern)
+        
+        # Check if sender contains abbreviations (e.g., "Yves MM Lai")
+        for abbrev, pattern in abbreviation_map.items():
+            if abbrev in sender_upper:
+                log.info(f"[SenderMapping] Found abbreviation '{abbrev}' in sender '{sender_name}'")
+                return self._find_group_containing_pattern(pattern)
+                
+        # Special mapping for Yves Lai variations
+        yves_patterns = ['YVES LAI', 'YVES', 'YL']
+        if any(pattern in sender_upper for pattern in yves_patterns):
+            # Try to find SQ/Ace group
+            for pattern in ['SQ', 'ACE', 'SOQUICK']:
+                group = self._find_group_containing_pattern(pattern)
+                if group:
+                    return group
+                    
+        log.info(f"[SenderMapping] No group mapping found for sender: '{sender_name}'")
+        return None
+    
+    def _find_group_containing_pattern(self, pattern: str) -> Optional[str]:
+        """Find Monday board group that contains the specified pattern"""
+        if not self.monday_service:
+            log.warning("[SenderMapping] No Monday service available")
+            return None
+            
+        try:
+            groups = self._get_all_groups()
+            pattern_upper = pattern.upper()
+            
+            for group in groups:
+                group_title = group.get('title', '').upper()
+                if pattern_upper in group_title:
+                    log.info(f"[SenderMapping] Found group '{group['title']}' containing pattern '{pattern}'")
+                    return group['title']  # Return original case
+                    
+        except Exception as e:
+            log.error(f"[SenderMapping] Error finding group with pattern '{pattern}': {e}")
+            
+        return None
+    
+    def _get_all_groups(self) -> list:
+        """Get all groups from Monday board 7745917861 with caching"""
+        
+        # Check cache validity
+        if (self._cache_time and 
+            datetime.now() - self._cache_time < self.cache_duration and 
+            'groups' in self._group_cache):
+            return self._group_cache['groups']
+            
+        if not self.monday_service:
+            return []
+            
+        try:
+            query = '''
+            query {
+              boards (ids: [7745917861]) {
+                groups {
+                  id
+                  title
+                  items {
+                    name
+                  }
+                }
+              }
+            }
+            '''
+            
+            response = self.monday_service._post_with_backoff(
+                self.monday_service.api_url, 
+                {"query": query}
+            )
+            
+            data = response.json()
+            boards = data.get("data", {}).get("boards", [])
+            
+            if boards:
+                groups = boards[0].get("groups", [])
+                self._group_cache['groups'] = groups
+                self._cache_time = datetime.now()
+                log.info(f"[SenderMapping] Cached {len(groups)} groups from Monday board")
+                return groups
+                
+        except Exception as e:
+            log.error(f"[SenderMapping] Error fetching groups: {e}")
+            
+        return []
+
 class DynamicNamesManager:
     """管理從 Monday board 動態獲取的名單，提供緩存和 fallback 機制"""
     
@@ -17,6 +139,55 @@ class DynamicNamesManager:
         self._cache_time = {}
         self._cache_lock = Lock()
         self.cache_duration = timedelta(hours=1)
+        
+        # Initialize sender group mapper
+        self.sender_mapper = SenderGroupMapper(monday_service)
+        
+    def get_sender_group_mapping(self, sender_name: str) -> Optional[str]:
+        """
+        Map sender name to Monday board group
+        
+        Args:
+            sender_name: Sender name from column E (打包資料表)
+            
+        Returns:
+            Group title if mapping found, None otherwise
+        """
+        return self.sender_mapper.map_sender_to_group(sender_name)
+    
+    def get_group_members(self, group_title: str) -> Set[str]:
+        """
+        Get all member names from a specific Monday board group
+        
+        Args:
+            group_title: The title of the group
+            
+        Returns:
+            Set of member names in the group
+        """
+        cache_key = f"group_{group_title}_members"
+        
+        with self._cache_lock:
+            # Check cache
+            cached_members = self._get_cached_names(cache_key)
+            if cached_members is not None:
+                return cached_members
+        
+        # Get from Monday board
+        try:
+            groups = self.sender_mapper._get_all_groups()
+            for group in groups:
+                if group.get('title', '') == group_title:
+                    items = group.get('items', [])
+                    member_names = {item.get('name', '').strip() for item in items if item.get('name', '').strip()}
+                    self._update_cache(cache_key, member_names)
+                    log.info(f"[DynamicNames] Updated group '{group_title}' with {len(member_names)} members")
+                    return member_names
+                    
+        except Exception as e:
+            log.error(f"[DynamicNames] Error getting members for group '{group_title}': {e}")
+            
+        return set()
         
     def get_team_names(self, team_name: str) -> Set[str]:
         """

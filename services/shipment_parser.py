@@ -121,23 +121,36 @@ class ShipmentParserService:
         vicky_names = self._get_team_names("Vicky")  # 動態獲取 Vicky 名單
         yumi_names = self._get_team_names("Yumi")  # 動態獲取 Yumi 名單
         
+        # 🔧 調試信息：記錄獲取到的名單
+        log.info(f"[MissingConfirm] Yves names count: {len(yves_names)}")
+        log.info(f"[MissingConfirm] Vicky names count: {len(vicky_names)}")
+        log.info(f"[MissingConfirm] Yumi names count: {len(yumi_names)}")
+        
         for l in text.splitlines():
             if self.cfg['CODE_TRIGGER_RE'].search(l):
                 parts = re.split(r"\s+", l.strip())
                 if len(parts) < 2: continue
-                box_id = parts[0]  # Box ID like ACE260122YL03
+                box_id = parts[0]  # Box ID like ACE260222YL03
                 name = parts[1]
                 
+                # 🔧 調試信息：記錄每個清關人的分類
+                log.info(f"[MissingConfirm] Processing: {name}")
+                
                 if name in vicky_names:
+                    log.info(f"[MissingConfirm] {name} → Vicky team")
                     bundled_names[self.cfg['VICKY_GROUP_ID']].append(name)
                 elif name in yumi_names:
+                    log.info(f"[MissingConfirm] {name} → Yumi team")
                     bundled_names[self.cfg['YUMI_GROUP_ID']].append(name)
                 elif name in self.cfg['IRIS_NAMES']:
+                    log.info(f"[MissingConfirm] {name} → Iris team")
                     bundled_names[self.cfg['IRIS_GROUP_ID']].append(name)
                 elif name in yves_names:
+                    log.info(f"[MissingConfirm] {name} → Yves team (skip fallback)")
                     # Yves's list: do not push private message to admin (skip fallback logic)
                     pass
                 else:
+                    log.info(f"[MissingConfirm] {name} → Unknown, adding to fallback list")
                     # 只有不在上述清單的人，才需要去表單查 Sender
                     all_extracted_items.append((box_id, name))
 
@@ -177,24 +190,20 @@ class ShipmentParserService:
                 ship_day = "週日出貨" if is_sunday else ("週四出貨" if "週四" in text else "近期出貨")
                 timing_note = "週一" if is_sunday else "週五" # 週日出貨對應週一，週四對應週五
 
-                # 發送已 Bundle 的寄件人通知
+                # 发送已找到的寄件人通知 (使用简化格式)
                 for sender, declarants in sender_groups.items():
-                    # 排除掉負責人自己，只轉發需要的通知
+                    # 排除掉负责人自己，只转发需要的通知
                     if sender in self.cfg.get('EXCLUDED_SENDERS', []): continue
 
+                    # 🔧 修正：使用简化的"再麻烦通知"格式，而不是完整日程格式
                     declarant_list = "\n".join(declarants)
-                    bundled_msg = (
-                        f"{ship_day}\n\n麻煩請 \n\n{declarant_list}\n\n"
-                        f"收到EZ way通知後 請按申報相符 海關才能受理清關\n\n"
-                        f"**須按申報相符者 EZ Way 會提前提傳輸\n\n"
-                        f"台灣時間{timing_note} 傍晚至晚上 就可以開始按申報相符**"
-                    )
+                    simple_msg = f"以下申報人尚未按申報相符，再麻煩通知：\n{declarant_list}"
                     
-                    # 推送給管理員
+                    # 推送给管理员：先发送 sender，再发送通知内容
                     for admin_id in [self.cfg['YVES_USER_ID'], self.cfg['GORSKY_USER_ID']]:
                         if admin_id:
-                            self.line_push(admin_id, sender)
-                            self.line_push(admin_id, bundled_msg)
+                            self._safe_line_push(admin_id, sender)  # 先发送寄件人名字
+                            self._safe_line_push(admin_id, simple_msg)  # 再发送通知内容
                             
                 # 新增：若有姓名不在表單內，仍發送給 Yves 避免漏掉
                 unfound = [name for box_id, name in all_extracted_items if (box_id, name) not in found_items]
