@@ -582,3 +582,94 @@ class MondaySyncService:
         except Exception as e:
             log.error(f"[Monday] Failed to get Yves names from board: {e}")
             return set()
+
+    def get_team_members_from_board(self, team_name):
+        """
+        動態從 Monday board 7745917861 獲取指定團隊成員
+        team_name: "Vicky" 或 "Yumi" 
+        返回: [{"name": str, "phone": str, "available": bool}, ...]
+        """
+        query = '''
+        query {
+          boards (ids: [7745917861]) {
+            groups {
+              id
+              title
+              items {
+                name
+                column_values(ids: ["phone__1", "status__1"]) {
+                  id
+                  text
+                  ... on StatusValue {
+                    text
+                    index
+                  }
+                }
+              }
+            }
+          }
+        }
+        '''
+        try:
+            resp = self._post_with_backoff(self.api_url, {"query": query})
+            data = resp.json().get("data", {}).get("boards", [])
+            if not data:
+                log.warning(f"[Monday] No board data found for {team_name}")
+                return []
+            
+            board = data[0]
+            groups = board.get("groups", [])
+            
+            # 尋找對應的 group
+            target_group = None
+            team_lower = team_name.lower()
+            for group in groups:
+                title = group.get("title", "").lower()
+                if team_lower in title:
+                    log.info(f"[Monday] Found {team_name} group: '{group.get('title')}'")
+                    target_group = group
+                    break
+            
+            if not target_group:
+                log.warning(f"[Monday] No {team_name} group found in board 7745917861")
+                return []
+            
+            members = []
+            items = target_group.get("items", [])
+            
+            for item in items:
+                name = item.get("name", "").strip()
+                if not name:
+                    continue
+                    
+                phone = ""
+                available = True  # 預設可用
+                
+                # 解析 column_values
+                column_values = item.get("column_values", [])
+                for cv in column_values:
+                    col_id = cv.get("id", "")
+                    if col_id == "phone__1":
+                        phone = cv.get("text", "").strip()
+                    elif col_id == "status__1":
+                        status_text = cv.get("text", "").strip()
+                        # 可用狀態：「可用人頭」或空白/Pending，不可用：「不可用」
+                        if status_text == "不可用":
+                            available = False
+                        # 其他狀態（包括空白、"可用人頭"、"Pending"）都視為可用
+                
+                members.append({
+                    "name": name,
+                    "phone": phone,
+                    "available": available
+                })
+            
+            log.info(f"[Monday] Retrieved {len(members)} members for {team_name} team")
+            available_count = sum(1 for m in members if m["available"])
+            log.info(f"[Monday] {available_count}/{len(members)} members are available for {team_name}")
+            
+            return members
+            
+        except Exception as e:
+            log.error(f"[Monday] Failed to get {team_name} team members: {e}")
+            return []

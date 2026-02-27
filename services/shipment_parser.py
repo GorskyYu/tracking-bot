@@ -50,6 +50,39 @@ class ShipmentParserService:
         log.warning(f"[Parser] Using fallback YVES_NAMES with {len(fallback_names)} names")
         return fallback_names
 
+    def _get_team_names(self, team_name):
+        """獲取團隊名單，帶緩存機制（1小時）"""
+        now = datetime.now()
+        cache_key = f"_{team_name.lower()}_names_cache"
+        cache_time_key = f"_{team_name.lower()}_names_cache_time"
+        
+        # 檢查緩存是否有效
+        if (hasattr(self, cache_key) and hasattr(self, cache_time_key) and
+            getattr(self, cache_key) is not None and 
+            getattr(self, cache_time_key) is not None and 
+            now - getattr(self, cache_time_key) < timedelta(hours=1)):
+            return getattr(self, cache_key)
+        
+        # 從 Monday board 動態獲取名單
+        if self.monday_service:
+            try:
+                team_members = self.monday_service.get_team_members_from_board(team_name)
+                if team_members:
+                    # 只取可用的成員名字
+                    available_names = {member["name"] for member in team_members if member["available"]}
+                    setattr(self, cache_key, available_names)
+                    setattr(self, cache_time_key, now)
+                    log.info(f"[Parser] Updated {team_name} names cache with {len(available_names)} available names")
+                    return available_names
+            except Exception as e:
+                log.error(f"[Parser] Failed to get dynamic {team_name} names: {e}")
+        
+        # Fallback to hard-coded names if Monday service fails
+        fallback_key = f"{team_name.upper()}_NAMES"
+        fallback_names = self.cfg.get(fallback_key, set())
+        log.warning(f"[Parser] Using fallback {fallback_key} with {len(fallback_names)} names")
+        return fallback_names
+
     def _safe_line_push(self, to, text):
         """內部的推送工具"""
         if not to or not text: return
@@ -85,6 +118,8 @@ class ShipmentParserService:
 
         # 1. 掃描文字並分流
         yves_names = self._get_yves_names()  # 動態獲取 Yves 名單
+        vicky_names = self._get_team_names("Vicky")  # 動態獲取 Vicky 名單
+        yumi_names = self._get_team_names("Yumi")  # 動態獲取 Yumi 名單
         
         for l in text.splitlines():
             if self.cfg['CODE_TRIGGER_RE'].search(l):
@@ -93,9 +128,9 @@ class ShipmentParserService:
                 box_id = parts[0]  # Box ID like ACE260122YL03
                 name = parts[1]
                 
-                if name in self.cfg['VICKY_NAMES']:
+                if name in vicky_names:
                     bundled_names[self.cfg['VICKY_GROUP_ID']].append(name)
-                elif name in self.cfg['YUMI_NAMES']:
+                elif name in yumi_names:
                     bundled_names[self.cfg['YUMI_GROUP_ID']].append(name)
                 elif name in self.cfg['IRIS_NAMES']:
                     bundled_names[self.cfg['IRIS_GROUP_ID']].append(name)
@@ -187,16 +222,21 @@ class ShipmentParserService:
         code_lines = [l for l in lines if self.cfg['CODE_TRIGGER_RE'].search(l)]
         cleaned = [self.cfg['CODE_TRIGGER_RE'].sub("", l).strip().strip('"') for l in code_lines]
 
-        vicky_batch = [c for c in cleaned if any(name in c for name in self.cfg['VICKY_NAMES'])]
-        yumi_batch  = [c for c in cleaned if any(name in c for name in self.cfg['YUMI_NAMES'])]
+        # 動態獲取名單
+        vicky_names = self._get_team_names("Vicky")
+        yumi_names = self._get_team_names("Yumi") 
+        yves_names = self._get_yves_names()
+
+        vicky_batch = [c for c in cleaned if any(name in c for name in vicky_names)]
+        yumi_batch  = [c for c in cleaned if any(name in c for name in yumi_names)]
         iris_batch = [c for c in cleaned if any(name in c for name in self.cfg['IRIS_NAMES'])]
         
         names_only = [c.split()[0] for c in cleaned]
         other_batch = [cleaned[i] for i, nm in enumerate(names_only) 
-                      if nm not in self.cfg['VICKY_NAMES'] 
-                      and nm not in self.cfg['YUMI_NAMES'] 
+                      if nm not in vicky_names
+                      and nm not in yumi_names 
                       and nm not in self.cfg['IRIS_NAMES']
-                      and nm not in self.cfg.get('YVES_NAMES', [])]
+                      and nm not in yves_names]
 
         def push_to(group, batch):
             if not batch: return

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, Any, Optional, List, Set
 from linebot.models import TextSendMessage
 from utils.permissions import ADMIN_USER_IDS
+from utils.dynamic_names import get_dynamic_names_manager
 
 import os
 import re
@@ -36,9 +37,7 @@ from config import (
     ANGELA_NAMES,
     IRIS_NAMES,
     JASMINE_NAMES,
-    VICKY_NAMES,
-    YUMI_NAMES,
-    YVES_NAMES,
+    # VICKY_NAMES, YUMI_NAMES, YVES_NAMES - now using dynamic names
     EXCLUDED_SENDERS,
 
     # misc config
@@ -59,6 +58,33 @@ LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def get_vicky_names() -> Set[str]:
+    """獲取 Vicky team 的動態名單"""
+    manager = get_dynamic_names_manager()
+    if manager:
+        return manager.get_team_names('Vicky')
+    # Fallback if manager not initialized
+    from config import VICKY_NAMES
+    return VICKY_NAMES
+
+def get_yumi_names() -> Set[str]:
+    """獲取 Yumi team 的動態名單"""
+    manager = get_dynamic_names_manager()
+    if manager:
+        return manager.get_team_names('Yumi')
+    # Fallback if manager not initialized
+    from config import YUMI_NAMES
+    return YUMI_NAMES
+
+def get_yves_names() -> Set[str]:
+    """獲取 Yves team 的動態名單"""
+    manager = get_dynamic_names_manager()
+    if manager:
+        return manager.get_yves_names()
+    # Fallback if manager not initialized
+    from config import YVES_NAMES
+    return YVES_NAMES
 
 def strip_mention(line: str) -> str:
     """
@@ -112,9 +138,9 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
             recipient = parts[-1]
             full_msg = line
 
-            if recipient in VICKY_NAMES:
+            if recipient in get_vicky_names():
                 vicky.append(full_msg)
-            elif recipient in YUMI_NAMES:
+            elif recipient in get_yumi_names():
                 yumi.append(full_msg)
             elif recipient in IRIS_NAMES:
                 iris.append(full_msg)
@@ -147,9 +173,9 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
             # 使用 "\n".join(lines[1:]) 來刪除第一行
             full_msg = "\n".join(lines[1:])
 
-            if recipient in VICKY_NAMES:
+            if recipient in get_vicky_names():
                 vicky.append(full_msg)
-            elif recipient in YUMI_NAMES:
+            elif recipient in get_yumi_names():
                 yumi.append(full_msg)
             elif recipient in IRIS_NAMES:
                 iris.append(full_msg)
@@ -222,7 +248,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
                 if sheet_recipient in fallback_map and sheet_recipient not in matched_recipients:
                     # Column C (index 2) = 寄件人 (sender)
                     sender = row[2].strip() if len(row) > 2 else "未知寄件人"
-                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
+                    if sender and sender not in (get_vicky_names() | get_yumi_names() | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
                         if sender not in sender_to_bundles:
                             sender_to_bundles[sender] = []
                         sender_to_bundles[sender].extend(fallback_map[sheet_recipient])
@@ -386,12 +412,12 @@ def handle_ace_customs_tax(event: Dict[str, Any]) -> None:
             continue
 
         # 2) Check YVES skip (Yves Lai, Yves KT Lai, etc.)
-        if sender in YVES_NAMES or sender in EXCLUDED_SENDERS:
+        if sender in get_yves_names() or sender in EXCLUDED_SENDERS:
             continue   # silently skip
         # 3) Check Chinese name sets
-        elif sender in VICKY_NAMES:
+        elif sender in get_vicky_names():
             vicky.append(display_line)
-        elif sender in YUMI_NAMES:
+        elif sender in get_yumi_names():
             yumi.append(display_line)
         elif sender in IRIS_NAMES:
             iris.append(display_line)
@@ -466,12 +492,12 @@ def handle_soquick_full_notification(event: Dict[str, Any]) -> None:
     footer = "\n".join(lines[footer_idx:])
 
     # 2) split into Vicky / Yumi / “others” batches
-    vicky_batch = [r for r in recipients if r in VICKY_NAMES]
-    yumi_batch = [r for r in recipients if r in YUMI_NAMES]
+    vicky_batch = [r for r in recipients if r in get_vicky_names()]
+    yumi_batch = [r for r in recipients if r in get_yumi_names()]
     other_recipients = [
         r for r in recipients
-        if r not in VICKY_NAMES
-        and r not in YUMI_NAMES
+        if r not in get_vicky_names()
+        and r not in get_yumi_names()
         and r not in EXCLUDED_SENDERS
     ]
 
@@ -510,8 +536,8 @@ def handle_soquick_full_notification(event: Dict[str, Any]) -> None:
     # ── Private “other” pushes ─────────────────────
     other_recipients = dedupe([
         r for r in recipients
-        if r not in VICKY_NAMES
-        and r not in YUMI_NAMES
+        if r not in get_vicky_names()
+        and r not in get_yumi_names()
         and r not in EXCLUDED_SENDERS
     ])
     log.info(f"[SOQ FULL][DEBUG] other_recipients = {other_recipients!r}")
@@ -551,7 +577,7 @@ def handle_soquick_full_notification(event: Dict[str, Any]) -> None:
             if name_in_sheet in other_recipients:
                 sender = row[2].strip() if len(row) > 2 else ""
                 log.info(f"[SOQ FULL][DEBUG] matched recipient {name_in_sheet!r} → sender {sender!r}")
-                if sender and sender not in (VICKY_NAMES | YUMI_NAMES | EXCLUDED_SENDERS):
+                if sender and sender not in (get_vicky_names() | get_yumi_names() | EXCLUDED_SENDERS):
                     senders.add(sender)
 
         if senders:
@@ -606,15 +632,15 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
             log.info(f"[Debug] Checking name: '{name}' against Vicky/Yumi lists") # 加入這一行
 
             # 分類收集名字
-            if name in VICKY_NAMES:
+            if name in get_vicky_names():
                 vicky_found.append(name)
-            elif name in YUMI_NAMES:
+            elif name in get_yumi_names():
                 yumi_found.append(name)
             elif name in IRIS_NAMES:
                 iris_found.append(name)
             elif name in ANGELA_NAMES:
                 angela_found.append(name)
-            elif name in YVES_NAMES:
+            elif name in get_yves_names():
                 # Yves's list: do not push private message to admin (skip fallback logic)
                 pass
             else:
@@ -693,7 +719,7 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                     # Column C (index 2) is sender
                     sender = (row[2] if len(row) > 2 else "").strip()
                     log.info(f"[Missing Confirm] Row {row_idx}: declarer={declarer}, sender={sender}")
-                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
+                    if sender and sender not in (get_vicky_names() | get_yumi_names() | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
                         senders.add(sender)
             
             log.info(f"[Missing Confirm] Found senders to notify: {senders}")
@@ -762,8 +788,8 @@ def handle_ace_schedule(event: Dict[str, Any]) -> None:
     ]
 
     # now split into per-group lists
-    vicky_batch = [c for c in cleaned if any(name in c for name in VICKY_NAMES)]
-    yumi_batch = [c for c in cleaned if any(name in c for name in YUMI_NAMES)]
+    vicky_batch = [c for c in cleaned if any(name in c for name in get_vicky_names())]
+    yumi_batch = [c for c in cleaned if any(name in c for name in get_yumi_names())]
     iris_batch  = [c for c in cleaned if any(name in c for name in IRIS_NAMES)]
     angela_batch = [c for c in cleaned if any(name in c for name in ANGELA_NAMES)]
 
@@ -773,11 +799,11 @@ def handle_ace_schedule(event: Dict[str, Any]) -> None:
     # “others” = those whose name token isn’t in any of the three lists
     other_batch = [
         cleaned[i] for i, nm in enumerate(names_only)
-        if nm not in VICKY_NAMES
-        and nm not in YUMI_NAMES
+        if nm not in get_vicky_names()
+        and nm not in get_yumi_names()
         and nm not in IRIS_NAMES
         and nm not in ANGELA_NAMES
-        and nm not in YVES_NAMES
+        and nm not in get_yves_names()
     ]
 
     def push_to(group: str, batch: List[str]) -> None:
@@ -842,9 +868,9 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
         recipient = lines[2].split()[0]
         full_msg  = "\n".join(lines[1:])
 
-        if recipient in VICKY_NAMES:
+        if recipient in get_vicky_names():
             vicky.append(full_msg)
-        elif recipient in YUMI_NAMES:
+        elif recipient in get_yumi_names():
             yumi.append(full_msg)
         elif recipient in IRIS_NAMES:
             iris.append(full_msg)
@@ -895,7 +921,7 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
                 # 確保每個收件人只會被 extend 一次
                 if sheet_recipient in fallback_map and sheet_recipient not in matched_recipients:
                     sender = row[2].strip() if len(row) > 2 else "未知寄件人"
-                    if sender and sender not in (VICKY_NAMES | YUMI_NAMES | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
+                    if sender and sender not in (get_vicky_names() | get_yumi_names() | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
                         if sender not in sender_to_bundles:
                             sender_to_bundles[sender] = []
                         sender_to_bundles[sender].extend(fallback_map[sheet_recipient])
@@ -1038,7 +1064,7 @@ def handle_ace_ezway_check_and_push_to_yves(event: Dict[str, Any]) -> None:
             continue
 
         # Skip anyone already in VICKY_NAMES, YUMI_NAMES, or EXCLUDED_SENDERS
-        if sender in VICKY_NAMES or sender in YUMI_NAMES or sender in IRIS_NAMES or sender in ANGELA_NAMES or sender in EXCLUDED_SENDERS:
+        if sender in get_vicky_names() or sender in get_yumi_names() or sender in IRIS_NAMES or sender in ANGELA_NAMES or sender in EXCLUDED_SENDERS:
             continue
 
         results.add(sender)

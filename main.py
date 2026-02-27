@@ -28,6 +28,8 @@ from config import (
     YVES_USER_ID, GORSKY_USER_ID, VICKY_USER_ID,
     # Sheet URLs
     ACE_SHEET_URL, SQ_SHEET_URL, VICKY_SHEET_URL,
+    # Team Names (for fallback)
+    YVES_NAMES, VICKY_NAMES, YUMI_NAMES,
     # Board IDs
     AIR_BOARD_ID, AIR_PARENT_BOARD_ID, VICKY_SUBITEM_BOARD_ID, VICKY_STATUS_COLUMN_ID,
     # Mappings
@@ -48,6 +50,7 @@ from services.barcode_service import handle_barcode_image
 from services.twws_service import get_twws_value_by_name
 from services.shipment_parser import ShipmentParserService
 from services.line_service import line_push, line_reply, line_push_mention
+from utils.dynamic_names import init_dynamic_names_manager
 
 # 業務邏輯處理器
 from handlers.handlers import (
@@ -131,6 +134,16 @@ monday_service = MondaySyncService(
     api_token=MONDAY_API_TOKEN,
     gspread_client_func=get_gspread_client,
     line_push_func=line_push
+)
+
+# 初始化動態名單管理器
+init_dynamic_names_manager(
+    monday_service=monday_service,
+    fallback_config={
+        'YVES_NAMES': YVES_NAMES,
+        'VICKY_NAMES': VICKY_NAMES,
+        'YUMI_NAMES': YUMI_NAMES,
+    }
 )
 
 # 創建 ShipmentParserService，並傳入 Monday service
