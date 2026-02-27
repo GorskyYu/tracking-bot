@@ -126,13 +126,15 @@ CONFIG = {
     'ACE_SHEET_URL': ACE_SHEET_URL
 }
 
-shipment_parser = ShipmentParserService(CONFIG, get_gspread_client, line_push)
-
+# 先創建 Monday service
 monday_service = MondaySyncService(
     api_token=MONDAY_API_TOKEN,
     gspread_client_func=get_gspread_client,
     line_push_func=line_push
 )
+
+# 創建 ShipmentParserService，並傳入 Monday service
+shipment_parser = ShipmentParserService(CONFIG, get_gspread_client, line_push, monday_service)
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():

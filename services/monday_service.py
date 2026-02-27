@@ -531,3 +531,54 @@ class MondaySyncService:
             "column_values": json.dumps(column_values)
         }
         return self._post_with_backoff(self.api_url, {"query": query, "variables": variables})
+
+    def get_yves_names_from_board(self):
+        """
+        動態從 Monday board 7745917861 的 "SQ/Ace" group 中獲取所有 item names
+        返回: set of names
+        """
+        query = '''
+        query {
+          boards (ids: [7745917861]) {
+            groups {
+              id
+              title
+              items {
+                name
+              }
+            }
+          }
+        }
+        '''
+        try:
+            resp = self._post_with_backoff(self.api_url, {"query": query})
+            data = resp.json().get("data", {}).get("boards", [])
+            if not data:
+                log.warning("[Monday] No board data found for ID 7745917861")
+                return set()
+            
+            board = data[0]
+            groups = board.get("groups", [])
+            
+            # 尋找 "SQ/Ace" group (可能是 "SQ" 或 "Ace" 或包含這些字的 group)
+            target_group = None
+            for group in groups:
+                title = group.get("title", "").lower()
+                if "sq" in title or "ace" in title:
+                    log.info(f"[Monday] Found target group: '{group.get('title')}'")
+                    target_group = group
+                    break
+            
+            if not target_group:
+                log.warning("[Monday] No SQ/Ace group found in board 7745917861")
+                return set()
+            
+            items = target_group.get("items", [])
+            names = {item.get("name", "").strip() for item in items if item.get("name", "").strip()}
+            
+            log.info(f"[Monday] Retrieved {len(names)} names from SQ/Ace group: {sorted(names)}")
+            return names
+            
+        except Exception as e:
+            log.error(f"[Monday] Failed to get Yves names from board: {e}")
+            return set()

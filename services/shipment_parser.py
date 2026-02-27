@@ -9,15 +9,46 @@ from dateutil.parser import parse as parse_date
 log = logging.getLogger(__name__)
 
 class ShipmentParserService:
-    def __init__(self, config, gspread_client_func, line_push_func):
+    def __init__(self, config, gspread_client_func, line_push_func, monday_service=None):
         self.cfg = config
         self.get_gspread = gspread_client_func
         self.line_push = line_push_func
+        self.monday_service = monday_service
         self.line_push_url = "https://api.line.me/v2/bot/message/push"
         self.line_headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {os.getenv('LINE_TOKEN')}"
         }
+        # 緩存 Yves names，每小時更新一次
+        self._yves_names_cache = None
+        self._yves_names_cache_time = None
+
+    def _get_yves_names(self):
+        """獲取 Yves 名單，帶緩存機制（1小時）"""
+        now = datetime.now()
+        
+        # 檢查緩存是否有效（1小時內）
+        if (self._yves_names_cache is not None and 
+            self._yves_names_cache_time is not None and 
+            now - self._yves_names_cache_time < timedelta(hours=1)):
+            return self._yves_names_cache
+        
+        # 從 Monday board 動態獲取名單
+        if self.monday_service:
+            try:
+                dynamic_names = self.monday_service.get_yves_names_from_board()
+                if dynamic_names:  # 只有成功獲取到名單時才更新緩存
+                    self._yves_names_cache = dynamic_names
+                    self._yves_names_cache_time = now
+                    log.info(f"[Parser] Updated Yves names cache with {len(dynamic_names)} names")
+                    return dynamic_names
+            except Exception as e:
+                log.error(f"[Parser] Failed to get dynamic Yves names: {e}")
+        
+        # Fallback to hard-coded YVES_NAMES if Monday service fails
+        fallback_names = self.cfg.get('YVES_NAMES', set())
+        log.warning(f"[Parser] Using fallback YVES_NAMES with {len(fallback_names)} names")
+        return fallback_names
 
     def _safe_line_push(self, to, text):
         """內部的推送工具"""
@@ -53,6 +84,8 @@ class ShipmentParserService:
         all_extracted_items = []  # List of (box_id, name) tuples
 
         # 1. 掃描文字並分流
+        yves_names = self._get_yves_names()  # 動態獲取 Yves 名單
+        
         for l in text.splitlines():
             if self.cfg['CODE_TRIGGER_RE'].search(l):
                 parts = re.split(r"\s+", l.strip())
@@ -66,7 +99,7 @@ class ShipmentParserService:
                     bundled_names[self.cfg['YUMI_GROUP_ID']].append(name)
                 elif name in self.cfg['IRIS_NAMES']:
                     bundled_names[self.cfg['IRIS_GROUP_ID']].append(name)
-                elif name in self.cfg['YVES_NAMES']:
+                elif name in yves_names:
                     # Yves's list: do not push private message to admin (skip fallback logic)
                     pass
                 else:
