@@ -784,7 +784,9 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
             today = datetime.now(timezone.utc).date()
             one_month_ago = today - timedelta(days=30)
             
-            senders = set()
+            sender_to_declarers = __import__("collections").defaultdict(list)
+            found_declarer_names = set()
+            
             for row_idx, row in enumerate(data[1:], start=2):
                 # Check date is within one month
                 date_str = (row[0] or "").strip()
@@ -800,40 +802,52 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
                 # Column G (index 6) is declarer
                 declarer = (row[6] if len(row) > 6 else "").strip()
                 
-                if declarer in declarer_names:
+                if declarer in declarer_names and declarer not in found_declarer_names:
                     # Column C (index 2) is sender
                     sender = (row[2] if len(row) > 2 else "").strip()
+                    if not sender:
+                        sender = "未知寄件人"
+                    
                     log.info(f"[Missing Confirm] Row {row_idx}: declarer={declarer}, sender={sender}")
-                    if sender and sender not in (get_vicky_names() | get_yumi_names() | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
-                        senders.add(sender)
+                    
+                    sender_to_declarers[sender].append(f"{declarer} {declarer_info.get(declarer, '')}".strip())
+                    found_declarer_names.add(declarer)
             
-            log.info(f"[Missing Confirm] Found senders to notify: {senders}")
+            # 處理 ACE 表單中沒找到的報關人
+            for decl in declarer_names:
+                if decl not in found_declarer_names:
+                    sender_to_declarers["未知寄件人"].append(f"{decl} {declarer_info.get(decl, '')}".strip())
+            
+            log.info(f"[Missing Confirm] Grouped by senders: {list(sender_to_declarers.keys())}")
+            
             # 發送給所有管理員
-            if senders:
-                for admin_id in ADMIN_USER_IDS:
-                    # First send sender names
-                    for sender in sorted(senders):
+            if sender_to_declarers:
+                for sender, decl_lines in sender_to_declarers.items():
+                    if sender != "未知寄件人":
+                        # 略過原本就設定不需推播的名單
+                        if sender in (get_vicky_names() | get_yumi_names() | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
+                            continue
+                            
+                        team = get_sender_team_mapping(sender)
+                        if team in ['MM', 'AD', 'KT']:
+                            # MM/KT/AD的寄件人不推送
+                            continue
+                            
+                    # 其他的報關人 fallback: 分兩條訊息推播 (1. 寄件人名稱, 2. 罐頭訊息)
+                    for admin_id in ADMIN_USER_IDS:
                         requests.post(
                             LINE_PUSH_URL,
                             headers=LINE_HEADERS,
                             json={"to": admin_id, "messages": [{"type": "text", "text": sender}]}
                         )
-                    # Then send declarers with phone numbers
-                    declarer_lines = []
-                    for name in sorted(declarer_names):
-                        phone = declarer_info.get(name, "")
-                        if phone:
-                            declarer_lines.append(f"{name} {phone}")
-                        else:
-                            declarer_lines.append(name)
-                    declarer_text = "以下申報人尚未按申報相符，再麻煩通知：\n" + "\n".join(declarer_lines)
-                    requests.post(
-                        LINE_PUSH_URL,
-                        headers=LINE_HEADERS,
-                        json={"to": admin_id, "messages": [{"type": "text", "text": declarer_text}]}
-                    )
+                        declarer_text = "以下申報人尚未按申報相符，再麻煩通知：\n" + "\n".join(decl_lines)
+                        requests.post(
+                            LINE_PUSH_URL,
+                            headers=LINE_HEADERS,
+                            json={"to": admin_id, "messages": [{"type": "text", "text": declarer_text}]}
+                        )
             else:
-                log.info("[Missing Confirm] No senders found or all senders are in excluded lists")
+                log.info("[Missing Confirm] No valid senders found for notification")
 
 
 def handle_ace_schedule(event: Dict[str, Any]) -> None:
@@ -1179,9 +1193,17 @@ def dispatch_confirmation_notification(event, text, user_id):
     """
     has_code = CODE_TRIGGER_RE.search(text)
     
-    # Check if this message should go to soquick handler instead
-    group_id = event.get("source", {}).get("groupId")
-    
-    # 完全禁用這個函數，讓訊息走到下面的soquick handler
-    log.info(f"[DISPATCH_DISABLED] group_id={group_id}, returning False to let soquick handler process")
-    return False
+    # 1. Freight Staff trigger
+    if user_id in (DANNY_USER_ID, SKY_USER_ID) and ("沒按" in text or "還沒按" in text or "申報相符" in text) and has_code:
+        log.info(f"[Freight Staff Trigger] Auto-processing: {text[:20]}...")
+        handle_missing_confirm(event)
+        return True
+
+    # 2. Admin trigger
+    is_admin = user_id in ADMIN_USER_IDS
+    if is_admin and ("沒按" in text or "還沒按" in text or "申報相符" in text) and has_code:
+        log.info(f"[Admin Trigger] Processing confirmation request: {text[:20]}...")
+        handle_missing_confirm(event)
+        return True
+
+    # 如果都不符合，回傳 False 讓 main.py 繼續走其他 handler
