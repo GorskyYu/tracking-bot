@@ -528,9 +528,9 @@ def webhook():
             shipment_parser.handle_missing_confirm(event)   # 負責 Iris 分流與發送 Sender 給 Yves
             continue
 
-        # 4) 處理「申報相符」通知分流 (包含 Danny 自動觸發與管理員手動觸發)
-        if dispatch_confirmation_notification(event, text, user_id):
-            continue
+        # 4) 處理「申報相符」通知分流 - DISABLED TO LET SOQUICK HANDLER PROCESS
+        # dispatch_confirmation_notification(event, text, user_id)
+        log.info("[MAIN_DEBUG] Skipping dispatch_confirmation_notification - should go to soquick handler")
         
         # 5) Richmond-arrival triggers content-request to Vicky ���������
         if group_id == VICKY_GROUP_ID and "[Richmond, Canada] 已到達派送中心" in text:
@@ -558,12 +558,12 @@ def webhook():
             handle_soquick_and_ace_shipments(event)
             continue
 
-        # 7) Soquick "請通知…申報相符" messages
+        # 7) Soquick "請通知…申報相符" messages and manual admin notifications
 
         if (group_id in (SOQUICK_GROUP_ID, ACE_GROUP_ID)
-            and "您好，請" in text
-            and "按" in text
-            and "申報相符" in text):
+            and "申報相符" in text
+            and ("您好，請" in text or ("還沒" in text and "按" in text))):
+            log.info("[MAIN_DEBUG] Message matched soquick handler conditions - calling handle_soquick_full_notification")
             shipment_parser.handle_soquick_full_notification(event)
             continue          
 

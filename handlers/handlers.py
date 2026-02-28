@@ -1179,17 +1179,9 @@ def dispatch_confirmation_notification(event, text, user_id):
     """
     has_code = CODE_TRIGGER_RE.search(text)
     
-    # 1. Danny/Sky 的判定：必須是 Danny 或 Sky 發送 + 包含「還沒按」或「申報相符」 + 包含單號
-    if user_id in (DANNY_USER_ID, SKY_USER_ID) and ("還沒按" in text or "申報相符" in text) and has_code:
-        log.info(f"[Freight Staff Trigger] Auto-processing re-notification: {text[:20]}...")
-        handle_missing_confirm(event) # 呼叫原本的處理邏輯
-        return True
-
-    # 2. 管理員 (Yves/Gorsky) 的判定：手動輸入「申報相符」或「還沒按」
-    is_admin = user_id in ADMIN_USER_IDS
-    if is_admin and ("申報相符" in text or "還沒按" in text) and has_code:
-        log.info(f"[Admin Trigger] Processing confirmation request: {text[:20]}...")
-        handle_missing_confirm(event)
-        return True
-
+    # Check if this message should go to soquick handler instead
+    group_id = event.get("source", {}).get("groupId")
+    
+    # 完全禁用這個函數，讓訊息走到下面的soquick handler
+    log.info(f"[DISPATCH_DISABLED] group_id={group_id}, returning False to let soquick handler process")
     return False

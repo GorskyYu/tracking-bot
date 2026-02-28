@@ -258,6 +258,7 @@ class ShipmentParserService:
 
     def handle_soquick_full_notification(self, event):
         """處理 Soquick 全體通知邏輯，包含動態團隊分配與散客 Fallback"""
+        log.info("[SOQUICK_HANDLER_DEBUG] handle_soquick_full_notification called!")
         text = event["message"]["text"]
         if not ("您好，請" in text and "按" in text and "申報相符" in text):
             return
