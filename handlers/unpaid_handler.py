@@ -1198,9 +1198,12 @@ def _send_help_menu(reply_token):
                  
                 {"type": "button", "style": "secondary", "height": "sm", "margin": "sm",
                  "action": {"type": "message", "label": "📉 折讓/Credit處理", "text": "help:credit"}},
-                 
+
                 {"type": "button", "style": "secondary", "height": "sm", "margin": "sm",
                  "action": {"type": "message", "label": "⚙️ 其他指令/運費更新", "text": "help:other"}},
+
+                {"type": "button", "style": "secondary", "height": "sm", "margin": "sm",
+                 "action": {"type": "message", "label": "👤 目前可用人頭", "text": "目前可用人頭"}},
             ]
         }
     }
