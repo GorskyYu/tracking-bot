@@ -3,6 +3,7 @@ import traceback
 from datetime import datetime
 
 from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD_MAPPING, update_monday_item, rename_monday_item
+from utils.dynamic_names import get_dynamic_names_manager
 from utils.permissions import is_authorized_for_event, ADMIN_USER_IDS
 from utils.line_reply import reply_text, reply_message
 from config import line_bot_api
@@ -1209,6 +1210,89 @@ def _send_help_menu(reply_token):
     }
     reply_message(reply_token, [{"type": "flex", "altText": "管理員指令選單", "contents": flex_contents}])
 
+def _send_available_heads_menu(reply_token):
+    """Shows all dynamic groups as buttons to fetch members from"""
+    try:
+        from utils.dynamic_names import get_dynamic_names_manager
+        dm = get_dynamic_names_manager()
+        if not dm:
+            reply_text(reply_token, "⚠️ 未初始化 Monday Manager，無法獲取人頭資料。")
+            return
+        
+        groups = dm._get_all_groups()
+        if not groups:
+            reply_text(reply_token, "⚠️ 目前找不到任何可用的群組。")
+            return
+        
+        contents = [
+            {"type": "text", "text": "👤 選擇要查詢的群組", "weight": "bold", "size": "xl", "color": "#1a1a1a"},
+            {"type": "separator", "margin": "md"}
+        ]
+        
+        for g in groups:
+            title = g.get('title', 'Unknown')
+            if title == "不可使用": continue
+            contents.append({
+                "type": "button",
+                "style": "secondary",
+                "height": "sm",
+                "margin": "sm",
+                "action": {
+                    "type": "message",
+                    "label": f"查 {title}",
+                    "text": f"可用人頭:{title}"
+                }
+            })
+            
+        flex_contents = {
+            "type": "bubble",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "md",
+                "contents": contents
+            }
+        }
+        
+        reply_message(reply_token, [{"type": "flex", "altText": "可用人頭查詢選單", "contents": flex_contents}])
+    except Exception as e:
+        import traceback
+        logging.error(f"Error fetching dynamic groups: {e}\n{traceback.format_exc()}")
+        reply_text(reply_token, f"❌ 獲取群組列表時發生錯誤: {str(e)}")
+
+def _send_available_heads_for_group(sender_id, reply_token, group_name):
+    """Fetches specific members in a group using Monday Service via Thread to not block"""
+    def _worker():
+        try:
+            from utils.dynamic_names import get_dynamic_names_manager
+            dm = get_dynamic_names_manager()
+            
+            if not dm or not dm.monday_service:
+                line_bot_api.push_message(sender_id, TextSendMessage(text="⚠️ 未初始化 Monday Service，無法獲取名單。"))
+                return
+                
+            members = dm.monday_service.get_team_members_from_board(group_name)
+            
+            if not members:
+                line_bot_api.push_message(sender_id, TextSendMessage(text=f"⚠️ {group_name} 群組沒有名單或查詢失敗。"))
+                return
+                
+            formatted_names = [m['name'] for m in members if m.get('available', True)]
+            
+            if not formatted_names:
+                line_bot_api.push_message(sender_id, TextSendMessage(text=f"📌 {group_name} 群組目前沒有任何【可使用】的人頭。"))
+                return
+                
+            text_result = f"✅ 【{group_name} 可用人頭清單】\n(共 {len(formatted_names)} 位)\n" + "-"*15 + "\n" + "\n".join(formatted_names)
+            line_bot_api.push_message(sender_id, TextSendMessage(text=text_result))
+                
+        except Exception as e:
+            logging.error(f"Error in _send_available_heads_for_group worker: {e}")
+            line_bot_api.push_message(sender_id, TextSendMessage(text=f"❌ 查詢時發生錯誤: {str(e)}"))
+
+    reply_text(reply_token, f"🔍 正在獲取『{group_name}』的可用名單...")
+    Thread(target=_worker).start()
+        
 def _send_help_detail(reply_token, category):
     """Detailed help text for specific category"""
     text = ""
@@ -1278,6 +1362,17 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     # 處理目前功能指令 (僅限管理員私訊 或 PDF群組)
     if message_text.strip() == "目前功能" and is_admin and (not group_id or group_id == PDF_GROUP_ID):
         _send_help_menu(reply_token)
+        return
+
+    # 處理目前可用人頭 (從主選單點擊)
+    if message_text.strip() in ["目前可用人頭", "全群組可用人頭"] and is_admin:
+        _send_available_heads_menu(reply_token)
+        return
+        
+    # 處理具體的人頭查詢 (點擊群組後)
+    if message_text.startswith("可用人頭:") and is_admin:
+        group_name = message_text.split(":", 1)[1].strip()
+        _send_available_heads_for_group(sender_id, reply_token, group_name)
         return
 
     # 處理 Help 子選單指令 (僅限管理員)
