@@ -197,13 +197,21 @@ class ShipmentParserService:
 
                     # 🔧 修正：使用简化的"再麻烦通知"格式，而不是完整日程格式
                     declarant_list = "\n".join(declarants)
-                    simple_msg = f"以下申報人尚未按申報相符，再麻煩通知：\n{declarant_list}"
+                    if is_schedule:
+                        final_msg = (
+                            f"{ship_day}\n\n麻煩請 \n\n{declarant_list}\n\n"
+                            f"收到EZ way通知後 請按申報相符 海關才能受理清關\n\n"
+                            f"**預按申報相符者 EZ Way 會提前提早連線\n\n"
+                            f"台灣時間{timing_note} 傍晚至晚上 就可開始按申報相符**"
+                        )
+                    else:
+                        final_msg = f"以下申報人尚未按申報相符，再麻煩通知：\n{declarant_list}"
                     
                     # 推送给管理员：先发送 sender，再发送通知内容
                     for admin_id in [self.cfg['YVES_USER_ID'], self.cfg['GORSKY_USER_ID']]:
                         if admin_id:
                             self._safe_line_push(admin_id, sender)  # 先发送寄件人名字
-                            self._safe_line_push(admin_id, simple_msg)  # 再发送通知内容
+                            self._safe_line_push(admin_id, final_msg)  # 再发送通知内容
                             
                 # 新增：若有姓名不在表單內，仍發送給 Yves 避免漏掉
                 unfound = [name for box_id, name in all_extracted_items if (box_id, name) not in found_items]
