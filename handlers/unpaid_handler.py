@@ -2053,7 +2053,9 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id, group_id=No
                     remaining_amount -= actual_applied_original
                     
                     # Check if fully paid and update status
-                    if actual_applied_cad >= remaining_balance_cad:
+                    # Use 0.01 tolerance to handle floating point precision errors when
+                    # remaining_amount accumulates rounding errors across multiple distributions
+                    if remaining_balance_cad - actual_applied_cad <= 0.01:
                         status_col_id = _fetch_col_id_by_title(subitem_board_id, COL_STATUS)
                         for sub in items_list:
                             _monday_request(mutation, {
