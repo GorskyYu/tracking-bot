@@ -570,8 +570,8 @@ def _create_item_row(item, currency="cad"):
         weight = item.get("weight", "").strip()
         
         # Build the specs text with shipping rates
-        cad_rate_display = f"{cad_rate} CAD/kg"
-        intl_rate_display = f"{intl_rate} CAD/kg"
+        cad_rate_display = f"{round(cad_rate, 2):g} CAD/kg"
+        intl_rate_display = f"{round(intl_rate, 2):g} CAD/kg"
         dims_display = f"{dims} cm" if dims and not dims.lower().endswith("cm") else dims
         weight_display = f"{weight} kg" if weight and not weight.lower().endswith("kg") else weight
         
