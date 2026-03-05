@@ -460,13 +460,13 @@ def webhook():
             group_id = src.get("groupId")
 
             # 1. 判斷是否為管理員
-            is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
+            is_admin = user_id in {YVES_USER_ID, GORSKY_USER_ID, VICKY_USER_ID}
             
             # 2. 判斷是否為有效的自動查詢群組
             is_valid_group = group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, IRIS_GROUP_ID}
 
-            # 🟢 新邏輯：管理員隨時可用；一般成員僅限在指定群組內輸入 "unpaid" 開頭的指令
-            can_trigger = is_admin or (is_valid_group and text.lower().startswith("unpaid"))
+            # 🟢 僅限管理員可使用 unpaid 指令
+            can_trigger = is_admin
 
             if can_trigger:
                 handle_unpaid_event(
