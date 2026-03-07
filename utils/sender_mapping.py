@@ -97,6 +97,7 @@ class SenderMappingService:
             return self._group_cache['groups']
             
         if not self.monday_service:
+            log.warning("[SenderMapping] No monday_service in _get_all_groups")
             return []
             
         try:
@@ -123,18 +124,28 @@ class SenderMappingService:
             )
             
             data = response.json()
+            log.info(f"[SenderMapping] Monday API raw response keys: {list(data.keys())}")
             if "errors" in data:
                 log.error(f"[SenderMapping] API errors: {data['errors']}")
+                return []
+            if "error_message" in data:
+                log.error(f"[SenderMapping] API error_message: {data['error_message']}")
+                return []
             boards = data.get("data", {}).get("boards", [])
+            log.info(f"[SenderMapping] Boards count: {len(boards)}")
             
             if boards:
                 groups = boards[0].get("groups", [])
+                log.info(f"[SenderMapping] Groups count: {len(groups)}, titles: {[g.get('title','?') for g in groups]}")
                 self._group_cache['groups'] = groups
-                log.info(f"[SenderMapping] Cached {len(groups)} groups from Monday board")
                 return groups
+            else:
+                log.warning("[SenderMapping] No boards returned from Monday API")
                 
         except Exception as e:
             log.error(f"[SenderMapping] Error fetching groups: {e}")
+            import traceback
+            log.error(traceback.format_exc())
             
         return []
     

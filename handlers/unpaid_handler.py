@@ -1219,7 +1219,12 @@ def _send_available_heads_menu(reply_token):
             reply_text(reply_token, "⚠️ 未初始化 Monday Manager，無法獲取人頭資料。")
             return
         
+        # Clear cache to get fresh data
+        dm.sender_mapper._group_cache.clear()
+        logging.info("[AvailableHeads] Cache cleared, fetching fresh groups...")
+        
         groups = dm.sender_mapper._get_all_groups()
+        logging.info(f"[AvailableHeads] Got {len(groups)} groups")
         if not groups:
             reply_text(reply_token, "⚠️ 目前找不到任何可用的群組。")
             return

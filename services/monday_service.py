@@ -27,7 +27,7 @@ class MondaySyncService:
         """
         self.api_url = "https://api.monday.com/v2"
         self.api_token = api_token
-        self.headers = {"Authorization": api_token, "Content-Type": "application/json"}
+        self.headers = {"Authorization": api_token, "Content-Type": "application/json", "API-Version": "2024-10"}
         self.get_gspread = gspread_client_func
         self.line_push = line_push_func
         self.sheet_id = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
