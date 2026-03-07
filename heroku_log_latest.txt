@@ -307,3 +307,37 @@
 2026-03-07T01:20:20.029447+00:00 app[scheduler.9573]: python: can't open file '/app/poller.py': [Errno 2] No such file or directory
 2026-03-07T01:20:20.108309+00:00 heroku[scheduler.9573]: State changed from up to complete
 2026-03-07T01:20:09.648277+00:00 app[api]: Starting process with command `python poller.py` by user scheduler@addons.heroku.com
+2026-03-07T01:23:14.085060+00:00 heroku[web.1]: Restarting
+2026-03-07T01:23:14.140318+00:00 heroku[web.1]: State changed from up to starting
+2026-03-07T01:23:14.903612+00:00 heroku[web.1]: Stopping all processes with SIGTERM
+2026-03-07T01:23:14.921288+00:00 app[web.1]: [2026-03-07 01:23:14 +0000] [2] [INFO] Handling signal: term
+2026-03-07T01:23:14.921342+00:00 app[web.1]: [2026-03-07 01:23:14 +0000] [9] [INFO] Worker exiting (pid: 9)
+2026-03-07T01:23:14.921604+00:00 app[web.1]: 2026-03-07 01:23:14,921 INFO Scheduler has been shut down
+2026-03-07T01:23:14.921846+00:00 app[web.1]: 2026-03-07 01:23:14,921 INFO Scheduler has been shut down
+2026-03-07T01:23:15.121738+00:00 app[web.1]: [2026-03-07 01:23:15 +0000] [2] [INFO] Shutting down: Master
+2026-03-07T01:23:15.181802+00:00 heroku[web.1]: Process exited with status 0
+2026-03-07T01:22:42.000000+00:00 app[api]: Build started by user gorskyyu1024@gmail.com
+2026-03-07T01:23:23.173569+00:00 heroku[web.1]: Starting process with command `export LD_LIBRARY_PATH="/app/.apt/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH" && gunicorn main:app`
+2026-03-07T01:23:23.844637+00:00 app[web.1]: Python buildpack: Detected 512 MB available memory and 8 CPU cores.
+2026-03-07T01:23:23.844671+00:00 app[web.1]: Python buildpack: Skipping automatic configuration of WEB_CONCURRENCY since it's already set.
+2026-03-07T01:23:23.976923+00:00 app[web.1]: [2026-03-07 01:23:23 +0000] [2] [INFO] Starting gunicorn 23.0.0
+2026-03-07T01:23:23.977156+00:00 app[web.1]: [2026-03-07 01:23:23 +0000] [2] [INFO] Listening at: http://0.0.0.0:48324 (2)
+2026-03-07T01:23:23.977188+00:00 app[web.1]: [2026-03-07 01:23:23 +0000] [2] [INFO] Using worker: sync
+2026-03-07T01:23:23.979423+00:00 app[web.1]: [2026-03-07 01:23:23 +0000] [9] [INFO] Booting worker with pid: 9
+2026-03-07T01:23:24.300150+00:00 heroku[web.1]: State changed from starting to up
+2026-03-07T01:23:13.720381+00:00 app[api]: Deploy 8cc8b408 by user gorskyyu1024@gmail.com
+2026-03-07T01:23:24.860672+00:00 app[web.1]: 2026-03-07 01:23:24,860 INFO Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2026-03-07T01:23:24.861293+00:00 app[web.1]: 2026-03-07 01:23:24,861 INFO Added job "push_ace_today_shipments" to job store "default"
+2026-03-07T01:23:24.861354+00:00 app[web.1]: 2026-03-07 01:23:24,861 INFO Scheduler started
+2026-03-07T01:23:24.861694+00:00 app[web.1]: 2026-03-07 01:23:24,861 INFO [ACE] Scheduler started (Thu/Sun 16:00 America/Vancouver)
+2026-03-07T01:23:24.861935+00:00 app[web.1]: 2026-03-07 01:23:24,861 INFO Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2026-03-07T01:23:24.862117+00:00 app[web.1]: 2026-03-07 01:23:24,862 INFO Added job "push_sq_weekly_shipments" to job store "default"
+2026-03-07T01:23:24.862145+00:00 app[web.1]: 2026-03-07 01:23:24,862 INFO Scheduler started
+2026-03-07T01:23:24.862366+00:00 app[web.1]: 2026-03-07 01:23:24,862 INFO [SQ] Scheduler started (Sat 09:00 America/Vancouver)
+2026-03-07T01:23:24.902851+00:00 app[web.1]: 2026-03-07 01:23:24,902 INFO [DynamicNames] Manager initialized
+2026-03-07T01:23:13.720381+00:00 app[api]: Release v822 created by user gorskyyu1024@gmail.com
+2026-03-07T01:23:37.000000+00:00 app[api]: Build succeeded
+2026-03-07T01:25:29.049740+00:00 app[api]: Log session created by user gorskyyu1024@gmail.com
+2026-03-07T01:26:05.476296+00:00 app[api]: Log session created by user gorskyyu1024@gmail.com
+2026-03-07T01:27:24.821860+00:00 app[api]: Log session created by user gorskyyu1024@gmail.com
+2026-03-07T01:28:43.802239+00:00 app[api]: Log session created by user gorskyyu1024@gmail.com

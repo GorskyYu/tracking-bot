@@ -90,6 +90,7 @@ class SenderGroupMapper:
             return self._group_cache['groups']
             
         if not self.monday_service:
+            log.warning("[SenderMapping] No monday_service in _get_all_groups")
             return []
             
         try:
@@ -99,8 +100,10 @@ class SenderGroupMapper:
                 groups {
                   id
                   title
-                  items {
-                    name
+                  items_page(limit: 100) {
+                    items {
+                      name
+                    }
                   }
                 }
               }
@@ -113,17 +116,29 @@ class SenderGroupMapper:
             )
             
             data = response.json()
+            log.info(f"[SenderMapping] Monday API response keys: {list(data.keys())}")
+            if "errors" in data:
+                log.error(f"[SenderMapping] API errors: {data['errors']}")
+                return []
+            if "error_message" in data:
+                log.error(f"[SenderMapping] API error_message: {data['error_message']}")
+                return []
             boards = data.get("data", {}).get("boards", [])
+            log.info(f"[SenderMapping] Boards count: {len(boards)}")
             
             if boards:
                 groups = boards[0].get("groups", [])
+                log.info(f"[SenderMapping] Groups: {len(groups)}, titles: {[g.get('title','?') for g in groups]}")
                 self._group_cache['groups'] = groups
                 self._cache_time = datetime.now()
-                log.info(f"[SenderMapping] Cached {len(groups)} groups from Monday board")
                 return groups
+            else:
+                log.warning("[SenderMapping] No boards returned from Monday API")
                 
         except Exception as e:
             log.error(f"[SenderMapping] Error fetching groups: {e}")
+            import traceback
+            log.error(traceback.format_exc())
             
         return []
 
@@ -178,7 +193,7 @@ class DynamicNamesManager:
             groups = self.sender_mapper._get_all_groups()
             for group in groups:
                 if group.get('title', '') == group_title:
-                    items = group.get('items', [])
+                    items = group.get('items_page', {}).get('items', []) if 'items_page' in group else group.get('items', [])
                     member_names = {item.get('name', '').strip() for item in items if item.get('name', '').strip()}
                     self._update_cache(cache_key, member_names)
                     log.info(f"[DynamicNames] Updated group '{group_title}' with {len(member_names)} members")
