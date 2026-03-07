@@ -439,6 +439,7 @@ def webhook():
         
         # 目前功能指令 (僅限管理員私訊 或 PDF群組)
         if text.strip() in ["目前功能", "目前可用人頭", "全群組可用人頭"] or text.startswith("help:") or text.startswith("可用人頭:"):
+            current_user_id = src.get("userId")
             current_group_id = src.get("groupId")
             is_admin = (current_user_id == YVES_USER_ID or current_user_id == GORSKY_USER_ID)
             
