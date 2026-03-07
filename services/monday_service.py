@@ -543,8 +543,10 @@ class MondaySyncService:
             groups {
               id
               title
-              items {
-                name
+              items_page(limit: 100) {
+                items {
+                  name
+                }
               }
             }
           }
@@ -572,10 +574,10 @@ class MondaySyncService:
             if not target_group:
                 log.warning("[Monday] No SQ/Ace group found in board 7745917861")
                 return set()
-            
-            items = target_group.get("items", [])
+
+            items = target_group.get("items_page", {}).get("items", []) if "items_page" in target_group else target_group.get("items", [])
             names = {item.get("name", "").strip() for item in items if item.get("name", "").strip()}
-            
+
             log.info(f"[Monday] Retrieved {len(names)} names from SQ/Ace group: {sorted(names)}")
             return names
             
@@ -586,7 +588,7 @@ class MondaySyncService:
     def get_team_members_from_board(self, team_name):
         """
         動態從 Monday board 7745917861 獲取指定團隊成員
-        team_name: "Vicky" 或 "Yumi" 
+        team_name: "Vicky" 或 "Yumi"
         返回: [{"name": str, "phone": str, "available": bool}, ...]
         """
         query = '''
@@ -595,14 +597,16 @@ class MondaySyncService:
             groups {
               id
               title
-              items {
-                name
-                column_values(ids: ["phone__1", "status__1"]) {
-                  id
-                  text
-                  ... on StatusValue {
+              items_page(limit: 100) {
+                items {
+                  name
+                  column_values(ids: ["phone__1", "status__1"]) {
+                    id
                     text
-                    index
+                    ... on StatusValue {
+                      text
+                      index
+                    }
                   }
                 }
               }
@@ -635,8 +639,8 @@ class MondaySyncService:
                 return []
             
             members = []
-            items = target_group.get("items", [])
-            
+            items = target_group.get("items_page", {}).get("items", []) if "items_page" in target_group else target_group.get("items", [])
+
             for item in items:
                 name = item.get("name", "").strip()
                 if not name:

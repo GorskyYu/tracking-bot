@@ -107,8 +107,10 @@ class SenderMappingService:
                 groups {
                   id
                   title
-                  items {
-                    name
+                  items_page(limit: 100) {
+                    items {
+                      name
+                    }
                   }
                 }
               }
@@ -121,6 +123,8 @@ class SenderMappingService:
             )
             
             data = response.json()
+            if "errors" in data:
+                log.error(f"[SenderMapping] API errors: {data['errors']}")
             boards = data.get("data", {}).get("boards", [])
             
             if boards:
@@ -148,7 +152,7 @@ class SenderMappingService:
             groups = self._get_all_groups()
             for group in groups:
                 if group.get('title', '') == group_title:
-                    items = group.get('items', [])
+                    items = group.get('items_page', {}).get('items', []) if 'items_page' in group else group.get('items', [])
                     member_names = {item.get('name', '').strip() for item in items if item.get('name', '').strip()}
                     log.info(f"[SenderMapping] Group '{group_title}' has {len(member_names)} members")
                     return member_names
