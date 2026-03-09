@@ -60,7 +60,7 @@ from handlers.handlers import (
     handle_soquick_full_notification,
     dispatch_confirmation_notification
 )
-from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event, handle_paid_event, handle_rate_update, handle_credit_event
+from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event, handle_paid_event, handle_rate_update, handle_credit_event, GROUP_TO_CLIENT_MAP
 from handlers.vicky_handler import remind_vicky
 from handlers.ups_handler import handle_ups_logic
 from handlers.monday_webhook_handler import handle_monday_webhook
@@ -464,10 +464,10 @@ def webhook():
             is_admin = user_id in {YVES_USER_ID, GORSKY_USER_ID, VICKY_USER_ID}
             
             # 2. 判斷是否為有效的自動查詢群組
-            is_valid_group = group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, IRIS_GROUP_ID}
+            is_valid_group = group_id in GROUP_TO_CLIENT_MAP
 
-            # 🟢 僅限管理員可使用 unpaid 指令
-            can_trigger = is_admin
+            # 🟢 管理員或在指定群組內可使用 unpaid 指令
+            can_trigger = is_admin or is_valid_group
 
             if can_trigger:
                 handle_unpaid_event(
