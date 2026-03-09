@@ -217,21 +217,23 @@ class DynamicNamesManager:
             if cached_names is not None:
                 return cached_names
         
-        # 從 Monday board 獲取
+        # 固定載入 config 靜態名單作為基底
+        fallback_key = f"{team_name.upper()}_NAMES"
+        fallback_names = self.fallback_config.get(fallback_key, set())
+
+        # 從 Monday board 獲取（動態名單補充）
         if self.monday_service:
             try:
                 team_members = self.monday_service.get_team_members_from_board(team_name)
                 if team_members:
-                    available_names = {member["name"] for member in team_members if member["available"]}
-                    self._update_cache(cache_key, available_names)
-                    log.info(f"[DynamicNames] Updated {team_name} with {len(available_names)} available members")
-                    return available_names
+                    dynamic_names = {member["name"] for member in team_members if member["available"]}
+                    merged_names = fallback_names | dynamic_names  # 合併靜態 + 動態
+                    self._update_cache(cache_key, merged_names)
+                    log.info(f"[DynamicNames] Updated {team_name} with {len(merged_names)} names ({len(dynamic_names)} dynamic + {len(fallback_names)} static)")
+                    return merged_names
             except Exception as e:
                 log.error(f"[DynamicNames] Failed to get {team_name} names: {e}")
         
-        # Fallback to config
-        fallback_key = f"{team_name.upper()}_NAMES"
-        fallback_names = self.fallback_config.get(fallback_key, set())
         log.warning(f"[DynamicNames] Using fallback for {team_name}: {len(fallback_names)} names")
         return fallback_names
     
