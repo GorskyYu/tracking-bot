@@ -824,8 +824,13 @@ def handle_missing_confirm(event: Dict[str, Any]) -> None:
             if sender_to_declarers:
                 for sender, decl_lines in sender_to_declarers.items():
                     if sender != "未知寄件人":
-                        # 略過原本就設定不需推播的名單
-                        if sender in (get_vicky_names() | get_yumi_names() | IRIS_NAMES | JASMINE_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
+                        # 如果寄件人是 Jasmine (何苡甄)，推播到 Jasmine 群組
+                        if sender in JASMINE_NAMES:
+                            push_summary(JASMINE_GROUP_ID, decl_lines)
+                            continue
+
+                        # 略過已有專屬群組推播的名單（Vicky/Yumi/Iris/Angela）
+                        if sender in (get_vicky_names() | get_yumi_names() | IRIS_NAMES | ANGELA_NAMES | EXCLUDED_SENDERS):
                             continue
                             
                         team = get_sender_team_mapping(sender)
