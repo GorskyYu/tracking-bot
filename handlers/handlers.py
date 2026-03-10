@@ -377,7 +377,7 @@ def handle_ace_customs_tax(event: Dict[str, Any]) -> None:
     log.info(f"[ACE TAX] Processing customs tax message")
 
     # ── 1. Parse each line ──────────────────────────────────────────────
-    line_re = re.compile(r'^(ACE\d{6}[A-Za-z0-9]+)\s+(.+)$')
+    line_re = re.compile(r'^(ACE\d{6}[A-Za-z0-9]+)\s*(.+)$')
     parsed_lines: List[Dict[str, str]] = []       # {box_id, detail}
     for line in raw.splitlines():
         line = line.strip()
