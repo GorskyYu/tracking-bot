@@ -171,8 +171,10 @@ class OCRAgent:
             # We just need to remove the trailing -N suffix
             raw_ref = (data.get("reference_number") or "").strip()
             if raw_ref:
-                # Remove trailing -digit suffix (e.g., "-1", "-2")
-                clean_ref = re.sub(r'-\d+$', '', raw_ref).strip()
+                # Remove trailing -digit or .digit suffix (e.g., "-1", "-2", ".1")
+                # GPT-4o sometimes misreads the trailing "-1" as ".1" in timestamps,
+                # so we handle both separators here.
+                clean_ref = re.sub(r'[-\.]\d+$', '', raw_ref).strip()
                 data["reference_number"] = clean_ref
                 log.info(f"[OCR CLEAN] Original: {raw_ref} -> Cleaned: {clean_ref}")
 
