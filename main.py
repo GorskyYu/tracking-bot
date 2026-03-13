@@ -24,6 +24,7 @@ from config import (
     # Group IDs
     ACE_GROUP_ID, SOQUICK_GROUP_ID, VICKY_GROUP_ID, YUMI_GROUP_ID,
     IRIS_GROUP_ID, JOYCE_GROUP_ID, PDF_GROUP_ID,
+    ANGELA_GROUP_ID, JASMINE_GROUP_ID,
     # User IDs
     YVES_USER_ID, GORSKY_USER_ID, VICKY_USER_ID,
     # Sheet URLs
@@ -130,7 +131,18 @@ CONFIG = {
     'IRIS_NAMES': config.IRIS_NAMES,
     'YVES_NAMES': config.YVES_NAMES,
     'CODE_TRIGGER_RE': CODE_TRIGGER_RE,
-    'ACE_SHEET_URL': ACE_SHEET_URL
+    'ACE_SHEET_URL': ACE_SHEET_URL,
+    'EXCLUDED_SENDERS': config.EXCLUDED_SENDERS,
+    'SENDER_GROUP_MAP': {
+        "Vicky Ku": VICKY_GROUP_ID,
+        "Yumi Liu": YUMI_GROUP_ID,
+        "Iris": IRIS_GROUP_ID,
+        "Lowrance": IRIS_GROUP_ID,
+        "Lawrence": IRIS_GROUP_ID,
+        "Angela": ANGELA_GROUP_ID,
+        "Jasmine": JASMINE_GROUP_ID,
+        "Joyce": JOYCE_GROUP_ID,
+    },
 }
 
 # 先創建 Monday service

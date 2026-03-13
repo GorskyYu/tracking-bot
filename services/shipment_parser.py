@@ -190,12 +190,11 @@ class ShipmentParserService:
                 ship_day = "週日出貨" if is_sunday else ("週四出貨" if "週四" in text else "近期出貨")
                 timing_note = "週一" if is_sunday else "週五" # 週日出貨對應週一，週四對應週五
 
-                # 发送已找到的寄件人通知 (使用简化格式)
-                for sender, declarants in sender_groups.items():
-                    # 排除掉负责人自己，只转发需要的通知
-                    if sender in self.cfg.get('EXCLUDED_SENDERS', []): continue
+                # 发送已找到的寄件人通知：根据寄件人分流到对应群组或管理员
+                sender_group_map = self.cfg.get('SENDER_GROUP_MAP', {})
+                excluded_senders = self.cfg.get('EXCLUDED_SENDERS', set())
 
-                    # 🔧 修正：使用简化的"再麻烦通知"格式，而不是完整日程格式
+                for sender, declarants in sender_groups.items():
                     declarant_list = "\n".join(declarants)
                     if is_schedule:
                         final_msg = (
@@ -206,12 +205,21 @@ class ShipmentParserService:
                         )
                     else:
                         final_msg = f"以下申報人尚未按申報相符，再麻煩通知：\n{declarant_list}"
-                    
-                    # 推送给管理员：先发送 sender，再发送通知内容
-                    for admin_id in [self.cfg['YVES_USER_ID'], self.cfg['GORSKY_USER_ID']]:
-                        if admin_id:
-                            self._safe_line_push(admin_id, sender)  # 先发送寄件人名字
-                            self._safe_line_push(admin_id, final_msg)  # 再发送通知内容
+
+                    if sender in sender_group_map:
+                        # 寄件人有對應群組（如 Vicky Ku、Yumi Liu）→ 推到該群組
+                        self._safe_line_push(sender_group_map[sender], final_msg)
+                        log.info(f"[MissingConfirm] Routed {sender}'s declarants to team group")
+                    elif sender in excluded_senders:
+                        # 管理員自己的寄件人（如 Yves Lai）→ 跳過，管理員已知
+                        log.info(f"[MissingConfirm] Skipping excluded sender: {sender}")
+                        continue
+                    else:
+                        # 散客 → 推送给管理员
+                        for admin_id in [self.cfg['YVES_USER_ID'], self.cfg['GORSKY_USER_ID']]:
+                            if admin_id:
+                                self._safe_line_push(admin_id, sender)
+                                self._safe_line_push(admin_id, final_msg)
                             
                 # 新增：若有姓名不在表單內，仍發送給 Yves 避免漏掉
                 unfound = [name for box_id, name in all_extracted_items if (box_id, name) not in found_items]
@@ -345,22 +353,34 @@ class ShipmentParserService:
                             sender = row[2].strip() if len(row) > 2 else ""  # Column C: 寄件人
                             phone = row[7].strip() if len(row) > 7 else ""   # Column H: 清關電話
                             
-                            if sender and sender not in self.cfg.get('EXCLUDED_SENDERS', []):
+                            if sender:
                                 phone_part = f" {phone}" if phone else ""
                                 sender_groups[sender].append(f"{recipient_name}{phone_part}")
                                 found_recipients.add(recipient_name)
                                 break
                 
-                # 發送給管理員
+                # 根據寄件人分流到對應群組或管理員
+                sender_group_map = self.cfg.get('SENDER_GROUP_MAP', {})
+                excluded_senders = self.cfg.get('EXCLUDED_SENDERS', set())
+
                 for sender, declarants in sender_groups.items():
                     declarant_list = "\n".join(declarants)
                     simple_msg = f"以下申報人尚未按申報相符，再麻煩通知：\n{declarant_list}"
                     
-                    # 先發送寄件人名字，再發送通知內容
-                    for admin_id in [self.cfg['YVES_USER_ID'], self.cfg['GORSKY_USER_ID']]:
-                        if admin_id:
-                            self._safe_line_push(admin_id, sender)
-                            self._safe_line_push(admin_id, simple_msg)
+                    if sender in sender_group_map:
+                        # 寄件人有對應群組（如 Vicky Ku、Yumi Liu）→ 推到該群組
+                        self._safe_line_push(sender_group_map[sender], simple_msg)
+                        log.info(f"[SoquickNotification] Routed {sender}'s declarants to team group")
+                    elif sender in excluded_senders:
+                        # 管理員自己的寄件人 → 跳過
+                        log.info(f"[SoquickNotification] Skipping excluded sender: {sender}")
+                        continue
+                    else:
+                        # 散客 → 推送給管理員
+                        for admin_id in [self.cfg['YVES_USER_ID'], self.cfg['GORSKY_USER_ID']]:
+                            if admin_id:
+                                self._safe_line_push(admin_id, sender)
+                                self._safe_line_push(admin_id, simple_msg)
                 
                 # 處理表單中找不到的收件人
                 unfound_recipients = [name for name in unknown_recipients if name not in found_recipients]
