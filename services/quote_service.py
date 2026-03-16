@@ -652,7 +652,10 @@ def build_quote_text(mode: str,
 
     # Q3-equivalent markup rate (replaces raw API rate / total_dom_weight)
     cost_per_kg = cheapest.total / total_dom_weight if total_dom_weight else 0
-    q3 = calc_q3_rate(from_postal, total_dom_weight, cost_per_kg)
+    if is_gv_local:
+        q3 = 0.0
+    else:
+        q3 = calc_q3_rate(from_postal, total_dom_weight, cost_per_kg)
 
     if is_domestic:
         dom_rate = q3 + i15       # Q5 = Q3 + I15 (combined rate for 加境內)
@@ -710,16 +713,32 @@ def build_quote_text(mode: str,
         lines.append("")
 
     # ── 5. Total ─────────────────────────────────────────────────────────
-    if is_gv_local and gv_delivery == "pickup" and pickup_fee > 0:
-        # GV pickup: show shipping + pickup fee breakdown
-        if len(box_subtotals) > 1:
-            parts = " + ".join(f"{s:.2f}" for s in box_subtotals)
-            lines.append(f"🚚運費: {parts} = {grand_total:.2f} CAD")
+    if is_gv_local and gv_delivery == "pickup":
+        if pickup_fee > 0:
+            # GV pickup: show shipping + pickup fee breakdown
+            if len(box_subtotals) > 1:
+                parts = " + ".join(f"{s:.2f}" for s in box_subtotals)
+                lines.append(f"🚚運費: {parts} = {grand_total:.2f} CAD")
+            else:
+                lines.append(f"🚚運費: {grand_total:.2f} CAD")
+            lines.append(f"📅上門取件: {pickup_fee:.0f} CAD（直接 e-Transfer 或支付現金給小幫手）")
+            final_total = grand_total + pickup_fee
+            lines.append(f"💲Total Cost: {grand_total:.2f}+{pickup_fee:.0f} = {final_total:.2f} CAD")
+        elif pickup_fee < 0:
+            # GV pickup (另計)
+            if len(box_subtotals) > 1:
+                parts = " + ".join(f"{s:.2f}" for s in box_subtotals)
+                lines.append(f"💲Total Cost: {parts} = {grand_total:.2f} CAD")
+            else:
+                lines.append(f"💲Total Cost: {grand_total:.2f} CAD")
+            lines.append("📅上門取件費用另計（直接 e-Transfer 或支付現金給小幫手）")
         else:
-            lines.append(f"🚚運費: {grand_total:.2f} CAD")
-        lines.append(f"📅上門取件: {pickup_fee:.0f} CAD（直接 e-Transfer 或支付現金給小幫手）")
-        final_total = grand_total + pickup_fee
-        lines.append(f"💲Total Cost: {grand_total:.2f}+{pickup_fee:.0f} = {final_total:.2f} CAD")
+            # GV pickup (0 fee or not handled)
+            if len(box_subtotals) > 1:
+                parts = " + ".join(f"{s:.2f}" for s in box_subtotals)
+                lines.append(f"💲Total Cost: {parts} = {grand_total:.2f} CAD")
+            else:
+                lines.append(f"💲Total Cost: {grand_total:.2f} CAD")
     else:
         if len(box_subtotals) > 1:
             parts = " + ".join(f"{s:.2f}" for s in box_subtotals)

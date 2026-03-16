@@ -581,7 +581,7 @@ def _on_gv_pickup(r, uid, target, profile):
     line_push(
         target,
         "🚗 您選擇了「大溫地區上門取件」\n\n"
-        "請輸入取件費用（CAD），例如：15\n\n"
+        "請輸入取件費用（CAD），例如：15（也可直接輸入「另計」）\n\n"
         "💡 輸入「取消報價」可隨時退出。"
     )
     return True
@@ -606,16 +606,21 @@ def _on_gv_dropoff(r, uid, target, profile):
 def _on_pickup_fee_entered(r, uid, target, text, profile):
     """User entered pickup fee amount → validate and proceed."""
     import re as _re
-    fee_match = _re.match(r'^[\d.]+$', text.strip())
-    if not fee_match:
-        line_push(
-            target,
-            "❌ 請輸入正確的數字金額（例如：15），或輸入「取消報價」退出。"
-        )
-        return True
-
-    fee = float(text.strip())
-    _set_pickup_fee(r, uid, fee)
+    val = text.strip()
+    
+    if val == "另計":
+        _set_pickup_fee(r, uid, -1.0)
+    else:
+        fee_match = _re.match(r'^[\d.]+$', val)
+        if not fee_match:
+            line_push(
+                target,
+                "❌ 請輸入正確的數字金額（例如：15），或輸入「另計」，或輸入「取消報價」退出。"
+            )
+            return True
+    
+        fee = float(val)
+        _set_pickup_fee(r, uid, fee)
 
     # Skip mode select for GV local → default behaviour
     if not profile.allow_mode_select and profile.forced_mode:
@@ -788,11 +793,12 @@ def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
             all_services.append(gv_dropoff)
 
             # Create GV Pickup service (only if fee > 0 or user chose it)
-            if pickup_fee > 0 or gv_delivery == "pickup":
+            if pickup_fee != 0 or gv_delivery == "pickup":
+                display_fee = pickup_fee if pickup_fee > 0 else 0
                 gv_pickup = ServiceQuote(
                     carrier="大溫地區",
                     name="上門取件",
-                    freight=pickup_fee, surcharges=0, tax=0, total=pickup_fee,
+                    freight=display_fee, surcharges=0, tax=0, total=display_fee,
                     eta="預約取件",
                     source="GV"
                 )
