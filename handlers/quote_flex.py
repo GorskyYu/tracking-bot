@@ -139,31 +139,7 @@ def build_service_select_flex(all_services: List[ServiceQuote],
     body: list = [
         {"type": "text", "text": "🚚 境內段運送服務",
          "weight": "bold", "size": "lg", "color": "#1a1a1a"},
-        {"type": "text", "text": "以下為 UPS / FedEx 境內運送報價，請選擇一項",
-         "size": "xs", "color": "#888888", "margin": "sm", "wrap": True},
-        {"type": "separator", "margin": "md"},
     ]
-
-    # Header row
-    header_contents = [
-        {"type": "text", "text": "Service", "size": "xxs",
-         "color": "#888888", "flex": 3, "weight": "bold"},
-    ]
-    if show_cost:
-        header_contents.append(
-            {"type": "text", "text": "支出", "size": "xxs",
-             "color": "#888888", "flex": 3, "align": "end", "weight": "bold"})
-    header_contents.extend([
-        {"type": "text", "text": "ETA", "size": "xxs",
-         "color": "#888888", "flex": 2, "align": "end", "weight": "bold"},
-        {"type": "filler", "flex": 4},
-    ])
-    body.append({
-        "type": "box", "layout": "horizontal", "margin": "md",
-        "paddingStart": "sm", "paddingEnd": "sm",
-        "contents": header_contents,
-    })
-    body.append({"type": "separator", "margin": "xs"})
 
     # ── Greater Vancouver Local Delivery Options ──────────────────────────
     gv_to_warehouse = (
@@ -171,6 +147,35 @@ def build_service_select_flex(all_services: List[ServiceQuote],
         and is_greater_vancouver(from_postal)
         and to_postal.upper().replace(" ", "") == WAREHOUSE_POSTAL.upper().replace(" ", "")
     )
+
+    if not gv_to_warehouse:
+        body.append(
+            {"type": "text", "text": "以下為 UPS / FedEx 境內運送報價，請選擇一項",
+             "size": "xs", "color": "#888888", "margin": "sm", "wrap": True}
+        )
+        body.append({"type": "separator", "margin": "md"})
+
+        # Header row
+        header_contents = [
+            {"type": "text", "text": "Service", "size": "xxs",
+             "color": "#888888", "flex": 3, "weight": "bold"},
+        ]
+        if show_cost:
+            header_contents.append(
+                {"type": "text", "text": "支出", "size": "xxs",
+                 "color": "#888888", "flex": 3, "align": "end", "weight": "bold"})
+        header_contents.extend([
+            {"type": "text", "text": "ETA", "size": "xxs",
+             "color": "#888888", "flex": 2, "align": "end", "weight": "bold"},
+            {"type": "filler", "flex": 4},
+        ])
+        body.append({
+            "type": "box", "layout": "horizontal", "margin": "md",
+            "paddingStart": "sm", "paddingEnd": "sm",
+            "contents": header_contents,
+        })
+        body.append({"type": "separator", "margin": "xs"})
+
     if gv_to_warehouse:
         body.append({"type": "separator", "margin": "md"})
         body.append({
@@ -223,67 +228,68 @@ def build_service_select_flex(all_services: List[ServiceQuote],
         })
         body.append({"type": "separator", "margin": "xs"})
 
-    count = 0
-    for idx, svc in enumerate(all_services):
-        if svc.source != "TE":
-            continue
-        count += 1
-        is_cheapest = (count == 1)
-        has_warning = is_warn_service(svc.name)
-
-        # Service name column
-        svc_name_contents = [
-            {"type": "text", "text": f"{svc.carrier} - {svc.name}",
-             "size": "xxs", "weight": "bold", "wrap": True},
-        ]
-        if has_warning:
-            svc_name_contents.append({
-                "type": "text", "text": "⚠️ 報價僅供參考",
-                "size": "xxs", "color": "#ffc107", "weight": "bold",
-                "wrap": True, "margin": "xs",
-            })
-
-        row_contents: list = [
-            {"type": "box", "layout": "vertical", "flex": 3,
-             "contents": svc_name_contents},
-        ]
-
-        if show_cost:
-            row_contents.append(
-                {"type": "text", "text": f"${svc.total:.2f}", "size": "xxs",
-                 "flex": 3, "align": "end", "gravity": "center",
-                 "wrap": False,
-                 "color": "#28a745" if is_cheapest else "#333333",
-                 "weight": "bold" if is_cheapest else "regular"})
-
-        row_contents.extend([
-            {"type": "text", "text": _short_eta(svc.eta), "size": "xxs",
-             "flex": 2, "align": "end", "gravity": "center",
-             "wrap": True,
-             "color": "#888888"},
-            {"type": "button", "style": "primary", "height": "sm", "flex": 4,
-             "color": "#28a745" if is_cheapest else "#007bff",
-             "action": {"type": "message",
-                        "label": "繼續",
-                        "text": f"報價選擇服務_{idx}"}},
-        ])
-
-        row = {
-            "type": "box", "layout": "horizontal",
-            "margin": "md", "spacing": "sm",
-            "alignItems": "center",
-            "contents": row_contents,
-        }
-        if is_cheapest:
-            row["backgroundColor"] = "#f0fff0"
-            row["cornerRadius"] = "md"
-            row["paddingAll"] = "sm"
-
-        body.append(row)
-        if count < 8:
-            body.append({"type": "separator", "margin": "xs"})
-        if count >= 8:
-            break
+    if not gv_to_warehouse:
+        count = 0
+        for idx, svc in enumerate(all_services):
+            if svc.source != "TE":
+                continue
+            count += 1
+            is_cheapest = (count == 1)
+            has_warning = is_warn_service(svc.name)
+    
+            # Service name column
+            svc_name_contents = [
+                {"type": "text", "text": f"{svc.carrier} - {svc.name}",
+                 "size": "xxs", "weight": "bold", "wrap": True},
+            ]
+            if has_warning:
+                svc_name_contents.append({
+                    "type": "text", "text": "⚠️ 報價僅供參考",
+                    "size": "xxs", "color": "#ffc107", "weight": "bold",
+                    "wrap": True, "margin": "xs",
+                })
+    
+            row_contents: list = [
+                {"type": "box", "layout": "vertical", "flex": 3,
+                 "contents": svc_name_contents},
+            ]
+    
+            if show_cost:
+                row_contents.append(
+                    {"type": "text", "text": f"${svc.total:.2f}", "size": "xxs",
+                     "flex": 3, "align": "end", "gravity": "center",
+                     "wrap": False,
+                     "color": "#28a745" if is_cheapest else "#333333",
+                     "weight": "bold" if is_cheapest else "regular"})
+    
+            row_contents.extend([
+                {"type": "text", "text": _short_eta(svc.eta), "size": "xxs",
+                 "flex": 2, "align": "end", "gravity": "center",
+                 "wrap": True,
+                 "color": "#888888"},
+                {"type": "button", "style": "primary", "height": "sm", "flex": 4,
+                 "color": "#28a745" if is_cheapest else "#007bff",
+                 "action": {"type": "message",
+                            "label": "繼續",
+                            "text": f"報價選擇服務_{idx}"}},
+            ])
+    
+            row = {
+                "type": "box", "layout": "horizontal",
+                "margin": "md", "spacing": "sm",
+                "alignItems": "center",
+                "contents": row_contents,
+            }
+            if is_cheapest:
+                row["backgroundColor"] = "#f0fff0"
+                row["cornerRadius"] = "md"
+                row["paddingAll"] = "sm"
+    
+            body.append(row)
+            if count < 8:
+                body.append({"type": "separator", "margin": "xs"})
+            if count >= 8:
+                break
 
     # Remove trailing separator
     if body and body[-1].get("type") == "separator":
