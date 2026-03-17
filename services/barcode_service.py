@@ -17,6 +17,8 @@ from config import (
     ACE_GROUP_ID, SOQUICK_GROUP_ID, YVES_USER_ID
 )
 
+ACE_PHOTO_GROUP_IDS = (ACE_GROUP_ID, "Ce00f9a5d56f815c87b4241d8eb12cbf1")
+
 log = logging.getLogger(__name__)
 
 # 已知寄件人 → 自動建立 Parent Item 的對照表
@@ -98,7 +100,7 @@ def _handle_unknown_fedex(img, tracking_number, group_id, redis_client, pending_
         sub_id = r3.json()["data"]["create_subitem"]["id"]
 
         # 3) Set subitem columns
-        loc = "溫哥華倉A" if group_id == ACE_GROUP_ID else ("溫哥華倉S" if group_id == SOQUICK_GROUP_ID else "Yves/Simply")
+        loc = "溫哥華倉A" if group_id in ACE_PHOTO_GROUP_IDS else ("溫哥華倉S" if group_id == SOQUICK_GROUP_ID else "Yves/Simply")
         mutation = """
         mutation ($itemId: ID!, $boardId: ID!, $columnVals: JSON!) {
           change_multiple_column_values(item_id: $itemId, board_id: $boardId, column_values: $columnVals) { id }
@@ -162,7 +164,7 @@ def handle_barcode_image(event, group_id, redis_client, pending_buffer, schedule
     
     # 權限檢查
     is_from_me = src.get("type") == "user" and src.get("userId") == YVES_USER_ID
-    is_from_ace = src.get("type") == "group" and group_id == ACE_GROUP_ID
+    is_from_ace = src.get("type") == "group" and group_id in ACE_PHOTO_GROUP_IDS
     is_from_soquick = src.get("type") == "group" and group_id == SOQUICK_GROUP_ID
     
     if not (is_from_me or is_from_ace or is_from_soquick):
@@ -225,7 +227,7 @@ def handle_barcode_image(event, group_id, redis_client, pending_buffer, schedule
         redis_client.set(f"last_subitem_for_{group_id}", found_id, ex=300)
 
         # 更新狀態
-        loc = "溫哥華倉A" if group_id == ACE_GROUP_ID else ("溫哥華倉S" if group_id == SOQUICK_GROUP_ID else "Yves/Simply")
+        loc = "溫哥華倉A" if group_id in ACE_PHOTO_GROUP_IDS else ("溫哥華倉S" if group_id == SOQUICK_GROUP_ID else "Yves/Simply")
         mutation = """
         mutation ($itemId: ID!, $boardId: ID!, $columnVals: JSON!) {
           change_multiple_column_values(item_id: $itemId, board_id: $boardId, column_values: $columnVals) { id }
