@@ -648,6 +648,7 @@ class MondaySyncService:
                     
                 phone = ""
                 available = True  # 預設可用
+                priority = False  # 預設非優先
                 
                 # 解析 column_values
                 column_values = item.get("column_values", [])
@@ -657,15 +658,18 @@ class MondaySyncService:
                         phone = cv.get("text", "").strip()
                     elif col_id == "status__1":
                         status_text = cv.get("text", "").strip()
-                        # 可用狀態：「可用人頭」或空白/Pending，不可用：「不可用」
+                        # 可用狀態：「可用人頭」、「優先使用」或空白/Pending，不可用：「不可用」
                         if status_text == "不可用":
                             available = False
+                        elif status_text == "優先使用":
+                            priority = True
                         # 其他狀態（包括空白、"可用人頭"、"Pending"）都視為可用
                 
                 members.append({
                     "name": name,
                     "phone": phone,
-                    "available": available
+                    "available": available,
+                    "priority": priority
                 })
             
             log.info(f"[Monday] Retrieved {len(members)} members for {team_name} team")

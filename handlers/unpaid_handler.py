@@ -1270,6 +1270,7 @@ def _send_available_heads_for_group(sender_id, reply_token, group_name):
     def _worker():
         try:
             from utils.dynamic_names import get_dynamic_names_manager
+            import random
             dm = get_dynamic_names_manager()
             
             if not dm or not dm.monday_service:
@@ -1282,11 +1283,20 @@ def _send_available_heads_for_group(sender_id, reply_token, group_name):
                 line_bot_api.push_message(sender_id, TextSendMessage(text=f"⚠️ {group_name} 群組沒有名單或查詢失敗。"))
                 return
                 
-            formatted_names = [m['name'] for m in members if m.get('available', True)]
+            available_members = [m for m in members if m.get('available', True)]
             
-            if not formatted_names:
+            if not available_members:
                 line_bot_api.push_message(sender_id, TextSendMessage(text=f"📌 {group_name} 群組目前沒有任何【可使用】的人頭。"))
                 return
+            
+            # 分離優先與一般名單並分別隨機打亂
+            priority_names = [m['name'] for m in available_members if m.get('priority', False)]
+            normal_names = [m['name'] for m in available_members if not m.get('priority', False)]
+            
+            random.shuffle(priority_names)
+            random.shuffle(normal_names)
+            
+            formatted_names = priority_names + normal_names
                 
             text_result = f"✅ 【{group_name} 可用人頭清單】\n(共 {len(formatted_names)} 位)\n" + "-"*15 + "\n" + "\n".join(formatted_names)
             line_bot_api.push_message(sender_id, TextSendMessage(text=text_result))
