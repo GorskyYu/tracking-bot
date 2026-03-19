@@ -225,7 +225,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
 
             if recipient in get_vicky_names():
                 vicky.append(full_msg)
-            elif recipient in get_yumi_names():
+            elif recipient in get_yumi_names() and "游繼堯" not in recipient:
                 yumi.append(full_msg)
             elif recipient in IRIS_NAMES:
                 iris.append(full_msg)
@@ -260,7 +260,7 @@ def handle_soquick_and_ace_shipments(event: Dict[str, Any]) -> None:
 
             if recipient in get_vicky_names():
                 vicky.append(full_msg)
-            elif recipient in get_yumi_names():
+            elif recipient in get_yumi_names() and "游繼堯" not in recipient:
                 yumi.append(full_msg)
             elif recipient in IRIS_NAMES:
                 iris.append(full_msg)
@@ -974,7 +974,7 @@ def handle_ace_shipments(event: Dict[str, Any]) -> None:
 
         if recipient in get_vicky_names():
             vicky.append(full_msg)
-        elif recipient in get_yumi_names():
+        elif recipient in get_yumi_names() and "游繼堯" not in recipient:
             yumi.append(full_msg)
         elif recipient in IRIS_NAMES:
             iris.append(full_msg)
