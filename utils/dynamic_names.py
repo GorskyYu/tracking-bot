@@ -208,6 +208,8 @@ class DynamicNamesManager:
         """
         獲取團隊名單（Vicky, Yumi, 等）
         返回 set of available member names
+        
+        ⚠️  若遇到錯誤，直接拋出異常。不進行 fallback 到靜態設定
         """
         cache_key = f"{team_name.lower()}_names"
         
@@ -215,53 +217,57 @@ class DynamicNamesManager:
             # 檢查緩存
             cached_names = self._get_cached_names(cache_key)
             if cached_names is not None:
+                log.info(f"[DynamicNames] Using cached {team_name} names: {len(cached_names)} members")
                 return cached_names
         
-        # 固定載入 config 靜態名單作為基底
-        fallback_key = f"{team_name.upper()}_NAMES"
-        fallback_names = self.fallback_config.get(fallback_key, set())
-
-        # 從 Monday board 獲取（動態名單補充）
-        if self.monday_service:
-            try:
-                team_members = self.monday_service.get_team_members_from_board(team_name)
-                if team_members:
-                    dynamic_names = {member["name"] for member in team_members if member["available"]}
-                    merged_names = fallback_names | dynamic_names  # 合併靜態 + 動態
-                    self._update_cache(cache_key, merged_names)
-                    log.info(f"[DynamicNames] Updated {team_name} with {len(merged_names)} names ({len(dynamic_names)} dynamic + {len(fallback_names)} static)")
-                    return merged_names
-            except Exception as e:
-                log.error(f"[DynamicNames] Failed to get {team_name} names: {e}")
+        # 必須從 Monday board 獲取，無 fallback
+        if not self.monday_service:
+            error_msg = f"[DynamicNames] Monday service not available for {team_name}"
+            log.error(error_msg)
+            raise RuntimeError(error_msg)
         
-        log.warning(f"[DynamicNames] Using fallback for {team_name}: {len(fallback_names)} names")
-        return fallback_names
+        try:
+            team_members = self.monday_service.get_team_members_from_board(team_name)
+            # 只取 available 的成員
+            dynamic_names = {member["name"] for member in team_members if member["available"]}
+            self._update_cache(cache_key, dynamic_names)
+            log.info(f"[DynamicNames] Successfully retrieved {team_name} with {len(dynamic_names)} available members: {sorted(dynamic_names)}")
+            return dynamic_names
+        except Exception as e:
+            error_msg = f"[DynamicNames] FAILED to get {team_name} from Monday board: {e}"
+            log.error(error_msg)
+            raise RuntimeError(error_msg)
     
     def get_yves_names(self) -> Set[str]:
-        """獲取 Yves 名單（SQ/Ace group）"""
+        """
+        獲取 Yves 名單（SQ/Ace group）
+        
+        ⚠️  若遇到錯誤，直接拋出異常。不進行 fallback 到靜態設定
+        """
         cache_key = "yves_names"
         
         with self._cache_lock:
             # 檢查緩存
             cached_names = self._get_cached_names(cache_key)
             if cached_names is not None:
+                log.info(f"[DynamicNames] Using cached Yves names: {len(cached_names)} members")
                 return cached_names
         
-        # 從 Monday board 獲取
-        if self.monday_service:
-            try:
-                yves_names = self.monday_service.get_yves_names_from_board()
-                if yves_names:
-                    self._update_cache(cache_key, yves_names)
-                    log.info(f"[DynamicNames] Updated Yves with {len(yves_names)} names")
-                    return yves_names
-            except Exception as e:
-                log.error(f"[DynamicNames] Failed to get Yves names: {e}")
+        # 必須從 Monday board 獲取，無 fallback
+        if not self.monday_service:
+            error_msg = "[DynamicNames] Monday service not available for Yves"
+            log.error(error_msg)
+            raise RuntimeError(error_msg)
         
-        # Fallback to config
-        fallback_names = self.fallback_config.get('YVES_NAMES', set())
-        log.warning(f"[DynamicNames] Using fallback for Yves: {len(fallback_names)} names")
-        return fallback_names
+        try:
+            yves_names = self.monday_service.get_yves_names_from_board()
+            self._update_cache(cache_key, yves_names)
+            log.info(f"[DynamicNames] Successfully retrieved Yves with {len(yves_names)} members: {sorted(yves_names)}")
+            return yves_names
+        except Exception as e:
+            error_msg = f"[DynamicNames] FAILED to get Yves names from Monday board: {e}"
+            log.error(error_msg)
+            raise RuntimeError(error_msg)
     
     def _get_cached_names(self, cache_key: str) -> Optional[Set[str]]:
         """檢查緩存是否有效並返回名單"""

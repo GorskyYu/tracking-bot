@@ -4,6 +4,7 @@ import json
 import base64
 import re
 import logging
+from datetime import datetime
 import fitz  # PyMuPDF: Converts PDF pages to images
 import openai
 from PIL import Image # Pillow: For rotation and precise cropping
@@ -171,10 +172,22 @@ class OCRAgent:
             # We just need to remove the trailing -N suffix
             raw_ref = (data.get("reference_number") or "").strip()
             if raw_ref:
-                # Remove trailing -digit or .digit suffix (e.g., "-1", "-2", ".1")
-                # GPT-4o sometimes misreads the trailing "-1" as ".1" in timestamps,
-                # so we handle both separators here.
-                clean_ref = re.sub(r'[-\.]\d+$', '', raw_ref).strip()
+                # If the ref looks like a date/timestamp (YYYY-MM-DD ...), preserve it;
+                # otherwise strip trailing -N / .N suffixes.
+                if re.match(r'^\d{4}[-/]\d{2}[-/]\d{2}', raw_ref):
+                    clean_ref = raw_ref
+                    # GPT-4o vision sometimes misreads year digits (e.g. 2026 → 2023).
+                    # Correct the year to the current year for timestamp-style refs.
+                    ts_match = re.match(r'^(\d{4})([-/]\d{2}[-/]\d{2}.*)$', clean_ref)
+                    if ts_match:
+                        ref_year = int(ts_match.group(1))
+                        current_year = datetime.now().year
+                        if ref_year != current_year:
+                            clean_ref = str(current_year) + ts_match.group(2)
+                            log.info(f"[OCR FIX] Year corrected: {ref_year} -> {current_year}")
+                else:
+                    # Remove trailing -digit or .digit suffix (e.g., "-1", "-2", ".1")
+                    clean_ref = re.sub(r'[-\.]\d+$', '', raw_ref).strip()
                 data["reference_number"] = clean_ref
                 log.info(f"[OCR CLEAN] Original: {raw_ref} -> Cleaned: {clean_ref}")
 

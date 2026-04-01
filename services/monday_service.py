@@ -31,6 +31,7 @@ class MondaySyncService:
         self.get_gspread = gspread_client_func
         self.line_push = line_push_func
         self.sheet_id = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
+        self.sea_sheet_id = "1ziOWeUxNHkGaX4hfQ-lQkTXULBk2Lbdxitsh0fHniaE"
         self.line_status_group = "C1f77f5ef1fe48f4782574df449eac0cf"
         self.domestic_expense_col = "numeric5__1" # <-- 請確認父板塊「加境內支出」的實際 ID
 
@@ -94,6 +95,49 @@ class MondaySyncService:
             log.error(f"[GSHEET] Sync error: {sheet_err}")
             return f"⚠️ [PDF→空運表單] Sheet 同步失敗: {str(sheet_err)}"
 
+    def _sync_to_sea_freight_sheet(self, ref_no, tracking_numbers):
+        """Fallback: 當空運表單找不到 REF 時，搜尋海運表單並填入追蹤碼"""
+        try:
+            gs = self.get_gspread()
+            ss = gs.open_by_key(self.sea_sheet_id)
+
+            # 1. 在 "Rom Responses 1" tab 的 col A 搜尋 ref_no
+            ws_responses = ss.worksheet("Rom Responses 1")
+            resp_values = ws_responses.col_values(1)
+            found_in_responses = any((v or "").strip() == ref_no for v in resp_values)
+
+            if not found_in_responses:
+                log.info(f"[SEA GSHEET] '{ref_no}' not found in Rom Responses 1 A:A either.")
+                return False, None
+
+            # 2. 在 "Workspace" tab 的 col A 找同一個 timestamp，取得該列
+            ws_workspace = ss.worksheet("Workspace")
+            ws_values = ws_workspace.col_values(1)
+            row_idx = next((i for i, v in enumerate(ws_values, start=1) if (v or "").strip() == ref_no), None)
+
+            if not row_idx:
+                log.warning(f"[SEA GSHEET] '{ref_no}' found in Rom Responses 1 but NOT in Workspace A:A.")
+                return True, "⚠️ [PDF→海運表單] 在 Rom Responses 1 找到但 Workspace 中未找到對應行"
+
+            # 3. 填入追蹤碼到 Workspace 的 S, T, U 欄 (col 19, 20, 21)
+            for i, tn in enumerate(tracking_numbers[:3], start=1):
+                ws_workspace.update_cell(row_idx, 18 + i, tn)  # 19=S, 20=T, 21=U
+
+            msg = f"✅ [PDF→海運表單] 已同步 Tracking (Workspace Row {row_idx})"
+
+            # 4. 若追蹤碼超過 3 筆，提醒使用者
+            overflow_count = len(tracking_numbers) - 3
+            if overflow_count > 0:
+                overflow_tns = ", ".join(tracking_numbers[3:])
+                msg += f"\n⚠️ 有 {overflow_count} 筆追蹤碼無法填入海運表單: {overflow_tns}"
+
+            log.info(f"[SEA GSHEET] Row {row_idx} updated with {min(len(tracking_numbers), 3)} tracking numbers.")
+            return True, msg
+
+        except Exception as e:
+            log.error(f"[SEA GSHEET] Sync error: {e}")
+            return False, f"⚠️ [PDF→海運表單] Sheet 同步失敗: {str(e)}"
+
     def run_sync(self, full_data, pdf_bytes, original_filename, redis_client, group_id):
         """
         整合所有步驟的公開入口方法 - 已整合海運判定、加拿大散客標籤、加境內直寄與環境變數
@@ -102,7 +146,8 @@ class MondaySyncService:
             # 1. 處理參考編號
             ref_no = (full_data.get("reference_number") or "").strip()
             # Remove trailing -N if present (secondary check in case OCR engine missed it)
-            if ref_no and "-" in ref_no:
+            # But skip if the ref looks like a date (YYYY-MM-DD) to avoid mangling it
+            if ref_no and "-" in ref_no and not re.match(r'^\d{4}[-/]\d{2}[-/]\d{2}', ref_no):
                  # Check if it ends with -digit
                  if re.search(r'-\d+$', ref_no):
                     ref_no = re.sub(r'-\d+$', '', ref_no).strip()
@@ -110,6 +155,16 @@ class MondaySyncService:
             # 2. 同步 Google Sheet (先執行，不依賴 Monday 結果)
             all_tracking_numbers = full_data.get("all_tracking_numbers", []) or []
             gs_sync_msg = self._sync_to_google_sheet(ref_no, all_tracking_numbers)
+
+            # 2b. 海運 Fallback：空運表單找不到時，嘗試海運表單
+            sea_freight_override = False
+            if "未找到對應 REF" in (gs_sync_msg or ""):
+                sea_found, sea_msg = self._sync_to_sea_freight_sheet(ref_no, all_tracking_numbers)
+                if sea_found:
+                    gs_sync_msg = sea_msg
+                    sea_freight_override = True
+                elif sea_msg:
+                    gs_sync_msg += f"\n{sea_msg}"
 
             # 3. 處理名稱與代理人判定 (含 混合式邏輯判定)
             _is_karl_lagerfeld = False  # 追蹤是否為 Karl Lagerfeld 來源
@@ -185,8 +240,11 @@ class MondaySyncService:
                     is_taiwan_bound = False
                     decision_reason = "⚠️ 無郵編且非倉庫人名，預設境內"
 
-            # 🟢 海運邏輯 (Client ID Check)
-            is_sea = adj_client.lower().endswith(" sea")
+            # 🟢 海運邏輯 (Client ID Check + Sea freight spreadsheet fallback)
+            is_sea = adj_client.lower().endswith(" sea") or sea_freight_override
+            if sea_freight_override:
+                is_taiwan_bound = True
+                decision_reason = "📦 REF 在海運表單中找到，已導向海運"
             
             # 設定目標 Board
             if is_taiwan_bound:
@@ -536,6 +594,8 @@ class MondaySyncService:
         """
         動態從 Monday board 7745917861 的 "SQ/Ace" group 中獲取所有 item names
         返回: set of names
+        
+        ⚠️  若遇到錯誤，直接拋出異常，不進行 fallback
         """
         query = '''
         query {
@@ -552,44 +612,51 @@ class MondaySyncService:
           }
         }
         '''
-        try:
-            resp = self._post_with_backoff(self.api_url, {"query": query})
-            data = resp.json().get("data", {}).get("boards", [])
-            if not data:
-                log.warning("[Monday] No board data found for ID 7745917861")
-                return set()
-            
-            board = data[0]
-            groups = board.get("groups", [])
-            
-            # 尋找 "SQ/Ace" group (可能是 "SQ" 或 "Ace" 或包含這些字的 group)
-            target_group = None
-            for group in groups:
-                title = group.get("title", "").lower()
-                if "sq" in title or "ace" in title:
-                    log.info(f"[Monday] Found target group: '{group.get('title')}'")
-                    target_group = group
-                    break
-            
-            if not target_group:
-                log.warning("[Monday] No SQ/Ace group found in board 7745917861")
-                return set()
+        resp = self._post_with_backoff(self.api_url, {"query": query})
+        response_data = resp.json()
+        
+        # 檢查 API 錯誤
+        if "errors" in response_data:
+            error_msg = f"[Monday API Error for Yves group] {response_data['errors']}"
+            log.error(error_msg)
+            raise Exception(error_msg)
+        
+        data = response_data.get("data", {}).get("boards", [])
+        if not data:
+            error_msg = "[Monday] No board data found for Yves on board 7745917861"
+            log.error(error_msg)
+            raise Exception(error_msg)
+        
+        board = data[0]
+        groups = board.get("groups", [])
+        
+        # 尋找 "SQ/Ace" group (可能是 "SQ" 或 "Ace" 或包含這些字的 group)
+        target_group = None
+        for group in groups:
+            title = group.get("title", "").lower()
+            if "sq" in title or "ace" in title:
+                log.info(f"[Monday] Found Yves (SQ/Ace) group: '{group.get('title')}'")
+                target_group = group
+                break
+        
+        if not target_group:
+            error_msg = f"[Monday] Yves (SQ/Ace) group NOT FOUND in board 7745917861. Available groups: {[g.get('title') for g in groups]}"
+            log.error(error_msg)
+            raise Exception(error_msg)
 
-            items = target_group.get("items_page", {}).get("items", []) if "items_page" in target_group else target_group.get("items", [])
-            names = {item.get("name", "").strip() for item in items if item.get("name", "").strip()}
+        items = target_group.get("items_page", {}).get("items", []) if "items_page" in target_group else target_group.get("items", [])
+        names = {item.get("name", "").strip() for item in items if item.get("name", "").strip()}
 
-            log.info(f"[Monday] Retrieved {len(names)} names from SQ/Ace group: {sorted(names)}")
-            return names
-            
-        except Exception as e:
-            log.error(f"[Monday] Failed to get Yves names from board: {e}")
-            return set()
+        log.info(f"[Monday] Retrieved {len(names)} names from SQ/Ace group: {sorted(names)}")
+        return names
 
     def get_team_members_from_board(self, team_name):
         """
         動態從 Monday board 7745917861 獲取指定團隊成員
         team_name: "Vicky" 或 "Yumi"
         返回: [{"name": str, "phone": str, "available": bool}, ...]
+        
+        ⚠️  若遇到錯誤，直接拋出異常，不進行 fallback
         """
         query = '''
         query {
@@ -614,70 +681,75 @@ class MondaySyncService:
           }
         }
         '''
-        try:
-            resp = self._post_with_backoff(self.api_url, {"query": query})
-            data = resp.json().get("data", {}).get("boards", [])
-            if not data:
-                log.warning(f"[Monday] No board data found for {team_name}")
-                return []
-            
-            board = data[0]
-            groups = board.get("groups", [])
-            
-            # 尋找對應的 group
-            target_group = None
-            team_lower = team_name.lower()
-            for group in groups:
-                title = group.get("title", "").lower()
-                if team_lower in title:
-                    log.info(f"[Monday] Found {team_name} group: '{group.get('title')}'")
-                    target_group = group
-                    break
-            
-            if not target_group:
-                log.warning(f"[Monday] No {team_name} group found in board 7745917861")
-                return []
-            
-            members = []
-            items = target_group.get("items_page", {}).get("items", []) if "items_page" in target_group else target_group.get("items", [])
+        resp = self._post_with_backoff(self.api_url, {"query": query})
+        response_data = resp.json()
+        
+        # 檢查 API 錯誤
+        if "errors" in response_data:
+            error_msg = f"[Monday API Error for {team_name}] {response_data['errors']}"
+            log.error(error_msg)
+            raise Exception(error_msg)
+        
+        data = response_data.get("data", {}).get("boards", [])
+        if not data:
+            error_msg = f"[Monday] No board data found for {team_name} on board 7745917861"
+            log.error(error_msg)
+            raise Exception(error_msg)
+        
+        board = data[0]
+        groups = board.get("groups", [])
+        
+        # 尋找對應的 group
+        target_group = None
+        team_lower = team_name.lower()
+        for group in groups:
+            title = group.get("title", "").lower()
+            if team_lower in title:
+                log.info(f"[Monday] Found {team_name} group: '{group.get('title')}'")
+                target_group = group
+                break
+        
+        if not target_group:
+            error_msg = f"[Monday] {team_name} group NOT FOUND in board 7745917861. Available groups: {[g.get('title') for g in groups]}"
+            log.error(error_msg)
+            raise Exception(error_msg)
+        
+        members = []
+        items = target_group.get("items_page", {}).get("items", []) if "items_page" in target_group else target_group.get("items", [])
 
-            for item in items:
-                name = item.get("name", "").strip()
-                if not name:
-                    continue
-                    
-                phone = ""
-                available = True  # 預設可用
-                priority = False  # 預設非優先
+        for item in items:
+            name = item.get("name", "").strip()
+            if not name:
+                continue
                 
-                # 解析 column_values
-                column_values = item.get("column_values", [])
-                for cv in column_values:
-                    col_id = cv.get("id", "")
-                    if col_id == "phone__1":
-                        phone = cv.get("text", "").strip()
-                    elif col_id == "status__1":
-                        status_text = cv.get("text", "").strip()
-                        # 可用狀態：「可用人頭」、「優先使用」或空白/Pending，不可用：「不可用」
-                        if status_text == "不可用":
-                            available = False
-                        elif status_text == "優先使用":
-                            priority = True
-                        # 其他狀態（包括空白、"可用人頭"、"Pending"）都視為可用
-                
-                members.append({
-                    "name": name,
-                    "phone": phone,
-                    "available": available,
-                    "priority": priority
-                })
+            phone = ""
+            available = True  # 預設可用
+            priority = False  # 預設非優先
             
-            log.info(f"[Monday] Retrieved {len(members)} members for {team_name} team")
-            available_count = sum(1 for m in members if m["available"])
-            log.info(f"[Monday] {available_count}/{len(members)} members are available for {team_name}")
+            # 解析 column_values
+            column_values = item.get("column_values", [])
+            for cv in column_values:
+                col_id = cv.get("id", "")
+                if col_id == "phone__1":
+                    phone = cv.get("text", "").strip()
+                elif col_id == "status__1":
+                    status_text = cv.get("text", "").strip()
+                    # 可用狀態：「可用人頭」、「優先使用」或空白/Pending，不可用：「不可用」
+                    if status_text == "不可用":
+                        available = False
+                    elif status_text == "優先使用":
+                        priority = True
+                    # 其他狀態（包括空白、"可用人頭"、"Pending"）都視為可用
             
-            return members
-            
-        except Exception as e:
-            log.error(f"[Monday] Failed to get {team_name} team members: {e}")
-            return []
+            members.append({
+                "name": name,
+                "phone": phone,
+                "available": available,
+                "priority": priority
+            })
+        
+        log.info(f"[Monday] Retrieved {len(members)} members for {team_name} team")
+        available_count = sum(1 for m in members if m["available"])
+        log.info(f"[Monday] {available_count}/{len(members)} members are available for {team_name}")
+        
+        return members

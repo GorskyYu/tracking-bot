@@ -145,31 +145,46 @@ LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_vicky_names() -> Set[str]:
-    """獲取 Vicky team 的動態名單"""
+    """
+    獲取 Vicky team 的動態名單
+    
+    ⚠️  若遇到錯誤，直接拋出異常。不進行 fallback
+    """
     manager = get_dynamic_names_manager()
-    if manager:
-        return manager.get_team_names('Vicky')
-    # Fallback if manager not initialized
-    from config import VICKY_NAMES
-    return VICKY_NAMES
+    if not manager:
+        error_msg = "[Handlers] Dynamic names manager not initialized for Vicky"
+        log.error(error_msg)
+        raise RuntimeError(error_msg)
+    
+    return manager.get_team_names('Vicky')
 
 def get_yumi_names() -> Set[str]:
-    """獲取 Yumi team 的動態名單"""
+    """
+    獲取 Yumi team 的動態名單
+    
+    ⚠️  若遇到錯誤，直接拋出異常。不進行 fallback
+    """
     manager = get_dynamic_names_manager()
-    if manager:
-        return manager.get_team_names('Yumi')
-    # Fallback if manager not initialized
-    from config import YUMI_NAMES
-    return YUMI_NAMES
+    if not manager:
+        error_msg = "[Handlers] Dynamic names manager not initialized for Yumi"
+        log.error(error_msg)
+        raise RuntimeError(error_msg)
+    
+    return manager.get_team_names('Yumi')
 
 def get_yves_names() -> Set[str]:
-    """獲取 Yves team 的動態名單"""
+    """
+    獲取 Yves team 的動態名單
+    
+    ⚠️  若遇到錯誤，直接拋出異常。不進行 fallback
+    """
     manager = get_dynamic_names_manager()
-    if manager:
-        return manager.get_yves_names()
-    # Fallback if manager not initialized
-    from config import YVES_NAMES
-    return YVES_NAMES
+    if not manager:
+        error_msg = "[Handlers] Dynamic names manager not initialized for Yves"
+        log.error(error_msg)
+        raise RuntimeError(error_msg)
+    
+    return manager.get_yves_names()
 
 def strip_mention(line: str) -> str:
     """
