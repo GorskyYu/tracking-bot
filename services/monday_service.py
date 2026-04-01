@@ -411,7 +411,12 @@ class MondaySyncService:
             
             # --- 判斷自動匯率標記 ---
             auto_rate_flag = "1" if is_auto_rate else "0"
-            pdf_type = "domestic" if is_domestic else "air"
+            if is_domestic:
+                pdf_type = "domestic"
+            elif is_sea:
+                pdf_type = "sea"
+            else:
+                pdf_type = "air"
             redis_client.set(
                 "global_last_pdf_parent",
                 f"{parent_id}|{target_parent_board_id}|{target_subitem_board_id}|{pdf_type}|{auto_rate_flag}",

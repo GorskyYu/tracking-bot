@@ -371,16 +371,21 @@ def webhook():
                         expense, total_unit = nums
                         pkg_count, pkg_weight = monday_service.get_subitem_metrics(last_pid)
                         
-                        # Logic: 1 package AND weight < 3kg => Intl=14, Canada=Total-14
-                        # Otherwise => Intl=10, Canada=Total-10
-                        if pkg_count == 1 and 0 < pkg_weight < 3.0:
+                        # Sea freight: Intl=5, Air freight: Intl=10 or 14 based on weight
+                        is_sea_freight = (pdf_type == "sea")
+                        
+                        if is_sea_freight:
+                            intl_price = 5.0
+                            canada_price = total_unit - 5.0
+                            logic_msg = f"(海運 -> 國際5)"
+                        elif pkg_count == 1 and 0 < pkg_weight < 3.0:
                             intl_price = 14.0
                             canada_price = total_unit - 14.0
                             logic_msg = f"(1包裹且{pkg_weight}kg<3kg -> 國際14)"
                         else:
                             intl_price = 10.0
                             canada_price = total_unit - 10.0
-                            logic_msg = f"(一般情況 -> 國際10)"
+                            logic_msg = f"(空運一般 -> 國際10)"
 
                         ok, msg, item_name = monday_service.update_expense_and_rates(
                             last_pid, expense, canada_price, intl_price, last_bid, last_sub_bid, False
