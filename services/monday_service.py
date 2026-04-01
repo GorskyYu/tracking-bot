@@ -99,9 +99,11 @@ class MondaySyncService:
         """Fallback: 當空運表單找不到 REF 時，搜尋海運表單並填入追蹤碼"""
         try:
             gs = self.get_gspread()
+            log.info(f"[SEA GSHEET] Attempting to open sea freight spreadsheet ID: {self.sea_sheet_id}")
+            log.info(f"[SEA GSHEET] Required access: https://docs.google.com/spreadsheets/d/{self.sea_sheet_id}")
             ss = gs.open_by_key(self.sea_sheet_id)
             
-            log.info(f"[SEA GSHEET] Opened sea freight spreadsheet: {self.sea_sheet_id}")
+            log.info(f"[SEA GSHEET] Successfully opened sea freight spreadsheet")
             
             # List all worksheets for debugging
             all_sheets = [ws.title for ws in ss.worksheets()]

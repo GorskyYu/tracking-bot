@@ -24,8 +24,9 @@ def get_gspread_client():
     try:
         client_email = info.get("client_email")
         if client_email:
-            print(f"[GSHEET] service account email = {client_email}")
-    except Exception:
-        pass
+            log.info(f"[GSHEET] Initialized with service account: {client_email}")
+            log.info(f"[GSHEET] Project: {info.get('project_id', 'N/A')}")
+    except Exception as e:
+        log.warning(f"[GSHEET] Could not log service account info: {e}")
     return _gs
 
