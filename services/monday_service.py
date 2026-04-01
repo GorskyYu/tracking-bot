@@ -100,24 +100,42 @@ class MondaySyncService:
         try:
             gs = self.get_gspread()
             ss = gs.open_by_key(self.sea_sheet_id)
+            
+            log.info(f"[SEA GSHEET] Opened sea freight spreadsheet: {self.sea_sheet_id}")
+            
+            # List all worksheets for debugging
+            all_sheets = [ws.title for ws in ss.worksheets()]
+            log.info(f"[SEA GSHEET] Available worksheets: {all_sheets}")
 
             # 1. 在 "Rom Responses 1" tab 的 col A 搜尋 ref_no
             ws_responses = ss.worksheet("Rom Responses 1")
+            log.info(f"[SEA GSHEET] Successfully accessed 'Rom Responses 1' worksheet")
+            
             resp_values = ws_responses.col_values(1)
+            log.info(f"[SEA GSHEET] Retrieved {len(resp_values)} values from Rom Responses 1 col A")
+            
             found_in_responses = any((v or "").strip() == ref_no for v in resp_values)
 
             if not found_in_responses:
                 log.info(f"[SEA GSHEET] '{ref_no}' not found in Rom Responses 1 A:A either.")
                 return False, None
 
+            log.info(f"[SEA GSHEET] Found '{ref_no}' in Rom Responses 1")
+
             # 2. 在 "Workspace" tab 的 col A 找同一個 timestamp，取得該列
             ws_workspace = ss.worksheet("Workspace")
+            log.info(f"[SEA GSHEET] Successfully accessed 'Workspace' worksheet")
+            
             ws_values = ws_workspace.col_values(1)
+            log.info(f"[SEA GSHEET] Retrieved {len(ws_values)} values from Workspace col A")
+            
             row_idx = next((i for i, v in enumerate(ws_values, start=1) if (v or "").strip() == ref_no), None)
 
             if not row_idx:
                 log.warning(f"[SEA GSHEET] '{ref_no}' found in Rom Responses 1 but NOT in Workspace A:A.")
                 return True, "⚠️ [PDF→海運表單] 在 Rom Responses 1 找到但 Workspace 中未找到對應行"
+
+            log.info(f"[SEA GSHEET] Found '{ref_no}' at Workspace row {row_idx}")
 
             # 3. 填入追蹤碼到 Workspace 的 S, T, U 欄 (col 19, 20, 21)
             for i, tn in enumerate(tracking_numbers[:3], start=1):
@@ -135,8 +153,8 @@ class MondaySyncService:
             return True, msg
 
         except Exception as e:
-            log.error(f"[SEA GSHEET] Sync error: {e}")
-            return False, f"⚠️ [PDF→海運表單] Sheet 同步失敗: {str(e)}"
+            log.error(f"[SEA GSHEET] Sync error: {type(e).__name__}: {e}", exc_info=True)
+            return False, f"⚠️ [PDF→海運表單] Sheet 同步失敗: {type(e).__name__}: {str(e)}"
 
     def run_sync(self, full_data, pdf_bytes, original_filename, redis_client, group_id):
         """
