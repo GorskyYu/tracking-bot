@@ -109,20 +109,20 @@ class MondaySyncService:
             all_sheets = [ws.title for ws in ss.worksheets()]
             log.info(f"[SEA GSHEET] Available worksheets: {all_sheets}")
 
-            # 1. 在 "Rom Responses 1" tab 的 col A 搜尋 ref_no
-            ws_responses = ss.worksheet("Rom Responses 1")
-            log.info(f"[SEA GSHEET] Successfully accessed 'Rom Responses 1' worksheet")
+            # 1. 在 "Form Responses 1" tab 的 col A 搜尋 ref_no
+            ws_responses = ss.worksheet("Form Responses 1")
+            log.info(f"[SEA GSHEET] Successfully accessed 'Form Responses 1' worksheet")
             
             resp_values = ws_responses.col_values(1)
-            log.info(f"[SEA GSHEET] Retrieved {len(resp_values)} values from Rom Responses 1 col A")
+            log.info(f"[SEA GSHEET] Retrieved {len(resp_values)} values from Form Responses 1 col A")
             
             found_in_responses = any((v or "").strip() == ref_no for v in resp_values)
 
             if not found_in_responses:
-                log.info(f"[SEA GSHEET] '{ref_no}' not found in Rom Responses 1 A:A either.")
+                log.info(f"[SEA GSHEET] '{ref_no}' not found in Form Responses 1 A:A either.")
                 return False, None
 
-            log.info(f"[SEA GSHEET] Found '{ref_no}' in Rom Responses 1")
+            log.info(f"[SEA GSHEET] Found '{ref_no}' in Form Responses 1")
 
             # 2. 在 "Workspace" tab 的 col A 找同一個 timestamp，取得該列
             ws_workspace = ss.worksheet("Workspace")
@@ -134,8 +134,8 @@ class MondaySyncService:
             row_idx = next((i for i, v in enumerate(ws_values, start=1) if (v or "").strip() == ref_no), None)
 
             if not row_idx:
-                log.warning(f"[SEA GSHEET] '{ref_no}' found in Rom Responses 1 but NOT in Workspace A:A.")
-                return True, "⚠️ [PDF→海運表單] 在 Rom Responses 1 找到但 Workspace 中未找到對應行"
+                log.warning(f"[SEA GSHEET] '{ref_no}' found in Form Responses 1 but NOT in Workspace A:A.")
+                return True, "⚠️ [PDF→海運表單] 在 Form Responses 1 找到但 Workspace 中未找到對應行"
 
             log.info(f"[SEA GSHEET] Found '{ref_no}' at Workspace row {row_idx}")
 
