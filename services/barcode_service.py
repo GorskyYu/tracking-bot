@@ -184,6 +184,14 @@ def handle_barcode_image(event, group_id, redis_client, pending_buffer, schedule
         decoded_objs = decode(img, symbols=[ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.EAN13, ZBarSymbol.UPCA])
         if not decoded_objs:
             log.info("[BARCODE] No barcode detected.")
+            # Send error message to user
+            reply_token = event.get("replyToken")
+            if reply_token:
+                requests.post(
+                    "https://api.line.me/v2/bot/message/reply",
+                    headers={"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"},
+                    json={"replyToken": reply_token, "messages": [{"type": "text", "text": "❌ 無法識別條碼，請重新拍攝清晰的條碼圖片"}]}
+                )
             return True
 
         # (3) 提取追蹤碼

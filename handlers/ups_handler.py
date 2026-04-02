@@ -6,6 +6,7 @@ from log import log
 from config import MONDAY_API_TOKEN, MONDAY_AIR_BOARD_ID
 from typing import Optional
 from sheets import get_gspread_client
+from datetime import datetime
 
 # ─── UPS tracking normalization ───────────────────
 def normalize_ups(trk: str) -> str:
@@ -39,6 +40,135 @@ def lookup_full_tracking(ups_last4: str) -> Optional[str]:
         log.warning(f"UPS尾號 {ups_last4} 找到 {len(matches)} 筆，不唯一，跳過")
         return None
     return matches[0]
+
+# ─── log_to_packing_sheet 定義 ───────────────────
+def log_to_packing_sheet(tracking_no: str, dimensions: str, weight_kg: float):
+    """
+    記錄到打包資料表 Google Spreadsheet 的 Form Responses 1 頁籤
+    
+    Args:
+        tracking_no: 追蹤碼
+        dimensions: 尺寸 (格式: 長*寬*高cm)
+        weight_kg: 重量 (kg)
+    """
+    try:
+        # 1) Query Monday to get subitem + parent info
+        query = """
+        query ($boardId: ID!, $trackingNo: String!) {
+            items_page_by_column_values(
+                board_id: $boardId,
+                limit: 1,
+                columns: [{column_id: "name", column_values: [$trackingNo]}]
+            ) {
+                items {
+                    id
+                    name
+                    parent_item {
+                        id
+                        name
+                        column_values {
+                            id
+                            text
+                            column { title }
+                        }
+                    }
+                }
+            }
+        }
+        """
+        
+        headers = {"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"}
+        resp = requests.post(
+            "https://api.monday.com/v2",
+            headers=headers,
+            json={
+                "query": query,
+                "variables": {
+                    "boardId": os.getenv("AIR_BOARD_ID"),
+                    "trackingNo": tracking_no
+                }
+            },
+            timeout=10
+        )
+        
+        data = resp.json()
+        items = data.get("data", {}).get("items_page_by_column_values", {}).get("items", [])
+        
+        if not items:
+            log.warning(f"[SHEET_LOG] No Monday item found for tracking: {tracking_no}")
+            return
+            
+        item = items[0]
+        parent = item.get("parent_item")
+        
+        if not parent:
+            log.warning(f"[SHEET_LOG] No parent item found for tracking: {tracking_no}")
+            return
+        
+        # 2) Extract data
+        parent_name = parent.get("name", "")
+        
+        # Extract Box ID (format: YLXXX or similar from parent name)
+        # Parent name format might be: "20260325 Client - Name YL123" or just "YL123"
+        box_id_match = re.search(r'\b(YL\d{2,3})\b', parent_name, re.IGNORECASE)
+        box_id = box_id_match.group(1).upper() if box_id_match else ""
+        
+        # Extract sender/client name from parent name
+        # Try to get everything after date and before box ID, or just use parent name
+        sender_match = re.search(r'^\d{8}\s+(.+?)(?:\s+YL\d{2,3})?$', parent_name)
+        sender_name = sender_match.group(1).strip() if sender_match else parent_name
+        
+        # If sender name is too long or contains date, try to clean it
+        if not sender_name or len(sender_name) > 50:
+            # Fallback: try to get from parent column values
+            parent_cols = {col["column"]["title"]: col.get("text", "") 
+                          for col in parent.get("column_values", []) 
+                          if col.get("column")}
+            sender_name = parent_cols.get("客戶姓名", "") or parent_cols.get("寄件人", "") or parent_name
+        
+        # Clean up sender name
+        sender_name = re.sub(r'^\d{8}\s+', '', sender_name).strip()
+        
+        # Format timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Format dimensions (ensure it has "cm" suffix)
+        dims_clean = dimensions.strip()
+        if not dims_clean.endswith("cm"):
+            dims_clean = f"{dims_clean}cm"
+        
+        # Format weight (ensure it has "kg" suffix)
+        weight_str = f"{weight_kg:.2f}kg"
+        
+        # 3) Write to Google Sheet "打包資料表"
+        SHEET_URL = "https://docs.google.com/spreadsheets/d/1vn_LSZlMGNlhId1N8hBjX-r3sptlw5liPd3nGpdAhsY"
+        SHEET_ID = "1vn_LSZlMGNlhId1N8hBjX-r3sptlw5liPd3nGpdAhsY"
+        
+        gs = get_gspread_client()
+        ss = gs.open_by_key(SHEET_ID)
+        ws = ss.worksheet("Form Responses 1")
+        
+        # Append row with data in columns A, B, E, H, I, K
+        # We need to fill other columns with empty strings
+        row_data = [
+            timestamp,      # A: timestamp
+            box_id,         # B: Box ID
+            "",             # C: empty
+            "",             # D: empty
+            sender_name,    # E: Sender Name/Client ID
+            "",             # F: empty
+            "",             # G: empty
+            tracking_no,    # H: Tracking ID
+            dims_clean,     # I: Dimension
+            "",             # J: empty
+            weight_str      # K: Weight
+        ]
+        
+        ws.append_row(row_data, value_input_option='USER_ENTERED')
+        log.info(f"[SHEET_LOG] Logged to 打包資料表: {tracking_no} | {box_id} | {sender_name} | {dims_clean} | {weight_str}")
+        
+    except Exception as e:
+        log.error(f"[SHEET_LOG] Failed to log to sheet for {tracking_no}: {e}", exc_info=True)
 
 # 從 main.py 搬過來的正則表達式
 MULTI_UPS_PAT = re.compile(
@@ -153,6 +283,9 @@ def handle_ups_logic(event, text, group_id, redis_client):
 
             # —(7) 日誌：確認更新完畢
             log.info(f"[UPS→Monday] {full_no} 更新: 重量={weight_kg}kg, 尺寸={dims_norm}")
+            
+            # —(8) 記錄到打包資料表 Google Sheet
+            log_to_packing_sheet(full_no, dims_norm, weight_kg)
         return True
 
     # 2. 處理單筆錄入 (接續上一則訊息的狀態) pending_key 單筆 size/weight parser
@@ -242,6 +375,24 @@ def handle_ups_logic(event, text, group_id, redis_client):
             )
             if resp.status_code == 200:
                 log.info(f"Updated status to 溫哥華收款 for subitem {sub_id}")
+                # Get tracking number and log to Google Sheet
+                tracking_query = f'''
+                query {{
+                    items(ids: [{sub_id}]) {{
+                        name
+                    }}
+                }}'''
+                tracking_resp = requests.post(
+                    "https://api.monday.com/v2",
+                    headers={ "Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json" },
+                    json={ "query": tracking_query }
+                )
+                if tracking_resp.status_code == 200:
+                    items = tracking_resp.json().get("data", {}).get("items", [])
+                    if items:
+                        tracking_no = items[0].get("name", "")
+                        if tracking_no:
+                            log_to_packing_sheet(tracking_no, dims_norm, weight_kg)
             else:
                 log.error(f"Failed to update status for subitem {sub_id}: {resp.text}")
 
