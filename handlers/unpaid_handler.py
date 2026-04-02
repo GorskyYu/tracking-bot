@@ -3,11 +3,10 @@ import traceback
 from datetime import datetime
 
 from services.monday import _monday_request, get_subitem_board_id, SUBITEM_BOARD_MAPPING, update_monday_item, rename_monday_item
-from utils.dynamic_names import get_dynamic_names_manager
 from utils.permissions import is_authorized_for_event, ADMIN_USER_IDS
 from utils.line_reply import reply_text, reply_message
 from config import line_bot_api
-from linebot.models import TextSendMessage, QuickReply, QuickReplyButton, MessageAction, FlexSendMessage, BubbleContainer, CarouselContainer, BoxComponent, TextComponent, SeparatorComponent
+from linebot.models import TextSendMessage, QuickReply, QuickReplyButton, MessageAction, FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, SeparatorComponent
 from threading import Thread
 from redis_client import r
 import logging
@@ -20,8 +19,7 @@ from config import (
     IRIS_GROUP_ID, 
     VICKY_GROUP_ID, 
     YUMI_GROUP_ID,
-    ANGELA_GROUP_ID,
-    PDF_GROUP_ID
+    ANGELA_GROUP_ID
 )
 
 # 建立對應表：只要指令來自這個群組，就自動查詢對應的名稱
@@ -50,55 +48,15 @@ COL_WEIGHT = "箱子重量"
 COL_PRICE = "加幣應收"
 COL_CAD_PRICE = "加拿大單價"
 COL_INTL_PRICE = "國際單價"
-COL_ADDT_CAD = "numbers9__1"
-COL_ADDT_TWD = "numeric_Mjj2bhK9"
+COL_ADDT_CAD = "追加加幣支出"
+COL_ADDT_TWD = "追加台幣支出"
 COL_CAD_PAID ="加幣實收"
 COL_TWD_PAID ="台幣實收"
 COL_COLLECTOR = "收款人"
 COL_EXCHANGE = "匯率"
 COL_BILL_DATE = "出帳日"
 
-# ─── Helper: Update Monday Item with Weight-Based 國際單價 Auto-Fill ────────────
-
-def update_monday_item_with_auto_intl_price(board_id, item_id, updates, weight_value=None):
-    """
-    Wrapper function to update Monday item with auto-fill logic for 國際單價 based on weight.
-    
-    When pushing data from Ken's group (or any group) to Monday:
-    - Checks if 國際單價 (numeric5__1) is empty in the subitem
-    - If empty, automatically fills it based on weight:
-        • weight < 3kg → 14
-        • 3kg ≤ weight < 25kg → 10
-        • weight ≥ 25kg → 11
-    
-    Args:
-        board_id: Monday board ID
-        item_id: Monday item ID  
-        updates: Dict of {column_title: value} to update
-        weight_value: (Optional) Weight value in kg (can be float, string, or None)
-                     If provided, will enable auto-fill logic
-        
-    Returns:
-        True if successful, False otherwise
-        
-    Example:
-        # When pushing shipment data from Ken's group:
-        success = update_monday_item_with_auto_intl_price(
-            board_id=4815120249,
-            item_id=123456,
-            updates={"Status": "已發出", "Weight": "2.5kg"},
-            weight_value="2.5"  # Will auto-fill 國際單價 to 14 if currently empty
-        )
-    """
-    return update_monday_item(
-        board_id=board_id,
-        item_id=item_id,
-        updates=updates,
-        weight_value=weight_value,
-        auto_fill_intl_price=True
-    )
-
-
+def _get_column_value(col_name, sources):
     """Helper to find value in a list of column data sources (priority order)."""
     for source in sources:
         if source and col_name in source:
@@ -127,19 +85,18 @@ def _map_column_values(column_values_list):
     if not column_values_list:
         return mapped
     for cv in column_values_list:
-        val = cv.get("display_value")
-        if val is None:
-            val = cv.get("text")
-        if val is None:
-            val = ""
-            
         if cv.get("column") and cv["column"].get("title"):
              title = cv["column"]["title"].strip()
+             # Prioritize display_value for Formula columns
+             val = cv.get("display_value")
+             
+             if val is None:
+                 val = cv.get("text")
+                 
+             if val is None:
+                 val = ""
+                 
              mapped[title] = str(val)
-             
-        if cv.get("id"):
-             mapped[cv["id"]] = str(val)
-             
     return mapped
 
 def _fetch_col_id_by_title(board_id, title):
@@ -204,7 +161,6 @@ def fetch_unpaid_items_globally():
                         id
                         name
                         column_values {
-                            id
                             ... on FormulaValue { display_value }
                             text
                             column { title }
@@ -213,7 +169,6 @@ def fetch_unpaid_items_globally():
                             id
                             name
                             column_values {
-                                id
                                 ... on FormulaValue { display_value }
                                 text
                                 column { title }
@@ -260,9 +215,8 @@ def fetch_unpaid_items_globally():
 _paid_subitems_cache = {}
 
 def clear_paid_subitems_cache():
-    global _paid_subitems_cache, _all_subitems_cache
+    global _paid_subitems_cache
     _paid_subitems_cache = {}
-    _all_subitems_cache = {}
 
 def _fetch_paid_subitems_total(parent_id, subitem_board_id):
     """
@@ -326,60 +280,16 @@ def _fetch_paid_subitems_total(parent_id, subitem_board_id):
     _paid_subitems_cache[cache_key] = total_paid_subitems
     return total_paid_subitems
 
-# Cache for all subitems total
-_all_subitems_cache = {}
-
-def _fetch_all_subitems_total(parent_id, subitem_board_id):
-    """
-    Fetches the sum of '加幣應收' (COL_PRICE) for ALL subitems under a parent,
-    regardless of status. This includes discount items.
-    Returns the true net receivable amount for this parent.
-    """
-    cache_key = f"all_{subitem_board_id}_{parent_id}"
-    if cache_key in _all_subitems_cache:
-        return _all_subitems_cache[cache_key]
-
-    query = """
-    query ($item_id: [ID!]) {
-        items (ids: $item_id) {
-            subitems {
-                id
-                column_values {
-                    id
-                    text
-                    ... on FormulaValue { display_value }
-                    column { title }
-                }
-            }
-        }
-    }
-    """
-    res = _monday_request(query, {"item_id": [int(parent_id)]})
-    
-    total = 0.0
-    if res and "data" in res and res["data"]["items"]:
-        parent = res["data"]["items"][0]
-        if parent and "subitems" in parent and parent["subitems"]:
-            for sub in parent["subitems"]:
-                cols = _map_column_values(sub.get("column_values", []))
-                price = _extract_float(cols.get(COL_PRICE, "0"))
-                total += price
-    
-    _all_subitems_cache[cache_key] = total
-    return total
-
 def _resolve_client_name(name):
     """Resolve client name using manual alias mapping."""
     clean = name.strip()
     return CLIENT_ALIASES.get(clean, clean)
 
-def _group_items_by_client(items, filter_name=None, filter_date=None, skip_paid_subitems_calc=False):
+def _group_items_by_client(items, filter_name=None, filter_date=None):
     """
     Groups items by Client -> Bill Date -> Parent Date.
     Returns: { canonical_name: { display, total, data: { bill_date: { parent_dates: { parent_date: { items:[], subtotal, paid_amount } } } } } }
     filter_date: Optional YYYYMMDD string to filter by specific date
-    skip_paid_subitems_calc: If True, use total_paid_cad directly as available_credit
-                            (for bill views where all items are shown, not just unpaid)
     """
     raw_clients = {} 
 
@@ -465,16 +375,17 @@ def _group_items_by_client(items, filter_name=None, filter_date=None, skip_paid_
             if rate <= 0: rate = 1.0
             total_paid_cad = item.get("parent_cad_paid", 0) + (item.get("parent_twd_paid", 0) / rate)
             
-            # 🟢 Calculate Available Credit
-            if skip_paid_subitems_calc:
-                # Bill view: all items (paid + unpaid) are shown, so credit = total paid directly
-                available_credit = total_paid_cad
-            else:
-                # Unpaid view: only unpaid items shown, so subtract already-paid subitems
-                subitem_board_id = item.get("board_id")
-                parent_id = item.get("parent_id")
-                paid_subitems_total = _fetch_paid_subitems_total(parent_id, subitem_board_id)
-                available_credit = total_paid_cad - paid_subitems_total
+            # 🟢 New Logic: Calculate Available Credit based on Paid Subitems
+            subitem_board_id = item.get("board_id")
+            parent_id = item.get("parent_id")
+            
+            # Fetch Sum of Prices of Subitems already marked as PAID
+            paid_subitems_total = _fetch_paid_subitems_total(parent_id, subitem_board_id)
+            
+            # Credit = Parent Paid (Wallet) - Spent on Paid Items
+            # If Positive: We have money left to pay for current items.
+            # If Negative: We are in deficit from previous items.
+            available_credit = total_paid_cad - paid_subitems_total
 
             bill_date_group["parent_dates"][parent_date] = {
                 "items": [],
@@ -497,34 +408,6 @@ def _group_items_by_client(items, filter_name=None, filter_date=None, skip_paid_
         parent_group["subtotal"] += item["price_val"]
         client_data["total"] += item["price_val"]
 
-    # 🟢 Filter out fully settled parent_dates (subtotal ≈ 0) from unpaid view
-    # This prevents showing discount items that have been fully offset by credits
-    if not skip_paid_subitems_calc:  # Only filter for unpaid view, not bill view
-        for client_name in list(raw_clients.keys()):
-            client_data = raw_clients[client_name]
-            for bill_date_key in list(client_data["data"].keys()):
-                bill_date_group = client_data["data"][bill_date_key]
-                
-                # Filter parent_dates with subtotal ≈ 0
-                settled_parent_dates = []
-                for parent_date, parent_group in bill_date_group["parent_dates"].items():
-                    if abs(parent_group["subtotal"]) < 0.01:  # Considered fully settled
-                        settled_parent_dates.append(parent_date)
-                        # Remove from client total
-                        client_data["total"] -= parent_group["subtotal"]
-                
-                # Remove settled parent_dates
-                for parent_date in settled_parent_dates:
-                    del bill_date_group["parent_dates"][parent_date]
-                
-                # If no parent_dates left in this bill_date, remove the entire bill_date
-                if not bill_date_group["parent_dates"]:
-                    del client_data["data"][bill_date_key]
-            
-            # If no data left for this client, remove the client
-            if not client_data["data"]:
-                del raw_clients[client_name]
-
     return raw_clients
 
 def _create_item_row(item, currency="cad"):
@@ -539,7 +422,7 @@ def _create_item_row(item, currency="cad"):
     is_domestic = item.get("is_domestic", False)
 
     # 判斷是否為「折讓」特例路徑
-    is_discount_path = "折讓" in parent_name or "折讓" in sub_name
+    is_discount_path = "折讓" in parent_name
 
     # 不論原始文字為何，統一由 price_val 轉為兩位小數
     price_val = item.get("price_val", 0.0)
@@ -565,24 +448,18 @@ def _create_item_row(item, currency="cad"):
     
     if is_discount_path:
         # ─── 折讓特例路徑 ───
-        # 決定顯示名稱：如果 parent_name 包含折讓就用 parent_name，否則用 sub_name
-        if "折讓" in parent_name:
-            discount_display = parent_name
-        else:
-            discount_display = sub_name if sub_name else parent_name
-        
-        # 只顯示一行：折讓名稱 + 金額，不顯示 specs、不顯示追加費用
+        # 1. 第一行：顯示母項目全名 + 金額
         row_contents.append(
             BoxComponent(
                 layout='horizontal',
                 contents=[
-                    TextComponent(text=discount_display, flex=4, size='sm', wrap=True),
+                    TextComponent(text=parent_name, flex=4, size='sm', wrap=True, weight='bold'),
                     TextComponent(text=formatted_price, flex=2, size='sm', align='end', weight='bold', color=price_color)
                 ]
             )
         )
-        # 第二行：若子項目名稱存在且不等於主顯示名，則顯示子項目名
-        if sub_name and sub_name != discount_display:
+        # 2. 第二行：若子項目名稱存在且不等於母項目名，則顯示子項目名 (不顯示分隔符)
+        if sub_name and sub_name != parent_name:
             row_contents.append(
                 BoxComponent(
                     layout='horizontal',
@@ -610,8 +487,8 @@ def _create_item_row(item, currency="cad"):
         weight = item.get("weight", "").strip()
         
         # Build the specs text with shipping rates
-        cad_rate_display = f"{round(cad_rate, 2):g} CAD/kg"
-        intl_rate_display = f"{round(intl_rate, 2):g} CAD/kg"
+        cad_rate_display = f"{cad_rate} CAD/kg"
+        intl_rate_display = f"{intl_rate} CAD/kg"
         dims_display = f"{dims} cm" if dims and not dims.lower().endswith("cm") else dims
         weight_display = f"{weight} kg" if weight and not weight.lower().endswith("kg") else weight
         
@@ -632,49 +509,11 @@ def _create_item_row(item, currency="cad"):
                 ]
             )
         )
-        
-        # 3. 第三行：追加費用 (若有)
-        addt_cad = item.get("addt_cad", 0.0)
-        addt_twd = item.get("addt_twd", 0.0)
-        
-        # 折讓案不顯示追加費用
-        if not is_discount_path:
-            if addt_cad != 0:
-                addt_cad_prefix = "-" if addt_cad < 0 else ""
-                addt_cad_color = '#1DB446' if addt_cad < 0 else None
-                row_contents.append(
-                    BoxComponent(
-                        layout='horizontal',
-                        contents=[
-                            TextComponent(text="追加加幣收費", size='xs', color='#aaaaaa', flex=4),
-                            TextComponent(text=f"{addt_cad_prefix}${abs(addt_cad):.2f}", size='xs', align='end', color=addt_cad_color, flex=2)
-                        ]
-                    )
-                )
-                
-            if addt_twd != 0:
-                addt_twd_prefix = "-" if addt_twd < 0 else ""
-                addt_twd_color = '#1DB446' if addt_twd < 0 else None
-                row_contents.append(
-                    BoxComponent(
-                        layout='horizontal',
-                        contents=[
-                            TextComponent(text="追加台幣收費", size='xs', color='#aaaaaa', flex=4),
-                            TextComponent(text=f"{addt_twd_prefix}NT${abs(addt_twd):.0f}", size='xs', align='end', color=addt_twd_color, flex=2)
-                        ]
-                    )
-                )
-            
-    # 為了節省空間，如果只有一行，我們直接回傳該行，不包在 vertical box 裡
-    if len(row_contents) == 1:
-        return row_contents[0]
-        
+    
     return BoxComponent(layout='vertical', margin='md', contents=row_contents)
 
 def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
-    """Builds a Flex Message for a single client.
-    If the content is too large for a single bubble (30KB limit), it will be split
-    into multiple bubbles using a CarouselContainer.
+    """Builds a Flex Bubble for a single client.
     is_paid_bill: If True, displays total in green; if False, displays total in red
     currency: 'cad' or 'twd' - determines which currency to display
     """
@@ -695,82 +534,109 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
             break
     if default_rate <= 0: default_rate = 1.0
     
-    # ----- Build sections (one per parent_date) -----
-    # Each section is a list of body components that belong together
-    sections = []
+    # Header
+    header = BoxComponent(
+        layout='vertical',
+        contents=[
+            TextComponent(text=display_name, size='xl', weight='bold')
+        ]
+    )
+    
+    # Body
+    body_contents = []
     
     sorted_bill_dates = sorted(dates_data.keys())
     for bill_idx, bill_date_key in enumerate(sorted_bill_dates):
         bill_date_group = dates_data[bill_date_key]
         
-        # Bill Date header components
-        bill_header_parts = []
+        # Add Separator between bill dates
         if bill_idx > 0:
-            bill_header_parts.append(SeparatorComponent(margin='lg'))
+            body_contents.append(SeparatorComponent(margin='lg'))
+
+        # Bill Date Subheader
         if bill_date_key:
+            # Format bill_date: "2026-01-20" -> "出帳日：260120" or show "未出帳" as is
             if bill_date_key == "未出帳":
                 display_date = "未出帳"
-            elif len(bill_date_key) == 10 and bill_date_key[4] == '-' and bill_date_key[7] == '-':
+            elif len(bill_date_key) == 10 and bill_date_key[4] == '-' and bill_date_key[7] == '-':  # ISO format YYYY-MM-DD
+                # Convert to YYMMDD format: "2026-01-20" -> "260120"
                 display_date = f"出帳日：{bill_date_key[2:4]}{bill_date_key[5:7]}{bill_date_key[8:10]}"
             else:
                 display_date = f"出帳日：{bill_date_key}"
-            bill_header_parts.append(
+            
+            body_contents.append(
                 TextComponent(text=display_date, weight='bold', margin='lg', size='md', color='#1DB446')
             )
         
+        # Loop through parent dates within this bill date
         sorted_parent_dates = sorted(bill_date_group["parent_dates"].keys())
         for parent_idx, parent_date in enumerate(sorted_parent_dates):
             parent_group = bill_date_group["parent_dates"][parent_date]
             
-            # Build one section per parent_date
-            section_parts = []
-            
-            # Add bill date header only for the first parent_date in each bill_date
-            if parent_idx == 0 and bill_header_parts:
-                section_parts.extend(bill_header_parts)
-            
+            # Parent Date Section Header
             if parent_date:
-                section_parts.append(
+                body_contents.append(
                     TextComponent(text=parent_date, weight='bold', margin='md', size='sm', color='#555555')
                 )
             
-            # All items under this parent date (NO LIMIT)
+            # Items under this parent date
             for item in parent_group["items"]:
-                section_parts.append(_create_item_row(item, currency))
+                body_contents.append(_create_item_row(item, currency))
                 
-            # Available Credit / Deficit
+            # 🟢 Check for Available Credit or Previous Deficit
             available_credit = parent_group.get("available_credit", 0.0)
+            
+            # Case 1: Positive Credit (We have extra money from parent payment)
             if available_credit > 0.005:
                 if currency.lower() == "twd":
                     credit_disp = f"-NT${available_credit * default_rate:.0f}"
                 else:
                     credit_disp = f"-${available_credit:.2f}"
-                section_parts.append(
-                    BoxComponent(layout='horizontal', margin='md', contents=[
-                        TextComponent(text="已收款", flex=4, size='sm', color='#1DB446'),
-                        TextComponent(text=credit_disp, flex=2, align='end', size='sm', color='#1DB446', weight='bold')
-                    ])
+                
+                body_contents.append(
+                    BoxComponent(
+                        layout='horizontal',
+                        margin='md',
+                        contents=[
+                            TextComponent(text="已收款", flex=4, size='sm', color='#1DB446'),
+                            TextComponent(text=credit_disp, flex=2, align='end', size='sm', color='#1DB446', weight='bold')
+                        ]
+                    )
                 )
+            
+            # Case 2: Negative Credit (Deficit / Unpaid Previous)
             elif available_credit < -0.005:
+                # Note: Deficit increases the bill, so it is a positive number addition
                 deficit_val = abs(available_credit)
                 if currency.lower() == "twd":
                     deficit_disp = f"NT${deficit_val * default_rate:.0f}"
                 else:
                     deficit_disp = f"${deficit_val:.2f}"
-                section_parts.append(
-                    BoxComponent(layout='horizontal', margin='md', contents=[
-                        TextComponent(text="⚠️ 上期未扣完", flex=4, size='sm', color='#ff3333'),
-                        TextComponent(text=deficit_disp, flex=2, align='end', size='sm', color='#ff3333', weight='bold')
-                    ])
+                
+                body_contents.append(
+                    BoxComponent(
+                        layout='horizontal',
+                        margin='md',
+                        contents=[
+                            TextComponent(text="⚠️ 上期未扣完", flex=4, size='sm', color='#ff3333'),
+                            TextComponent(text=deficit_disp, flex=2, align='end', size='sm', color='#ff3333', weight='bold')
+                        ]
+                    )
                 )
-            
-            # Subtotal
-            section_parts.append(SeparatorComponent(margin='sm'))
+
+            # Parent Date Subtotal
+            body_contents.append(SeparatorComponent(margin='sm'))
             subtotal = parent_group['subtotal']
+
             sub_is_negative = subtotal < -0.005
             is_zero = abs(subtotal) < 0.005
-            sub_val_color = '#1DB446' if sub_is_negative else None
-            if is_zero: sub_val_color = None
+
+            if is_zero:
+                sub_val_color = None
+            elif sub_is_negative:
+                sub_val_color = '#1DB446'
+            else:
+                sub_val_color = None
 
             if currency.lower() == "twd":
                 sub_disp_val = subtotal * default_rate
@@ -786,16 +652,19 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
                     prefix = "-" if subtotal < 0 else ""
                     subtotal_display = f"{prefix}${abs(subtotal):.2f}"
 
-            section_parts.append(
-                BoxComponent(layout='horizontal', margin='sm', contents=[
-                    TextComponent(text="Subtotal", flex=4, size='sm', color='#555555'),
-                    TextComponent(text=subtotal_display, flex=2, align='end', size='sm', weight='bold', color=sub_val_color)
-                ])
+            body_contents.append(
+                BoxComponent(
+                    layout='horizontal',
+                    margin='sm',
+                    contents=[
+                        TextComponent(text="Subtotal", flex=4, size='sm', color='#555555'),
+                        TextComponent(text=subtotal_display, flex=2, align='end', size='sm', weight='bold', color=sub_val_color)
+                     ]
+                )
             )
-            
-            sections.append(section_parts)
 
-    # ----- Build footer -----
+    # Footer (Total)
+    # Calculate subtotal (sum of all item prices before paid/discount deductions)
     subtotal_raw = 0.0
     total_paid = 0.0
     total_discount = 0.0
@@ -803,161 +672,127 @@ def _create_client_flex_message(client_obj, is_paid_bill=False, currency="cad"):
 
     for bill_data in dates_data.values():
         for parent_data in bill_data.get("parent_dates", {}).values():
+            # Sum up item prices for subtotal
             for item in parent_data.get("items", []):
                 price_val = item.get("price_val", 0.0)
+                # Negative price items are discounts (折讓分攤)
                 if price_val < 0:
                     total_discount += abs(price_val)
                 else:
                     subtotal_raw += price_val
+
+            # Paid calculation logic update:
+            # Only sum up the "Available Credit" if it is positive (meaning it covered some cost).
+            # Do NOT sum "Previous Deficit" as Paid.
             available_credit = parent_data.get("available_credit", 0.0)
             if available_credit > 0:
                 total_paid += available_credit
     
+    # 總支付金額 (green) - cash paid amount (excluding discount)
     if currency.lower() == "twd":
         paid_display_val = f"NT${total_paid * default_rate:.0f}"
     else:
         paid_display_val = f"${total_paid:.2f}"
     
     footer_contents.append(
-        BoxComponent(layout='horizontal', margin='md', contents=[
-            TextComponent(text="總支付金額", flex=3, size='md', weight='bold'),
-            TextComponent(text=paid_display_val, flex=3, align='end', size='md', weight='bold', color='#1DB446')
-        ])
+        BoxComponent(
+            layout='horizontal',
+            margin='md',
+            contents=[
+                TextComponent(text="總支付金額", flex=3, size='md', weight='bold'),
+                TextComponent(text=paid_display_val, flex=3, align='end', size='md', weight='bold', color='#1DB446')
+            ]
+        )
     )
     
+    # 總折讓金額 (green) - only show if there's discount
     if total_discount > 0:
         if currency.lower() == "twd":
             total_discount_display = f"NT${total_discount * default_rate:.0f}"
         else:
             total_discount_display = f"${total_discount:.2f}"
+        
         footer_contents.append(
-            BoxComponent(layout='horizontal', margin='sm', contents=[
-                TextComponent(text="總折讓金額", flex=3, size='md', weight='bold'),
-                TextComponent(text=total_discount_display, flex=3, align='end', size='md', weight='bold', color='#1DB446')
-            ])
+            BoxComponent(
+                layout='horizontal',
+                margin='sm',
+                contents=[
+                    TextComponent(text="總折讓金額", flex=3, size='md', weight='bold'),
+                    TextComponent(text=total_discount_display, flex=3, align='end', size='md', weight='bold', color='#1DB446')
+                ]
+            )
         )
     
     footer_contents.append(SeparatorComponent(margin='md'))
     
+    # 已結清金額 (green) - actual paid + discount
     combined_paid = total_paid + total_discount
     if combined_paid > 0:
         if currency.lower() == "twd":
             total_paid_display = f"NT${combined_paid * default_rate:.0f}"
         else:
             total_paid_display = f"${combined_paid:.2f}"
+        
         footer_contents.append(
-            BoxComponent(layout='horizontal', margin='md', contents=[
-                TextComponent(text="已結清金額", flex=3, size='lg', weight='bold'),
-                TextComponent(text=total_paid_display, flex=3, align='end', size='lg', weight='bold', color='#1DB446')
-            ])
+            BoxComponent(
+                layout='horizontal',
+                margin='md',
+                contents=[
+                    TextComponent(text="已結清金額", flex=3, size='lg', weight='bold'),
+                    TextComponent(text=total_paid_display, flex=3, align='end', size='lg', weight='bold', color='#1DB446')
+                ]
+            )
         )
     
+    # 應付餘額 (red, or green if zero/negative)
     if currency.lower() == "twd":
         tot_disp_val = total * default_rate
+        # 若四捨五入後為 0，強制移除負號
         if round(abs(tot_disp_val)) == 0:
             prefix = ""
         else:
             prefix = "-" if tot_disp_val < 0 else ""
         total_display = f"{prefix}NT${abs(tot_disp_val):.0f}"
     else:
+        # 若四捨五入後為 0.00，強制移除負號
         if round(abs(total), 2) == 0:
              prefix = ""
         else:
              prefix = "-" if total < 0 else ""
         total_display = f"{prefix}${abs(total):.2f}"
     
-    if abs(total) < 0.005:
-        total_color = None
+    # Determine color for Total Due
+    if abs(total) < 0.005:  # Effectively zero
+        total_color = None  # Default grey/black
     elif total < 0:
-        total_color = '#1DB446'
+        total_color = '#1DB446' # Green for credit balance
     else:
-        total_color = '#FF4B4B'
+        total_color = '#FF4B4B' # Red for due amount
 
     footer_contents.append(
-        BoxComponent(layout='horizontal', margin='md', contents=[
-            TextComponent(text="應付餘額", flex=3, size='lg', weight='bold'),
-            TextComponent(text=total_display, flex=3, align='end', size='lg', weight='bold', color=total_color)
-        ])
+        BoxComponent(
+            layout='horizontal',
+            margin='md',
+            contents=[
+                TextComponent(text="應付餘額", flex=3, size='lg', weight='bold'),
+                TextComponent(text=total_display, flex=3, align='end', size='lg', weight='bold', color=total_color)
+            ]
+        )
     )
     
-    footer = BoxComponent(layout='vertical', spacing='sm', contents=footer_contents)
+    footer = BoxComponent(
+        layout='vertical',
+        spacing='sm',
+        contents=footer_contents
+    )
     
-    # ----- Pack sections into bubbles (max ~10KB body per bubble to be safe for carousel) -----
-    MAX_BODY_SIZE = 9000  # Conservative limit to keep total carousel size under 50KB JSON limit
+    bubble = BubbleContainer(
+        header=header,
+        body=BoxComponent(layout='vertical', contents=body_contents),
+        footer=footer
+    )
     
-    bubbles = []
-    current_body = []
-    current_size = 0
-    
-    for section in sections:
-        # Estimate section size
-        section_size = len(json.dumps([_component_to_dict(c) for c in section], ensure_ascii=False).encode('utf-8'))
-        
-        # If adding this section would exceed the limit, finalize current bubble
-        if current_body and (current_size + section_size > MAX_BODY_SIZE):
-            bubbles.append(current_body)
-            current_body = []
-            current_size = 0
-        
-        current_body.extend(section)
-        current_size += section_size
-    
-    if current_body:
-        bubbles.append(current_body)
-    
-    if not bubbles:
-        bubbles = [[TextComponent(text="沒有項目", size='sm')]]
-    
-    # Build bubble containers
-    bubble_containers = []
-    # Footer is only needed on the very last bubble of the entire set
-    # OR we can replicate it. Replicating adds size.
-    # User usually wants to see total at the end.
-    
-    for idx, body_contents in enumerate(bubbles):
-        # Only show footer on the last bubble of the WHOLE sequence
-        is_last_overall = (idx == len(bubbles) - 1)
-        
-        page_label = f" ({idx + 1}/{len(bubbles)})" if len(bubbles) > 1 else ""
-        
-        header = BoxComponent(layout='vertical', contents=[
-            TextComponent(text=f"{display_name}{page_label}", size='xl', weight='bold')
-        ])
-        
-        bubble = BubbleContainer(
-            header=header,
-            body=BoxComponent(layout='vertical', contents=body_contents),
-            footer=footer if is_last_overall else None
-        )
-        bubble_containers.append(bubble)
-    
-    # Split bubbles into chunks to avoid 50KB single message limit
-    # A safe bet is max 4 bubbles per carousel if they are ~10KB each (plus overhead)
-    MAX_BUBBLES_PER_CAROUSEL = 4
-    messages = []
-    
-    for i in range(0, len(bubble_containers), MAX_BUBBLES_PER_CAROUSEL):
-        chunk = bubble_containers[i:i + MAX_BUBBLES_PER_CAROUSEL]
-        
-        if len(chunk) == 1:
-            # Single bubble -> BubbleContainer (limit is loose, ~30KB+ is fine usually)
-            messages.append(FlexSendMessage(alt_text=f"Bill for {display_name} ({i//MAX_BUBBLES_PER_CAROUSEL + 1})", contents=chunk[0]))
-        else:
-            # Multiple bubbles -> Carousel
-            carousel = CarouselContainer(contents=chunk)
-            messages.append(FlexSendMessage(alt_text=f"Bill for {display_name} ({i//MAX_BUBBLES_PER_CAROUSEL + 1})", contents=carousel))
-            
-    return messages
-
-def _component_to_dict(component):
-    """Convert a LINE SDK component to a dict for size estimation."""
-    try:
-        return component.as_json_dict()
-    except:
-        try:
-            return json.loads(str(component))
-        except:
-            return {}
+    return FlexSendMessage(alt_text=f"Bill for {display_name}", contents=bubble)
 
 def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, filter_date=None, is_group_chat=False):
     """Background thread worker.
@@ -982,52 +817,6 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
         if not results:
              line_bot_api.push_message(destination_id, TextSendMessage(text="沒有發現符合條件的項目（箱子尺寸與重量皆不為空，且狀態符合作業需求）。"))
              return
-
-        # 🟢 自動補齊同日期的關聯項目 (修復折讓/信用額度項目漏抓的問題)
-        # 邏輯：如果抓到了某個未付款項，就應該把該出帳日的所有項目都抓出來檢查
-        # 這樣即使折讓項目的 Status 是空的 (導致 fetch_unpaid 抓不到)，也能透過 fetch_by_date 補抓回來
-        if not is_today_mode and results:
-            found_bill_dates = set()
-            for item in results:
-                # Extract date from item (YYYY-MM-DD)
-                b_date = item.get("bill_date", "").strip()
-                if b_date and len(b_date) >= 10:
-                    found_bill_dates.add(b_date)
-            
-            if found_bill_dates:
-                existing_ids = {item["id"] for item in results}
-                logging.info(f"[unpaid_worker] Expanding search for bill dates: {found_bill_dates}")
-                
-                for b_date in found_bill_dates:
-                    try:
-                        # Convert YYYY-MM-DD to YYMMDD
-                        date_obj = datetime.strptime(b_date, "%Y-%m-%d")
-                        yymmdd = date_obj.strftime("%y%m%d")
-                        
-                        # Fetch all items for this date (ignoring status filter)
-                        date_items = fetch_items_by_bill_date(yymmdd)
-                        
-                        count_added = 0
-                        for d_item in date_items:
-                            # 只添加真正需要的项目：折让项目或状态为空的项目
-                            # 排除明确为已付款状态的项目
-                            if d_item["id"] not in existing_ids:
-                                # 检查是否为折让项目 (包含关键字)
-                                is_discount = ("折讓" in d_item.get("parent_name", "") or 
-                                             "折讓" in d_item.get("sub_name", ""))
-                                
-                                # 检查原始状态 - 我们需要重新查询状态信息
-                                # 由于 d_item 已经经过处理，原始状态信息可能丢失
-                                # 所以只添加折让项目，不添加其他项目
-                                if is_discount:
-                                    results.append(d_item)
-                                    existing_ids.add(d_item["id"])
-                                    count_added += 1
-                        
-                        logging.info(f"[unpaid_worker] Added {count_added} discount items for date {yymmdd}")
-                        
-                    except Exception as e:
-                        logging.error(f"[unpaid_worker] Error expanding date {b_date}: {e}")
 
         logging.info(f"[unpaid_worker] Found {len(results)} items for destination {destination_id}")
 
@@ -1123,12 +912,8 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
         # Send one Flex Message per client
         for canonical_name, client_data in grouped_clients.items():
             try:
-                # flex_messages is now a LIST of FlexSendMessage objects
-                flex_messages = _create_client_flex_message(client_data)
-                
-                # Push the messages (up to 5 can be sent in one push_message call)
-                # But creating multiple push calls is safer if we exceed 5 (though unlikely with current limits)
-                line_bot_api.push_message(destination_id, flex_messages)
+                flex_message = _create_client_flex_message(client_data)
+                line_bot_api.push_message(destination_id, flex_message)
             except Exception as e:
                 logging.error(f"Error sending flex for {canonical_name}: {e}")
                 line_bot_api.push_message(destination_id, TextSendMessage(text=f"❌ 發送 {canonical_name} 帳單時發生錯誤 (可能是內容過長)。"))
@@ -1190,15 +975,14 @@ def handle_rate_update(sender_id, message_text, reply_token, user_id=None, group
     for item in stored_items:
         item_id = item["id"]
         board_id = item["board_id"]
-        weight_value = item.get("weight", None)  # Try to get weight if available
         
         updates = {
             COL_CAD_PRICE: str(domestic_rate),
             COL_INTL_PRICE: str(intl_rate)
         }
         
-        logging.info(f"[rate_update] Updating item {item_id} on board {board_id} (weight: {weight_value})")
-        if update_monday_item(board_id, item_id, updates, weight_value=weight_value, auto_fill_intl_price=False):
+        logging.info(f"[rate_update] Updating item {item_id} on board {board_id}")
+        if update_monday_item(board_id, item_id, updates):
             success_count += 1
         else:
             fail_count += 1
@@ -1240,115 +1024,14 @@ def _send_help_menu(reply_token):
                  
                 {"type": "button", "style": "secondary", "height": "sm", "margin": "sm",
                  "action": {"type": "message", "label": "📉 折讓/Credit處理", "text": "help:credit"}},
-
+                 
                 {"type": "button", "style": "secondary", "height": "sm", "margin": "sm",
                  "action": {"type": "message", "label": "⚙️ 其他指令/運費更新", "text": "help:other"}},
-
-                {"type": "button", "style": "secondary", "height": "sm", "margin": "sm",
-                 "action": {"type": "message", "label": "👤 目前可用人頭", "text": "目前可用人頭"}},
             ]
         }
     }
     reply_message(reply_token, [{"type": "flex", "altText": "管理員指令選單", "contents": flex_contents}])
 
-def _send_available_heads_menu(reply_token):
-    """Shows all dynamic groups as buttons to fetch members from"""
-    try:
-        from utils.dynamic_names import get_dynamic_names_manager
-        dm = get_dynamic_names_manager()
-        if not dm:
-            reply_text(reply_token, "⚠️ 未初始化 Monday Manager，無法獲取人頭資料。")
-            return
-        
-        # Clear cache to get fresh data
-        dm.sender_mapper._group_cache.clear()
-        logging.info("[AvailableHeads] Cache cleared, fetching fresh groups...")
-        
-        groups = dm.sender_mapper._get_all_groups()
-        logging.info(f"[AvailableHeads] Got {len(groups)} groups")
-        if not groups:
-            reply_text(reply_token, "⚠️ 目前找不到任何可用的群組。")
-            return
-        
-        contents = [
-            {"type": "text", "text": "👤 選擇要查詢的群組", "weight": "bold", "size": "xl", "color": "#1a1a1a"},
-            {"type": "separator", "margin": "md"}
-        ]
-        
-        for g in groups:
-            title = g.get('title', 'Unknown')
-            if title == "不可使用": continue
-            contents.append({
-                "type": "button",
-                "style": "secondary",
-                "height": "sm",
-                "margin": "sm",
-                "action": {
-                    "type": "message",
-                    "label": f"查 {title}",
-                    "text": f"可用人頭:{title}"
-                }
-            })
-            
-        flex_contents = {
-            "type": "bubble",
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "md",
-                "contents": contents
-            }
-        }
-        
-        reply_message(reply_token, [{"type": "flex", "altText": "可用人頭查詢選單", "contents": flex_contents}])
-    except Exception as e:
-        import traceback
-        logging.error(f"Error fetching dynamic groups: {e}\n{traceback.format_exc()}")
-        reply_text(reply_token, f"❌ 獲取群組列表時發生錯誤: {str(e)}")
-
-def _send_available_heads_for_group(sender_id, reply_token, group_name):
-    """Fetches specific members in a group using Monday Service via Thread to not block"""
-    def _worker():
-        try:
-            from utils.dynamic_names import get_dynamic_names_manager
-            import random
-            dm = get_dynamic_names_manager()
-            
-            if not dm or not dm.monday_service:
-                line_bot_api.push_message(sender_id, TextSendMessage(text="⚠️ 未初始化 Monday Service，無法獲取名單。"))
-                return
-                
-            members = dm.monday_service.get_team_members_from_board(group_name)
-            
-            if not members:
-                line_bot_api.push_message(sender_id, TextSendMessage(text=f"⚠️ {group_name} 群組沒有名單或查詢失敗。"))
-                return
-                
-            available_members = [m for m in members if m.get('available', True)]
-            
-            if not available_members:
-                line_bot_api.push_message(sender_id, TextSendMessage(text=f"📌 {group_name} 群組目前沒有任何【可使用】的人頭。"))
-                return
-            
-            # 分離優先與一般名單並分別隨機打亂
-            priority_names = [m['name'] for m in available_members if m.get('priority', False)]
-            normal_names = [m['name'] for m in available_members if not m.get('priority', False)]
-            
-            random.shuffle(priority_names)
-            random.shuffle(normal_names)
-            
-            formatted_names = priority_names + normal_names
-                
-            text_result = f"✅ 【{group_name} 可用人頭清單】\n(共 {len(formatted_names)} 位)\n" + "-"*15 + "\n" + "\n".join(formatted_names)
-            line_bot_api.push_message(sender_id, TextSendMessage(text=text_result))
-                
-        except Exception as e:
-            logging.error(f"Error in _send_available_heads_for_group worker: {e}")
-            line_bot_api.push_message(sender_id, TextSendMessage(text=f"❌ 查詢時發生錯誤: {str(e)}"))
-
-    reply_text(reply_token, f"🔍 正在獲取『{group_name}』的可用名單...")
-    Thread(target=_worker).start()
-        
 def _send_help_detail(reply_token, category):
     """Detailed help text for specific category"""
     text = ""
@@ -1385,11 +1068,11 @@ def _send_help_detail(reply_token, category):
   以台幣顯示帳單"""
     elif category == "credit":
         text = """📋【折讓/Credit 錄入】
-• credit [金額] [出帳日] [說明]
+• credit [金額] [日期] [說明]
   錄入折讓並分攤 (如: credit 346.13 260120 Dec折讓)
-• credit [金額] [客戶ID] [出帳日] [說明]
-  指定客戶錄入折讓並分攤 (如: credit 346.13 Vicky 260120 Dec折讓)
-• credit [出帳日] [說明]
+• credit [金額] [客戶ID] [日期] [說明]
+  指定客戶錄入折讓
+• credit [日期] [說明]
   修改現有折讓名稱 (無金額模式)"""
     elif category == "other":
         text = """📋【其他/運費更新】
@@ -1415,20 +1098,9 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
     parts = message_text.strip().split()
     text_lower = message_text.strip().lower()
     
-    # 處理目前功能指令 (僅限管理員私訊 或 PDF群組)
-    if message_text.strip() == "目前功能" and is_admin and (not group_id or group_id == PDF_GROUP_ID):
+    # 處理目前功能指令 (僅限管理員私訊)
+    if message_text.strip() == "目前功能" and is_admin and not group_id:
         _send_help_menu(reply_token)
-        return
-
-    # 處理目前可用人頭 (從主選單點擊)
-    if message_text.strip() in ["目前可用人頭", "全群組可用人頭"] and is_admin:
-        _send_available_heads_menu(reply_token)
-        return
-        
-    # 處理具體的人頭查詢 (點擊群組後)
-    if message_text.startswith("可用人頭:") and is_admin:
-        group_name = message_text.split(":", 1)[1].strip()
-        _send_available_heads_for_group(sender_id, reply_token, group_name)
         return
 
     # 處理 Help 子選單指令 (僅限管理員)
@@ -1588,11 +1260,11 @@ def fetch_items_by_bill_date(target_date_yyyymmdd):
             ) {
                 items {
                     id name
-                    column_values { id ... on FormulaValue { display_value } text column { title } }
+                    column_values { ... on FormulaValue { display_value } text column { title } }
                     parent_item {
                         id
                         name
-                        column_values { id ... on FormulaValue { display_value } text column { title } }
+                        column_values { ... on FormulaValue { display_value } text column { title } }
                     }
                 }
             }
@@ -1639,10 +1311,6 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
         cad_price = _extract_float(raw_cad)
         intl_price = _extract_float(raw_intl)
         
-        # Extract additional fees
-        addt_cad = _extract_float(subitem_cols.get(COL_ADDT_CAD, "0"))
-        addt_twd = _extract_float(subitem_cols.get(COL_ADDT_TWD, "0"))
-        
         # Extract bill_date from subitem columns
         bill_date = subitem_cols.get(COL_BILL_DATE, "").strip()
         
@@ -1662,8 +1330,6 @@ def _process_monday_item(item, subitem_board_id, parent_board_id):
             "intl_shipping_rate": intl_price,
             "raw_cad_domestic_rate": raw_cad,
             "raw_intl_shipping_rate": raw_intl,
-            "addt_cad": addt_cad,
-            "addt_twd": addt_twd,
             "parent_cad_paid": _extract_float(parent_cols.get(COL_CAD_PAID, "0")),
             "parent_twd_paid": _extract_float(parent_cols.get(COL_TWD_PAID, "0")),
             "parent_rate": rate,
@@ -1682,15 +1348,15 @@ def _bill_worker(destination_id, client_filter, date_val, currency="cad"):
             line_bot_api.push_message(destination_id, TextSendMessage(text=f"📅 {date_val} 沒有找到任何出帳項目。"))
             return
 
-        # ✅ 直接複用原本的群組邏輯 (skip_paid_subitems_calc=True: 帳單顯示所有項目，已付款直接顯示)
-        grouped = _group_items_by_client(results, client_filter, skip_paid_subitems_calc=True)
+        # ✅ 直接複用原本的群組邏輯 (會自動按 Parent 分類並計算實收)
+        grouped = _group_items_by_client(results, client_filter)
         if not grouped:
             line_bot_api.push_message(destination_id, TextSendMessage(text=f"🔍 在 {date_val} 找不到屬於 {client_filter} 的項目。"))
             return
 
         for client_name, client_data in grouped.items():
-            flexs = _create_client_flex_message(client_data, currency=currency)
-            line_bot_api.push_message(destination_id, flexs)
+            flex = _create_client_flex_message(client_data, currency=currency)
+            line_bot_api.push_message(destination_id, flex)
             
     except Exception as e:
         logging.error(f"Bill worker failed: {e}")
@@ -1773,11 +1439,11 @@ def fetch_paid_items_by_bill_date(target_date_yyyymmdd):
             ) {
                 items {
                     id name
-                    column_values { id ... on FormulaValue { display_value } text column { title } }
+                    column_values { ... on FormulaValue { display_value } text column { title } }
                     parent_item {
                         id
                         name
-                        column_values { id ... on FormulaValue { display_value } text column { title } }
+                        column_values { ... on FormulaValue { display_value } text column { title } }
                     }
                 }
             }
@@ -1807,16 +1473,16 @@ def _paid_worker(destination_id, client_filter, date_val):
             line_bot_api.push_message(destination_id, TextSendMessage(text="未找到帳單，請檢查日期、所在群組或Abowbow ID。"))
             return
 
-        # 使用相同的分組和顯示邏輯（skip_paid_subitems_calc=True: 已付款帳單直接顯示付款金額）
-        grouped = _group_items_by_client(results, client_filter, skip_paid_subitems_calc=True)
+        # 使用相同的分組和顯示邏輯（與 unpaid 一致）
+        grouped = _group_items_by_client(results, client_filter)
         if not grouped:
             line_bot_api.push_message(destination_id, TextSendMessage(text="未找到帳單，請檢查日期、所在群組或Abowbow ID。"))
             return
 
         for client_name, client_data in grouped.items():
             # 使用相同的 Flex Message 格式，但標記為 paid bill (總額顯示綠色)
-            flexs = _create_client_flex_message(client_data, is_paid_bill=True)
-            line_bot_api.push_message(destination_id, flexs)
+            flex = _create_client_flex_message(client_data, is_paid_bill=True)
+            line_bot_api.push_message(destination_id, flex)
             
     except Exception as e:
         logging.error(f"Paid worker failed: {e}\n{traceback.format_exc()}")
@@ -1890,11 +1556,11 @@ def fetch_and_tag_unpaid_today():
             ) {
                 items {
                     id name
-                    column_values { id ... on FormulaValue { display_value } text column { title } }
+                    column_values { ... on FormulaValue { display_value } text column { title } }
                     parent_item {
                         id
                         name
-                        column_values { id ... on FormulaValue { display_value } text column { title } }
+                        column_values { ... on FormulaValue { display_value } text column { title } }
                     }
                 }
             }
@@ -2050,22 +1716,16 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id, group_id=No
 
                     subitem_board_id = sample_item.get("board_id")
                     rate = sample_item.get("parent_rate", 1.0)
-                    if rate <= 0: rate = 1.0
+                    
+                    # Calculate remaining balance for this parent item
+                    remaining_balance_cad = parent_group.get("subtotal", 0)
                     
                     # Get existing paid amounts
                     existing_cad_paid = sample_item.get("parent_cad_paid", 0)
                     existing_twd_paid = sample_item.get("parent_twd_paid", 0)
                     
-                    # Calculate TRUE remaining balance including discount items
-                    # Use _fetch_all_subitems_total to get net receivable (includes discounts)
-                    all_subitems_total = _fetch_all_subitems_total(parent_id, subitem_board_id)
-                    total_already_paid = existing_cad_paid + (existing_twd_paid / rate)
-                    remaining_balance_cad = all_subitems_total - total_already_paid
-                    
-                    logging.info(f"[paid_worker] Parent {parent_date_str}: all_subitems={all_subitems_total:.2f}, already_paid={total_already_paid:.2f}, remaining={remaining_balance_cad:.2f}")
-                    
                     # Check if already fully paid
-                    if remaining_balance_cad <= 0.01:
+                    if remaining_balance_cad <= 0:
                         distribution_log.append(f"⏭️ {bill_date_str}/{parent_date_str}: 已全額付清，跳過")
                         continue
                     
@@ -2109,9 +1769,7 @@ def handle_paid_event(sender_id, message_text, reply_token, user_id, group_id=No
                     remaining_amount -= actual_applied_original
                     
                     # Check if fully paid and update status
-                    # Use 0.01 tolerance to handle floating point precision errors when
-                    # remaining_amount accumulates rounding errors across multiple distributions
-                    if remaining_balance_cad - actual_applied_cad <= 0.01:
+                    if actual_applied_cad >= remaining_balance_cad:
                         status_col_id = _fetch_col_id_by_title(subitem_board_id, COL_STATUS)
                         for sub in items_list:
                             _monday_request(mutation, {
@@ -2143,8 +1801,7 @@ def handle_credit_event(sender_id, message_text, reply_token, user_id, group_id=
     1. 建立折讓: credit <amount> [client] <date> [desc]
     2. 修改折讓: credit [client] <date> <desc> (無金額)
     """
-    # 允許管理員 或者 PDF Group 的成員使用
-    if user_id not in ADMIN_USER_IDS and group_id != PDF_GROUP_ID:
+    if user_id not in ADMIN_USER_IDS:
         return reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
 
     parts = message_text.strip().split()

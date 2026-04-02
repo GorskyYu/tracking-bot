@@ -96,7 +96,8 @@ def parse_dimension(text: str) -> Optional[str]:
     Returns format: "62*42*38cm"
     """
     # Match dimension patterns (support ×, x, *, or space as separator)
-    pattern = r'(\d+(?:\.\d+)?)[×x*\s]+(\d+(?:\.\d+)?)[×x*\s]+(\d+(?:\.\d+)?)(?:\s*)(cm|公分|in|inch|吋|")?'
+    # (?<![A-Za-z]) prevents matching digits that are part of a box ID like YL401
+    pattern = r'(?<![A-Za-z])(\d+(?:\.\d+)?)[×x*\s]+(\d+(?:\.\d+)?)[×x*\s]+(\d+(?:\.\d+)?)(?:\s*)(cm|公分|in|inch|吋|")?'
     match = re.search(pattern, text, re.IGNORECASE)
     
     if match:
@@ -544,6 +545,35 @@ def upload_to_monday(tracking_no: str, dimensions: str, weight: str, box_id: str
             }}'''
             
             requests.post("https://api.monday.com/v2", headers=headers, json={"query": logistics_mutation}, timeout=10)
+            
+            # Auto-fill 國際單價 (numeric5__1) if currently empty
+            intl_check_query = f'''
+            query {{
+                items(ids: [{item_id}]) {{
+                    column_values(ids: ["numeric5__1"]) {{
+                        text
+                    }}
+                }}
+            }}'''
+            check_resp = requests.post("https://api.monday.com/v2", headers=headers, json={"query": intl_check_query}, timeout=10)
+            check_data = check_resp.json()
+            col_vals = check_data.get("data", {}).get("items", [{}])[0].get("column_values", [])
+            current_intl_price = col_vals[0].get("text", "") if col_vals else ""
+            if not current_intl_price or current_intl_price in ("0", "0.0"):
+                price = 14 if weight_kg < 3 else (10 if weight_kg < 25 else 11)
+                intl_mutation = f'''
+                mutation {{
+                    change_simple_column_value(
+                        item_id: {item_id},
+                        board_id: {os.getenv("AIR_BOARD_ID")},
+                        column_id: "numeric5__1",
+                        value: "{price}"
+                    ) {{ id }}
+                }}'''
+                requests.post("https://api.monday.com/v2", headers=headers, json={"query": intl_mutation}, timeout=10)
+                log.info(f"[UPLOAD] Auto-filled 國際單價 to {price} (weight={weight_kg}kg) for item {item_id}")
+            else:
+                log.debug(f"[UPLOAD] 國際單價 already set ({current_intl_price}), skipping auto-fill for item {item_id}")
         
         log.info(f"[UPLOAD] Successfully updated Monday item {item_id} for tracking {tracking_no}")
         return True
