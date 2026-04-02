@@ -590,25 +590,53 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
             if not data.get("tracking"):
                 matches = search_air_form_matches(data["name"])
                 
-                if not matches:
+                # Validate matches
+                if not matches or not isinstance(matches, list):
                     line_reply(reply_token, 
                               "⚠️ 未找到匹配的空運表單記錄\n"
                               "請手動輸入追蹤編號，或選擇重新開始")
                     return True
                 
-                elif len(matches) == 1:
+                # Filter out invalid matches
+                valid_matches = [
+                    m for m in matches 
+                    if isinstance(m, dict) and m.get("timestamp")
+                ]
+                
+                if not valid_matches:
+                    line_reply(reply_token,
+                              "⚠️ 找到記錄但資料不完整\n"
+                              "請手動輸入追蹤編號，或選擇重新開始")
+                    return True
+                
+                elif len(valid_matches) == 1:
                     # Auto-select single match
-                    data["tracking"] = matches[0]["timestamp"]
+                    data["tracking"] = valid_matches[0]["timestamp"]
                     _set_data(redis_client, user_id, data)
                     _process_upload(redis_client, user_id, reply_token, data)
                     return True
                 
                 else:
                     # Multiple matches - show selection
-                    _set_matches(redis_client, user_id, matches)
+                    _set_matches(redis_client, user_id, valid_matches)
                     _set_state(redis_client, user_id, "selecting_match")
-                    flex = build_match_selection_flex(matches)
-                    line_reply_flex(reply_token, "🔍 請選擇匹配項目", flex)
+                    
+                    try:
+                        flex = build_match_selection_flex(valid_matches)
+                        line_reply_flex(reply_token, "🔍 請選擇匹配項目", flex)
+                    except Exception as e:
+                        log.error(f"[UPLOAD] Error building/sending match selection flex: {e}", exc_info=True)
+                        # Fallback to text list
+                        match_text = "🔍 找到以下匹配記錄，請回覆選項編號：\n\n"
+                        for i, m in enumerate(valid_matches[:5]):
+                            match_text += f"【{i+1}】\n"
+                            match_text += f"時間: {m.get('timestamp', 'N/A')}\n"
+                            match_text += f"中文: {m.get('chinese_name', 'N/A')}\n"
+                            match_text += f"英文: {m.get('english_name', 'N/A')}\n"
+                            match_text += f"客戶: {m.get('client_id', 'N/A')}\n\n"
+                        match_text += "請輸入「選擇匹配1」、「選擇匹配2」等指令"
+                        line_reply(reply_token, match_text)
+                    
                     return True
             else:
                 # Has tracking, proceed with upload

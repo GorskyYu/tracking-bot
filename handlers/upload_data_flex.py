@@ -127,6 +127,12 @@ def build_match_selection_flex(matches: List[Dict[str, str]]) -> dict:
     ]
     
     for i, match in enumerate(matches[:5]):  # Limit to 5 matches
+        # Safely get and truncate values to avoid overflow
+        timestamp = (match.get("timestamp") or "N/A")[:50]
+        chinese_name = (match.get("chinese_name") or "N/A")[:30]
+        english_name = (match.get("english_name") or "N/A")[:30]
+        client_id = (match.get("client_id") or "N/A")[:30]
+        
         match_box = {
             "type": "box", "layout": "vertical",
             "margin": "md", "spacing": "sm",
@@ -136,10 +142,10 @@ def build_match_selection_flex(matches: List[Dict[str, str]]) -> dict:
             "contents": [
                 {"type": "text", "text": f"選項 {i+1}",
                  "weight": "bold", "size": "md", "color": "#0066cc"},
-                _kv_row("📅 時間", match.get("timestamp", "N/A")),
-                _kv_row("🇨🇳 中文姓名", match.get("chinese_name", "N/A")),
-                _kv_row("🇬🇧 英文姓名", match.get("english_name", "N/A")),
-                _kv_row("🆔 客戶ID", match.get("client_id", "N/A")),
+                _kv_row("時間", timestamp),
+                _kv_row("中文姓名", chinese_name),
+                _kv_row("英文姓名", english_name),
+                _kv_row("客戶ID", client_id),
                 {"type": "button", "height": "sm", "style": "primary",
                  "margin": "md",
                  "action": {"type": "message",
