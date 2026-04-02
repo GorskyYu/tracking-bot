@@ -67,6 +67,9 @@ from handlers.ups_handler import handle_ups_logic
 from handlers.monday_webhook_handler import handle_monday_webhook
 from handlers.quote_handler import handle_quote_trigger, handle_quote_message, is_in_quote_session
 from handlers.quote_config import get_profile
+from handlers.upload_data_handler import (
+    handle_upload_trigger, handle_upload_message, is_in_upload_session
+)
 
 # 工作排程
 from jobs.ace_tasks import push_ace_today_shipments
@@ -275,6 +278,17 @@ def webhook():
         if mtype == "text" and is_in_quote_session(r, user_id):
             if handle_quote_message(event, user_id, group_id, text, r):
                 continue
+
+        # ─── Upload Data 上傳資料流程 ───────────────────────────────────────
+        if mtype == "text":
+            # Check for trigger
+            if handle_upload_trigger(event, r):
+                continue
+            
+            # If user is in an active upload session, route message there
+            if is_in_upload_session(r, user_id):
+                if handle_upload_message(event, r):
+                    continue
 
         # --- 費用錄入邏輯：允許在所有支援 PDF 的群組觸發 ---
         if group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, JOYCE_GROUP_ID, IRIS_GROUP_ID, PDF_GROUP_ID, ACE_GROUP_ID, SOQUICK_GROUP_ID}:
