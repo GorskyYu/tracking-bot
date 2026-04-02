@@ -118,18 +118,34 @@ def parse_weight(text: str) -> Optional[str]:
     Converts lbs to kg if specified.
     Returns format: "17.30kg"
     """
-    pattern = r'(\d+(?:\.\d+)?)\s*(kg|公斤|lbs?|磅)?'
-    match = re.search(pattern, text, re.IGNORECASE)
+    # First try to match weight with explicit unit
+    pattern_with_unit = r'(\d+(?:\.\d+)?)\s*(kg|公斤|lbs?|磅)'
+    match = re.search(pattern_with_unit, text, re.IGNORECASE)
     
     if match:
         weight = float(match.group(1))
-        unit = (match.group(2) or "kg").lower()
+        unit = match.group(2).lower()
         
         # Convert lbs to kg
         if unit.startswith(("lb", "磅")):
             weight *= 0.453592
         
         return f"{weight:.2f}kg"
+    
+    # If no unit found, look for a standalone number (not part of dimensions)
+    # Avoid matching numbers that are part of dimension pattern (X*X*X)
+    pattern_standalone = r'(?<!\*)(?<!\d)(\d+(?:\.\d+)?)(?!\*|\d)'
+    matches = re.findall(pattern_standalone, text)
+    
+    # Get the last standalone number as weight (dimensions usually come first)
+    if matches:
+        try:
+            weight = float(matches[-1])
+            # Only accept reasonable weight values (0.1 to 999 kg)
+            if 0.1 <= weight <= 999:
+                return f"{weight:.2f}kg"
+        except ValueError:
+            pass
     
     return None
 
@@ -449,18 +465,25 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         # Prepare row data
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
+        # Remove units from dimension and weight for sheet storage
+        # Dimension: "52*52*41cm" → "52*52*41"
+        dimension_clean = dimension.replace("cm", "").replace("CM", "").strip()
+        
+        # Weight: "18.50kg" → "18.50"
+        weight_clean = weight.replace("kg", "").replace("KG", "").strip()
+        
         row_data = [
-            timestamp,    # A: timestamp
-            box_id,       # B: Box ID
-            "",           # C: empty
-            "",           # D: empty
-            name,         # E: Sender Name/Client ID
-            "",           # F: empty
-            "",           # G: empty
-            tracking,     # H: Tracking ID
-            dimension,    # I: Dimension
-            "",           # J: empty
-            weight        # K: Weight
+            timestamp,         # A: timestamp
+            box_id,            # B: Box ID
+            "",                # C: empty
+            "",                # D: empty
+            name,              # E: Sender Name/Client ID
+            "",                # F: empty
+            "",                # G: empty
+            tracking,          # H: Tracking ID
+            dimension_clean,   # I: Dimension (without cm)
+            "",                # J: empty
+            weight_clean       # K: Weight (without kg)
         ]
         
         ws.append_row(row_data)
