@@ -318,9 +318,97 @@ def search_air_form_matches(name_or_id: str) -> List[Dict[str, str]]:
         return []
 
 
+# ─── Helper: Ensure Unique Timestamp ─────────────────────────────────────────
+
+def ensure_unique_timestamp(tracking_no: str) -> str:
+    """
+    Check if subitem with tracking_no exists and has status 溫哥華收款.
+    If it does, append #2, #3, etc. until finding a unique timestamp.
+    
+    Args:
+        tracking_no: Original timestamp or tracking number
+        
+    Returns:
+        Unique tracking number (may have #2, #3, etc. appended)
+    """
+    try:
+        headers = {"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"}
+        board_id = os.getenv("AIR_BOARD_ID")
+        
+        # Check base timestamp
+        counter = 1
+        current_tracking = tracking_no
+        
+        while counter < 100:  # Safety limit
+            # Query for subitem with this name
+            query = """
+            query ($boardId: ID!, $trackingNo: String!) {
+                items_page_by_column_values(
+                    board_id: $boardId,
+                    limit: 1,
+                    columns: [{column_id: "name", column_values: [$trackingNo]}]
+                ) {
+                    items {
+                        id
+                        name
+                        column_values {
+                            id
+                            text
+                        }
+                    }
+                }
+            }
+            """
+            
+            resp = requests.post(
+                "https://api.monday.com/v2",
+                headers=headers,
+                json={
+                    "query": query,
+                    "variables": {
+                        "boardId": board_id,
+                        "trackingNo": current_tracking
+                    }
+                },
+                timeout=10
+            )
+            
+            data = resp.json()
+            items = data.get("data", {}).get("items_page_by_column_values", {}).get("items", [])
+            
+            if not items:
+                # No item found with this name - it's unique
+                log.info(f"[UPLOAD] Timestamp '{current_tracking}' is unique")
+                return current_tracking
+            
+            # Check if the found item has status 溫哥華收款
+            status_column = next(
+                (col for col in items[0].get("column_values", []) if col["id"] == "status__1"),
+                None
+            )
+            
+            if status_column and status_column.get("text") == "溫哥華收款":
+                # This timestamp is taken, try next number
+                counter += 1
+                current_tracking = f"{tracking_no} #{counter}"
+                log.info(f"[UPLOAD] Timestamp conflict, trying '{current_tracking}'")
+            else:
+                # Found item but status is not 溫哥華收款, can use it
+                log.info(f"[UPLOAD] Using timestamp '{current_tracking}' (existing but different status)")
+                return current_tracking
+        
+        # Fallback if we hit the limit
+        log.warning(f"[UPLOAD] Hit counter limit for timestamp {tracking_no}")
+        return current_tracking
+        
+    except Exception as e:
+        log.error(f"[UPLOAD] Error checking timestamp uniqueness: {e}", exc_info=True)
+        return tracking_no  # Return original if check fails
+
+
 # ─── Monday Upload Function ───────────────────────────────────────────────────
 
-def upload_to_monday(tracking_no: str, dimensions: str, weight: str) -> bool:
+def upload_to_monday(tracking_no: str, dimensions: str, weight: str, box_id: str = "") -> bool:
     """
     Upload dimension and weight data to Monday based on tracking number.
     
@@ -328,6 +416,7 @@ def upload_to_monday(tracking_no: str, dimensions: str, weight: str) -> bool:
         tracking_no: Tracking number or timestamp
         dimensions: Dimension string (e.g., "40*62*32cm")
         weight: Weight string (e.g., "12.15kg")
+        box_id: Box ID (to check for YL prefix)
         
     Returns:
         True if successful, False otherwise
@@ -425,6 +514,36 @@ def upload_to_monday(tracking_no: str, dimensions: str, weight: str) -> bool:
         }}'''
         
         requests.post("https://api.monday.com/v2", headers=headers, json={"query": status_mutation}, timeout=10)
+        
+        # If Box ID starts with YL, set Location and 國際物流
+        if box_id and box_id.upper().startswith("YL"):
+            log.info(f"[UPLOAD] Box ID {box_id} starts with YL, setting Location and 國際物流")
+            
+            # Set Location to 溫哥華倉A
+            location_mutation = f'''
+            mutation {{
+                change_column_value(
+                    item_id: {item_id},
+                    board_id: {os.getenv("AIR_BOARD_ID")},
+                    column_id: "location__1",
+                    value: "{{\\"label\\":\\"溫哥華倉A\\"}}"
+                ) {{ id }}
+            }}'''
+            
+            requests.post("https://api.monday.com/v2", headers=headers, json={"query": location_mutation}, timeout=10)
+            
+            # Set 國際物流 to Ace
+            logistics_mutation = f'''
+            mutation {{
+                change_column_value(
+                    item_id: {item_id},
+                    board_id: {os.getenv("AIR_BOARD_ID")},
+                    column_id: "status_18__1",
+                    value: "{{\\"label\\":\\"Ace\\"}}"
+                ) {{ id }}
+            }}'''
+            
+            requests.post("https://api.monday.com/v2", headers=headers, json={"query": logistics_mutation}, timeout=10)
         
         log.info(f"[UPLOAD] Successfully updated Monday item {item_id} for tracking {tracking_no}")
         return True
@@ -611,7 +730,9 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 
                 elif len(valid_matches) == 1:
                     # Auto-select single match
-                    data["tracking"] = valid_matches[0]["timestamp"]
+                    original_timestamp = valid_matches[0]["timestamp"]
+                    unique_timestamp = ensure_unique_timestamp(original_timestamp)
+                    data["tracking"] = unique_timestamp
                     _set_data(redis_client, user_id, data)
                     _process_upload(redis_client, user_id, reply_token, data)
                     return True
@@ -654,7 +775,9 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
             
             if 0 <= idx < len(matches):
                 data = _get_data(redis_client, user_id)
-                data["tracking"] = matches[idx]["timestamp"]
+                original_timestamp = matches[idx]["timestamp"]
+                unique_timestamp = ensure_unique_timestamp(original_timestamp)
+                data["tracking"] = unique_timestamp
                 _set_data(redis_client, user_id, data)
                 _process_upload(redis_client, user_id, reply_token, data)
                 return True
@@ -671,7 +794,8 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
         monday_success = upload_to_monday(
             data["tracking"],
             data["dimension"],
-            data["weight"]
+            data["weight"],
+            data["box_id"]
         )
         
         # Upload to packing sheet
