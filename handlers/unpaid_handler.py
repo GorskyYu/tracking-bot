@@ -58,7 +58,47 @@ COL_COLLECTOR = "收款人"
 COL_EXCHANGE = "匯率"
 COL_BILL_DATE = "出帳日"
 
-def _get_column_value(col_name, sources):
+# ─── Helper: Update Monday Item with Weight-Based 國際單價 Auto-Fill ────────────
+
+def update_monday_item_with_auto_intl_price(board_id, item_id, updates, weight_value=None):
+    """
+    Wrapper function to update Monday item with auto-fill logic for 國際單價 based on weight.
+    
+    When pushing data from Ken's group (or any group) to Monday:
+    - Checks if 國際單價 (numeric5__1) is empty in the subitem
+    - If empty, automatically fills it based on weight:
+        • weight < 3kg → 14
+        • 3kg ≤ weight < 25kg → 10
+        • weight ≥ 25kg → 11
+    
+    Args:
+        board_id: Monday board ID
+        item_id: Monday item ID  
+        updates: Dict of {column_title: value} to update
+        weight_value: (Optional) Weight value in kg (can be float, string, or None)
+                     If provided, will enable auto-fill logic
+        
+    Returns:
+        True if successful, False otherwise
+        
+    Example:
+        # When pushing shipment data from Ken's group:
+        success = update_monday_item_with_auto_intl_price(
+            board_id=4815120249,
+            item_id=123456,
+            updates={"Status": "已發出", "Weight": "2.5kg"},
+            weight_value="2.5"  # Will auto-fill 國際單價 to 14 if currently empty
+        )
+    """
+    return update_monday_item(
+        board_id=board_id,
+        item_id=item_id,
+        updates=updates,
+        weight_value=weight_value,
+        auto_fill_intl_price=True
+    )
+
+
     """Helper to find value in a list of column data sources (priority order)."""
     for source in sources:
         if source and col_name in source:
@@ -1150,14 +1190,15 @@ def handle_rate_update(sender_id, message_text, reply_token, user_id=None, group
     for item in stored_items:
         item_id = item["id"]
         board_id = item["board_id"]
+        weight_value = item.get("weight", None)  # Try to get weight if available
         
         updates = {
             COL_CAD_PRICE: str(domestic_rate),
             COL_INTL_PRICE: str(intl_rate)
         }
         
-        logging.info(f"[rate_update] Updating item {item_id} on board {board_id}")
-        if update_monday_item(board_id, item_id, updates):
+        logging.info(f"[rate_update] Updating item {item_id} on board {board_id} (weight: {weight_value})")
+        if update_monday_item(board_id, item_id, updates, weight_value=weight_value, auto_fill_intl_price=False):
             success_count += 1
         else:
             fail_count += 1

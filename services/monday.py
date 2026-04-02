@@ -318,7 +318,115 @@ def find_tracking_across_boards(tracking_number: str) -> Optional[Dict[str, Any]
             
     return None
 
-def update_monday_item(board_id, item_id, updates):
+def _get_intl_price_by_weight(weight_kg: float) -> int:
+    """
+    Determine the 國際單價 (international shipping rate) based on weight.
+    
+    Logic:
+    - weight < 3 kg: 14
+    - 3 kg <= weight < 25 kg: 10
+    - weight >= 25 kg: 11
+    
+    Args:
+        weight_kg: Weight in kilograms (float)
+        
+    Returns:
+        International price (int)
+    """
+    if weight_kg < 3:
+        return 14
+    elif weight_kg < 25:
+        return 10
+    else:  # weight_kg >= 25
+        return 11
+
+def _check_and_fill_intl_price(board_id, item_id, updates, weight_value):
+    """
+    Check if 國際單價 (numeric5__1) is empty in the subitem.
+    If empty, auto-fill based on weight.
+    
+    Args:
+        board_id: Monday board ID
+        item_id: Monday item ID
+        updates: Dict of updates to be applied
+        weight_value: Weight value (could be string or float)
+        
+    Returns:
+        Updates dict with 國際單價 added if it was empty and weight is provided
+    """
+    # Parse weight value
+    weight_kg = 0.0
+    if weight_value:
+        weight_str = str(weight_value).strip()
+        # Remove "kg" suffix if present
+        weight_str = weight_str.replace("kg", "").strip()
+        try:
+            weight_kg = float(weight_str)
+        except (ValueError, AttributeError):
+            logger.warning(f"[IntlPrice] Could not parse weight: {weight_value}")
+            return updates
+    
+    if weight_kg <= 0:
+        logger.debug(f"[IntlPrice] Weight is zero or negative: {weight_kg}, skipping auto-fill")
+        return updates
+    
+    # Fetch current value of 國際單價 (numeric5__1)
+    query = """
+    query ($item_id: [ID!]) {
+        items (ids: $item_id) {
+            column_values (ids: ["numeric5__1"]) {
+                id
+                text
+                value
+            }
+        }
+    }
+    """
+    result = _monday_request(query, {"item_id": [int(item_id)]})
+    
+    current_intl_price = None
+    if result and "data" in result and result["data"]["items"]:
+        items = result["data"]["items"]
+        if items and "column_values" in items[0]:
+            for col_val in items[0]["column_values"]:
+                if col_val.get("id") == "numeric5__1":
+                    current_intl_price = col_val.get("text") or col_val.get("value")
+                    break
+    
+    # Check if empty
+    is_empty = (current_intl_price is None or 
+                str(current_intl_price).strip() == "" or 
+                str(current_intl_price).strip() == "0")
+    
+    if is_empty:
+        # Auto-fill based on weight
+        intl_price = _get_intl_price_by_weight(weight_kg)
+        logger.info(f"[IntlPrice] Auto-filling 國際單價 for item {item_id}: weight={weight_kg}kg → price={intl_price}")
+        updates["國際單價"] = str(intl_price)
+    else:
+        logger.debug(f"[IntlPrice] 國際單價 already set to {current_intl_price} for item {item_id}, skipping auto-fill")
+    
+    return updates
+
+def update_monday_item(board_id, item_id, updates, weight_value=None, auto_fill_intl_price=False):
+    """
+    Update a Monday item with given column values.
+    Optionally auto-fills 國際單價 based on weight if it's currently empty.
+    
+    Args:
+        board_id: Monday board ID
+        item_id: Monday item ID
+        updates: Dict of {column_title: value}
+        weight_value: (Optional) Weight value for auto-fill logic
+        auto_fill_intl_price: If True, check and auto-fill 國際單價 if empty
+        
+    Returns:
+        True if update successful, False otherwise
+    """
+    # If auto_fill is enabled and weight is provided, check and fill 國際單價
+    if auto_fill_intl_price and weight_value is not None:
+        updates = _check_and_fill_intl_price(board_id, item_id, updates, weight_value)
+    
     # updates is a dict of {column_title: value}
     # We need to map titles to IDs
     
