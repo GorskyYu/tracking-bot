@@ -303,19 +303,33 @@ def try_parse_structured(text: str) -> Optional[ParsedInput]:
                     postal_codes.append(pc)
             continue
 
-        # Dimension + weight: L*W*H weight [postal]
+        # Dimension + weight: L*W*H[unit] weight[unit] [postal]
+        # Unit suffix (cm/in/inch/") is optional after each dimension
+        _U_NC = r'(?:cm|in(?:ch(?:es?)?)?|")?'   # non-capturing optional unit
+        _U_CAP = r'(cm|in(?:ch(?:es?)?)?|")?'    # capturing optional unit (last dim)
         m = re.match(
-            r'([\d.]+)\s*[*x×]\s*([\d.]+)\s*[*x×]\s*([\d.]+)\s+([\d.]+)\s*(.*)',
+            r'([\d.]+)\s*' + _U_NC + r'\s*[*x×]\s*'
+            r'([\d.]+)\s*' + _U_NC + r'\s*[*x×]\s*'
+            r'([\d.]+)\s*' + _U_CAP + r'\s+'
+            r'([\d.]+)\s*(?:kg|lbs?|公斤|磅)?\s*(.*)',
             line, re.IGNORECASE,
         )
         if m:
+            dim_unit = (m.group(4) or '').lower().strip()
+            is_inches = dim_unit.startswith('in') or dim_unit == '"'
+
+            def _to_cm(val: float) -> float:
+                if is_inches:
+                    return math.ceil(val * 2.54 * 10) / 10
+                return val
+
             packages.append(Package(
-                length=float(m.group(1)),
-                width=float(m.group(2)),
-                height=float(m.group(3)),
-                weight=float(m.group(4)),
+                length=_to_cm(float(m.group(1))),
+                width=_to_cm(float(m.group(2))),
+                height=_to_cm(float(m.group(3))),
+                weight=float(m.group(5)),
             ))
-            remainder = m.group(5)
+            remainder = m.group(6)
             for pc in POSTAL_RE.findall(remainder.replace(' ', '').upper()):
                 if pc not in postal_codes:
                     postal_codes.append(pc)
