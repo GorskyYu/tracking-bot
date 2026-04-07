@@ -23,6 +23,13 @@ from services.te_api_service import call_api as te_call_api
 
 log = logging.getLogger(__name__)
 
+
+# ─── Custom Exceptions ────────────────────────────────────────────────────────
+class OpenAIQuotaExceeded(Exception):
+    """Raised when OpenAI API quota is exceeded."""
+    pass
+
+
 # ─── Constants ────────────────────────────────────────────────────────────────
 WAREHOUSE_POSTAL = "V6X1Z7"
 
@@ -215,7 +222,17 @@ PARSE_SYSTEM_PROMPT = """你是一個包裹資訊提取助手。從客戶訊息�
 
 
 def parse_package_input(text: str) -> Optional[ParsedInput]:
-    """Use OpenAI to extract package info from messy customer messages."""
+    """Use OpenAI to extract package info from messy customer messages.
+    
+    First attempts structured regex parsing as a fallback.
+    If that fails, tries OpenAI. Raises OpenAIQuotaExceeded if quota is exceeded.
+    """
+    # First, try structured parsing (regex-based, no API calls)
+    structured = try_parse_structured(text)
+    if structured:
+        return structured
+    
+    # If structured parsing failed, try OpenAI
     try:
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
@@ -255,6 +272,13 @@ def parse_package_input(text: str) -> Optional[ParsedInput]:
         return ParsedInput(packages=packages, postal_codes=postal_codes, raw_text=text)
 
     except Exception as e:
+        error_str = str(e)
+        # Detect quota exceeded errors (429 with insufficient_quota)
+        if "insufficient_quota" in error_str or "429" in error_str:
+            log.error(f"[QuoteService] OpenAI quota exceeded: {e}")
+            raise OpenAIQuotaExceeded(f"OpenAI API quota exceeded. Please check billing at https://platform.openai.com/account/billing/overview") from e
+        
+        # Other API errors
         log.error(f"[QuoteService] OpenAI parse error: {e}")
         return None
 
