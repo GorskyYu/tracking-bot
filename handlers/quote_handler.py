@@ -246,14 +246,12 @@ def handle_quote_message(event: dict, user_id: str,
             return _on_mode_selected(r, user_id, target_id, "加台海運", profile)
         if text == "報價選擇其他服務":
             return _on_reselect_service(r, user_id, target_id, profile)
-        if text == "報價處理新報價":
-            return _on_new_quote(r, user_id, target_id, profile)
         if text == "報價完成":
             _clear_session(r, user_id)
             line_push(target_id, "✅ 報價完成，感謝使用！")
             return True
-        line_push(target_id, "請點選下方按鈕選擇操作。")
-        return True
+        # Any other text → treat as new quote input
+        return _on_new_quote_from_text(r, user_id, target_id, profile, text)
 
     return False
 
@@ -567,6 +565,16 @@ def _on_new_quote(r, uid, target, profile):
         "💡 輸入「取消報價」可隨時退出。"
     )
     return True
+
+
+def _on_new_quote_from_text(r, uid, target, profile, text):
+    """Post-quote: user typed new package info directly — reset session and parse it."""
+    target_id = _get_target(r, uid)
+    _clear_session(r, uid)
+    _set_state(r, uid, "collecting")
+    _set_target(r, uid, target_id)
+    _set_profile_name(r, uid, profile.name)
+    return _on_collecting(r, uid, target_id, text)
 
 
 # ─── Background Workers ──────────────────────────────────────────────────────

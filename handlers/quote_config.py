@@ -76,7 +76,7 @@ class QuoteProfile:
 
     # Post-quote actions
     post_quote_actions: frozenset = frozenset({
-        "switch_mode", "reselect_service", "new_quote", "done"
+        "switch_mode", "reselect_service", "done"
     })
 
     # Access control
@@ -97,11 +97,11 @@ IRIS_PROFILE = QuoteProfile(
     forced_service="FEDEX_GROUND",
     allow_mode_select=False,
     forced_mode="加台空運",
-    show_cost_in_group=True, 
+    show_cost_in_group=True,
     cost_push_target=None,
     show_result_flex_in_group=False,
     result_flex_push_target=YVES_USER_ID,
-    post_quote_actions=frozenset({"new_quote", "done"}),
+    post_quote_actions=frozenset({"done"}),
 )
 
 
