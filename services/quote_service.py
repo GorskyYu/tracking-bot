@@ -154,8 +154,7 @@ def calculate_box_weights(packages: List[Package], mode: str) -> List[BoxWeights
         r_act = round_special(pkg.weight)
 
         min_bill = min_billable_weight(r_act, r_vol)
-        if is_sea and max(pkg.weight, vol) < 15:
-            min_bill = 15
+        # Note: sea freight 15 kg minimum is applied at order-total level below
 
         base_dom = max(r_vol, r_act)
 
@@ -178,6 +177,23 @@ def calculate_box_weights(packages: List[Package], mode: str) -> List[BoxWeights
             intl_weight=intl_weight,
             min_bill=min_bill,
         ))
+
+    # Sea freight: 15 kg minimum applies to the TOTAL order, not per box.
+    # If total is under 15 kg, scale each box proportionally so the total = 15 kg.
+    if is_sea:
+        total_intl = sum(bw.intl_weight for bw in results)
+        if total_intl < 15:
+            scale = 15.0 / total_intl
+            for bw in results:
+                bw.intl_weight = round(bw.intl_weight * scale, 1)
+                bw.dom_weight = round(bw.dom_weight * scale, 1)
+            # Fix any rounding drift so the total is exactly 15.0
+            drift = round(15.0 - sum(bw.intl_weight for bw in results), 1)
+            if drift != 0:
+                results[-1].intl_weight = round(results[-1].intl_weight + drift, 1)
+                results[-1].dom_weight = round(results[-1].dom_weight + drift, 1)
+            # Mark the last box to display the order-level minimum note once
+            results[-1].min_bill = 15
 
     return results
 
@@ -743,7 +759,7 @@ def build_quote_text(mode: str,
         lines.append(f"{expr} = {box_cost:.2f} CAD")
 
         if bw.min_bill == 15:
-            lines.append("（海運最低計費 15 kg）")
+            lines.append("（海運最低計費 15 kg，整單合計）")
         elif bw.min_bill == 1:
             lines.append("（不足 1 公斤，以 1 公斤計價）")
         elif bw.min_bill == 2:
