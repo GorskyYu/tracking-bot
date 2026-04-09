@@ -271,14 +271,16 @@ def parse_message(text: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
         if kong_yun:
             data["kong_yun"] = kong_yun
 
-    # Auto-lookup name from tracking when name is missing
-    if not data.get("name") and data.get("tracking"):
+    # Auto-lookup name and package content from tracking when missing
+    if data.get("tracking") and (not data.get("name") or not data.get("package_content")):
         is_kong = bool(data.get("kong_yun"))
         is_hai = bool(data.get("hai_yun"))
         if is_kong or is_hai:
-            found_name = lookup_name_by_tracking(data["tracking"], is_kong, is_hai)
-            if found_name:
+            found_name, found_content = lookup_name_by_tracking(data["tracking"], is_kong, is_hai)
+            if found_name and not data.get("name"):
                 data["name"] = found_name
+            if found_content and not data.get("package_content"):
+                data["package_content"] = found_content
 
     return data
 
@@ -370,10 +372,22 @@ def search_air_form_matches(name_or_id: str) -> List[Dict[str, str]]:
 
 # ─── Tracking-Based Name Lookup ───────────────────────────────────────────────
 
-def lookup_name_by_tracking(tracking: str, kong_yun: bool, hai_yun: bool) -> Optional[str]:
+# Maps 追蹤碼N column name → corresponding content column name
+_TRACKING_TO_CONTENT = {
+    "追蹤碼1": "第一件包裹內容物清單",
+    "追蹤碼2": "第二件包裹內容物清單",
+    "追蹤碼3": "第三件包裹內容物清單",
+}
+
+
+def lookup_name_by_tracking(tracking: str, kong_yun: bool, hai_yun: bool):
     """
     Search 空運資料表 (Tracking tab) or 海運資料表 (Workspace tab) for the
-    tracking number in cols 追蹤碼1/追蹤碼2/追蹤碼3 and return ABB會員帳號.
+    tracking number in cols 追蹤碼1/追蹤碼2/追蹤碼3.
+
+    Returns:
+        (abb_account, package_content) tuple, both may be None.
+        package_content is read from the matching 第X件包裹內容物清單 column.
     """
     try:
         gs = get_gspread_client()
@@ -384,21 +398,27 @@ def lookup_name_by_tracking(tracking: str, kong_yun: bool, hai_yun: bool) -> Opt
             ss = gs.open_by_key(OCEAN_FORM_SHEET_ID)
             ws = ss.worksheet("Workspace")
         else:
-            return None
+            return None, None
 
         headers = ws.row_values(1)
         header_map = {h.strip(): i for i, h in enumerate(headers)}
 
-        tracking_cols = [
-            header_map[col]
-            for col in ("追蹤碼1", "追蹤碼2", "追蹤碼3")
-            if col in header_map
-        ]
+        # Build ordered list of (tracking_col_name, tracking_col_idx, content_col_idx)
+        tracking_col_specs = []
+        for t_col_name in ("追蹤碼1", "追蹤碼2", "追蹤碼3"):
+            if t_col_name not in header_map:
+                continue
+            c_col_name = _TRACKING_TO_CONTENT[t_col_name]
+            tracking_col_specs.append((
+                header_map[t_col_name],
+                header_map.get(c_col_name),  # may be None if column absent
+            ))
+
         abb_col = header_map.get("ABB會員帳號")
 
-        if not tracking_cols or abb_col is None:
+        if not tracking_col_specs or abb_col is None:
             log.warning("[UPLOAD] Sheet missing 追蹤碼1/2/3 or ABB會員帳號 columns")
-            return None
+            return None, None
 
         all_rows = ws.get_all_values()
         tracking_lower = tracking.lower()
@@ -406,19 +426,21 @@ def lookup_name_by_tracking(tracking: str, kong_yun: bool, hai_yun: bool) -> Opt
         for row in all_rows[1:]:
             if len(row) <= abb_col:
                 continue
-            for col_idx in tracking_cols:
-                if col_idx < len(row) and row[col_idx].strip().lower() == tracking_lower:
-                    abb = row[abb_col].strip()
-                    if abb:
-                        log.info(f"[UPLOAD] Found ABB account '{abb}' for tracking {tracking}")
-                        return abb
+            for t_idx, c_idx in tracking_col_specs:
+                if t_idx < len(row) and row[t_idx].strip().lower() == tracking_lower:
+                    abb = row[abb_col].strip() if len(row) > abb_col else ""
+                    content = ""
+                    if c_idx is not None and c_idx < len(row):
+                        content = row[c_idx].strip()
+                    log.info(f"[UPLOAD] Found ABB='{abb}' content='{content[:40]}' for tracking {tracking}")
+                    return (abb or None), (content or None)
 
         log.info(f"[UPLOAD] No ABB account found for tracking {tracking}")
-        return None
+        return None, None
 
     except Exception as e:
         log.error(f"[UPLOAD] Error looking up name by tracking: {e}", exc_info=True)
-        return None
+        return None, None
 
 
 # ─── Helper: Ensure Unique Timestamp ─────────────────────────────────────────
@@ -687,7 +709,7 @@ def upload_to_monday(tracking_no: str, dimensions: str, weight: str, box_id: str
 
 # ─── 打包資料表 Upload Function ───────────────────────────────────────────────
 
-def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str, col_l_remark: str = "") -> bool:
+def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str, col_l_remark: str = "", package_content: str = "") -> bool:
     """
     Upload data to 打包資料表 Form Responses 1 if tracking not already present.
     
@@ -698,6 +720,7 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         dimension: Dimension string (e.g., "40*62*32cm")
         weight: Weight string (e.g., "12.15kg")
         col_l_remark: Value for col L 其他備註（要拆）(e.g. "海運" or "空運")
+        package_content: Package contents from 第X件包裹內容物清單, written to col J
         
     Returns:
         True if successful, False otherwise
@@ -739,8 +762,9 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         row_data[0] = timestamp       # A: timestamp
         row_data[4] = name            # E: Sender Name/Client ID
         row_data[7] = tracking        # H: Tracking ID
-        row_data[8] = dimension_clean # I: Dimension (no unit)
-        row_data[10] = weight_value   # K: Weight as number
+        row_data[8] = dimension_clean  # I: Dimension (no unit)
+        row_data[9] = package_content  # J: Package contents (第X件包裹內容物清單)
+        row_data[10] = weight_value    # K: Weight as number
         
         # Determine col B (廠商編號) and col L (其他備註（要拆）) values
         if col_l_remark == "海運":
@@ -961,7 +985,8 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                 data.get("tracking", ""),
                 data["dimension"],
                 data["weight"],
-                col_l_remark
+                col_l_remark,
+                data.get("package_content", ""),
             )
             if sheet_success:
                 box_display = data.get("box_id") or "未提供"
@@ -996,7 +1021,8 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
             data["tracking"],
             data["dimension"],
             data["weight"],
-            col_l_remark
+            col_l_remark,
+            data.get("package_content", ""),
         )
         
         # Send result
