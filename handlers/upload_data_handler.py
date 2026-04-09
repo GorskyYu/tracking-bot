@@ -712,7 +712,7 @@ def handle_upload_trigger(event: Dict[str, Any], redis_client) -> bool:
     # Check permissions
     if not can_use_upload_data(user_id, group_id):
         line_reply(event["replyToken"], "❌ 您沒有權限使用此功能")
-        return True
+        return False
     
     # Initialize session
     _clear_session(redis_client, user_id)
