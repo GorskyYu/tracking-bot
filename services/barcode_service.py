@@ -137,7 +137,7 @@ def _handle_unknown_fedex(img, tracking_number, group_id, redis_client, pending_
         pending_buffer[group_id].append(tracking_number)
         if group_id not in scheduled_buffer:
             scheduled_buffer.add(group_id)
-            threading.Timer(30 * 60, summary_callback, args=[group_id]).start()
+            threading.Timer(15 * 60, summary_callback, args=[group_id]).start()
 
         # 6) Notify
         requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json={
@@ -154,7 +154,7 @@ def _handle_unknown_fedex(img, tracking_number, group_id, redis_client, pending_
         })
 
 
-def handle_barcode_image(event, group_id, redis_client, pending_buffer, scheduled_buffer, summary_callback):
+def handle_barcode_image(event, group_id, redis_client, pending_buffer, scheduled_buffer, summary_callback, not_found_buffer=None):
     """
     處理條碼圖片。
     回傳 True 表示訊息已作為條碼處理完成，主迴圈應結束處理此事件。
@@ -205,6 +205,24 @@ def handle_barcode_image(event, group_id, redis_client, pending_buffer, schedule
             log.info(f"[BARCODE] FedEx cleanup: {tracking_raw} → {tracking_raw[-12:]}")
             tracking_raw = tracking_raw[-12:]
 
+        # Notify group of detected barcode content
+        _reply_token = event.get("replyToken")
+        if _reply_token:
+            requests.post(
+                "https://api.line.me/v2/bot/message/reply",
+                headers={"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"},
+                json={"replyToken": _reply_token, "messages": [{"type": "text", "text": f"掃描條碼：{tracking_raw}"}]}
+            )
+        elif group_id:
+            requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json={
+                "to": group_id,
+                "messages": [{"type": "text", "text": f"掃描條碼：{tracking_raw}"}]
+            })
+
+        # Store tracking for barcode-triggered data input (TTL 10 min)
+        if group_id:
+            redis_client.set(f"barcode_pending:{group_id}", tracking_raw, ex=600)
+
         # (4) Monday.com 搜尋與更新
         q_search = """
         query ($boardId: ID!, $columnId: String!, $value: String!) {
@@ -228,7 +246,18 @@ def handle_barcode_image(event, group_id, redis_client, pending_buffer, schedule
                     daemon=True
                 ).start()
             else:
+                # UPS not found — notify group and Yves, add to error buffer
+                if group_id:
+                    requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json={
+                        "to": group_id,
+                        "messages": [{"type": "text", "text": f"❌ 找不到單號: {tracking_raw}"}]
+                    })
                 requests.post(LINE_PUSH_URL, headers=LINE_HEADERS, json={"to": YVES_USER_ID, "messages": [{"type": "text", "text": f"⚠️ 找不到單號: {tracking_raw}"}]})
+                if not_found_buffer is not None and group_id:
+                    not_found_buffer[group_id].append(tracking_raw)
+                    if group_id not in scheduled_buffer:
+                        scheduled_buffer.add(group_id)
+                        threading.Timer(15 * 60, summary_callback, args=[group_id]).start()
             return True
 
         found_id = items[0]["id"]
@@ -249,7 +278,7 @@ def handle_barcode_image(event, group_id, redis_client, pending_buffer, schedule
         pending_buffer[group_id].append(tracking_raw)
         if group_id not in scheduled_buffer:
             scheduled_buffer.add(group_id)
-            threading.Timer(30*60, summary_callback, args=[group_id]).start()
+            threading.Timer(15*60, summary_callback, args=[group_id]).start()
 
         return True
 

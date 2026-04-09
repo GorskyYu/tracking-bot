@@ -24,13 +24,10 @@ from config import (
     # Group IDs
     ACE_GROUP_ID, SOQUICK_GROUP_ID, VICKY_GROUP_ID, YUMI_GROUP_ID,
     IRIS_GROUP_ID, JOYCE_GROUP_ID, PDF_GROUP_ID,
-    ANGELA_GROUP_ID, JASMINE_GROUP_ID,
     # User IDs
     YVES_USER_ID, GORSKY_USER_ID, VICKY_USER_ID,
     # Sheet URLs
     ACE_SHEET_URL, SQ_SHEET_URL, VICKY_SHEET_URL,
-    # Team Names (for fallback)
-    YVES_NAMES, VICKY_NAMES, YUMI_NAMES,
     # Board IDs
     AIR_BOARD_ID, AIR_PARENT_BOARD_ID, VICKY_SUBITEM_BOARD_ID, VICKY_STATUS_COLUMN_ID,
     # Mappings
@@ -51,7 +48,6 @@ from services.barcode_service import handle_barcode_image
 from services.twws_service import get_twws_value_by_name
 from services.shipment_parser import ShipmentParserService
 from services.line_service import line_push, line_reply, line_push_mention
-from utils.dynamic_names import init_dynamic_names_manager
 
 # 業務邏輯處理器
 from handlers.handlers import (
@@ -61,15 +57,18 @@ from handlers.handlers import (
     handle_soquick_full_notification,
     dispatch_confirmation_notification
 )
-from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event, handle_paid_event, handle_rate_update, handle_credit_event, GROUP_TO_CLIENT_MAP
+from handlers.unpaid_handler import handle_unpaid_event, handle_bill_event, handle_paid_bill_event, handle_paid_event, handle_rate_update, handle_credit_event
 from handlers.vicky_handler import remind_vicky
 from handlers.ups_handler import handle_ups_logic
 from handlers.monday_webhook_handler import handle_monday_webhook
 from handlers.quote_handler import handle_quote_trigger, handle_quote_message, is_in_quote_session
 from handlers.quote_config import get_profile
 from handlers.upload_data_handler import (
-    handle_upload_trigger, handle_upload_message, is_in_upload_session
+    handle_upload_trigger, handle_upload_message, is_in_upload_session,
+    parse_box_id, parse_dimension, parse_weight, parse_hai_yun,
+    upload_to_packing_sheet,
 )
+from services.barcode_service import ACE_PHOTO_GROUP_IDS as BARCODE_PHOTO_GROUPS
 
 # 工作排程
 from jobs.ace_tasks import push_ace_today_shipments
@@ -77,11 +76,7 @@ from jobs.sq_tasks import push_sq_weekly_shipments
 from jobs.scheduler import init_all_schedulers
 
 from sheets import get_gspread_client
-
-# ─── Holiday Helper Function (替代實現) ─────────────────────────────────────────────
-def get_next_holiday():
-    """簡化的假日查詢功能 - 避免依賴外部模組"""
-    return "假日查詢功能暫時維護中，請稍後再試。"
+from holiday_reminder import get_next_holiday
 
 
 # ─── Redis Client ─────────────────────────────────────────────────────────────
@@ -99,6 +94,8 @@ init_all_schedulers()
 # --- In-memory buffers for batch updates --------------------------------------
 _pending: Dict[str, List[str]] = defaultdict(list)
 _scheduled: set = set()
+_not_found: Dict[str, List[str]] = defaultdict(list)   # tracking IDs not found in Monday
+_no_tracking: Dict[str, List[str]] = defaultdict(list) # box IDs scanned but no prior barcode
 
 
 def strip_mention(line: str) -> str:
@@ -107,15 +104,31 @@ def strip_mention(line: str) -> str:
 
 
 def _schedule_summary(group_id: str) -> None:
-    """Called once per 30m window to send the summary and clear the buffer."""
+    """Called once per 15m window to send the summary and clear all buffers."""
     ids = _pending.pop(group_id, [])
+    not_found = _not_found.pop(group_id, [])
+    no_tracking = _no_tracking.pop(group_id, [])
     _scheduled.discard(group_id)
-    if not ids:
+    if not ids and not not_found and not no_tracking:
         return
-    # dedupe and format
-    uniq = sorted(set(ids))
-    text = " Updated packages:\n" + "\n".join(f"- {tid}" for tid in uniq)
-    line_push(group_id, text)
+    lines = []
+    if ids:
+        uniq = sorted(set(ids))
+        lines.append("✅ 已更新包裹：")
+        lines.extend(f"  - {tid}" for tid in uniq)
+    if not_found:
+        uniq_nf = sorted(set(not_found))
+        if lines:
+            lines.append("")
+        lines.append("❌ Monday 找不到單號：")
+        lines.extend(f"  - {tid}" for tid in uniq_nf)
+    if no_tracking:
+        uniq_nt = sorted(set(no_tracking))
+        if lines:
+            lines.append("")
+        lines.append("⚠️ 空運包裹未對應條碼（Box ID）：")
+        lines.extend(f"  - {bid}" for bid in uniq_nt)
+    line_push(group_id, "\n".join(lines))
 
 
 # --- Flask Webhook ------------------------------------------------------------
@@ -134,39 +147,16 @@ CONFIG = {
     'IRIS_NAMES': config.IRIS_NAMES,
     'YVES_NAMES': config.YVES_NAMES,
     'CODE_TRIGGER_RE': CODE_TRIGGER_RE,
-    'ACE_SHEET_URL': ACE_SHEET_URL,
-    'EXCLUDED_SENDERS': config.EXCLUDED_SENDERS,
-    'SENDER_GROUP_MAP': {
-        "Vicky Ku": VICKY_GROUP_ID,
-        "Yumi Liu": YUMI_GROUP_ID,
-        "Iris": IRIS_GROUP_ID,
-        "Lowrance": IRIS_GROUP_ID,
-        "Lawrence": IRIS_GROUP_ID,
-        "Angela": ANGELA_GROUP_ID,
-        "Jasmine": JASMINE_GROUP_ID,
-        "Joyce": JOYCE_GROUP_ID,
-    },
+    'ACE_SHEET_URL': ACE_SHEET_URL
 }
 
-# 先創建 Monday service
+shipment_parser = ShipmentParserService(CONFIG, get_gspread_client, line_push)
+
 monday_service = MondaySyncService(
     api_token=MONDAY_API_TOKEN,
     gspread_client_func=get_gspread_client,
     line_push_func=line_push
 )
-
-# 初始化動態名單管理器
-init_dynamic_names_manager(
-    monday_service=monday_service,
-    fallback_config={
-        'YVES_NAMES': YVES_NAMES,
-        'VICKY_NAMES': VICKY_NAMES,
-        'YUMI_NAMES': YUMI_NAMES,
-    }
-)
-
-# 創建 ShipmentParserService，並傳入 Monday service
-shipment_parser = ShipmentParserService(CONFIG, get_gspread_client, line_push, monday_service)
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
@@ -241,7 +231,7 @@ def webhook():
         # 🟢 新增：圖片條碼辨識邏輯
         if mtype == "image":
             # 呼叫 barcode_service 處理，傳入所需的緩存與回呼函式
-            if handle_barcode_image(event, group_id, r, _pending, _scheduled, _schedule_summary):
+            if handle_barcode_image(event, group_id, r, _pending, _scheduled, _schedule_summary, _not_found):
                 continue  # 如果處理成功（是條碼圖片），則跳過後續邏輯
 
         # 🟢 NEW: TWWS 兩段式互動邏輯 (限定個人私訊且限定 Yves 使用)
@@ -266,7 +256,48 @@ def webhook():
                 line_push(user_id, "好的，請輸入子項目名稱：")
                 continue
 
-        # ─── Quick Quote 報價流程 ─────────────────────────────────────────
+        # ─── Upload Data 流程 ─────────────────────────────────────────────
+        if mtype == "text":
+            if handle_upload_trigger(event, redis_client):
+                continue
+            if is_in_upload_session(redis_client, user_id):
+                if handle_upload_message(event, redis_client):
+                    continue
+
+        # ─── Barcode-triggered Packing Sheet Entry ───────────────────────
+        # If a barcode was scanned recently and this text message contains package data
+        # (box ID + weight or dimensions), write it to 打包資料表 independently.
+        if mtype == "text" and group_id and group_id in BARCODE_PHOTO_GROUPS:
+            barcode_pending_key = f"barcode_pending:{group_id}"
+            last_tracking = redis_client.get(barcode_pending_key)
+            box_id_parsed = parse_box_id(text)
+            dim_parsed = parse_dimension(text)
+            wt_parsed = parse_weight(text)
+            if last_tracking and box_id_parsed and (dim_parsed or wt_parsed):
+                hai_yun_parsed = parse_hai_yun(text)
+                col_l = hai_yun_parsed if hai_yun_parsed else "空運"
+                ok = upload_to_packing_sheet(
+                    box_id=box_id_parsed,
+                    name="",
+                    tracking=last_tracking,
+                    dimension=dim_parsed or "",
+                    weight=wt_parsed or "",
+                    col_l_remark=col_l,
+                )
+                redis_client.delete(barcode_pending_key)
+                if ok:
+                    line_push(group_id, f"✅ 已記錄至打包資料表\n📦 {box_id_parsed} | 🔢 {last_tracking}")
+                else:
+                    line_push(group_id, f"❌ 打包資料表記錄失敗\n📦 {box_id_parsed}")
+                continue
+            elif not last_tracking and box_id_parsed and (dim_parsed or wt_parsed):
+                # Box ID with package data but no prior barcode scan for this group
+                _no_tracking[group_id].append(box_id_parsed)
+                if group_id not in _scheduled:
+                    _scheduled.add(group_id)
+                    threading.Timer(15 * 60, _schedule_summary, args=[group_id]).start()
+
+        # ─── Quick Quote 報價流程 ────────────────────────────────────────────
         if mtype == "text" and text == "開始報價":
             profile = get_profile(group_id, user_id)
             if profile:
@@ -279,19 +310,8 @@ def webhook():
             if handle_quote_message(event, user_id, group_id, text, r):
                 continue
 
-        # ─── Upload Data 上傳資料流程 ───────────────────────────────────────
-        if mtype == "text":
-            # Check for trigger
-            if handle_upload_trigger(event, r):
-                continue
-            
-            # If user is in an active upload session, route message there
-            if is_in_upload_session(r, user_id):
-                if handle_upload_message(event, r):
-                    continue
-
-        # --- 費用錄入邏輯：允許在所有支援 PDF 的群組觸發 ---
-        if group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, JOYCE_GROUP_ID, IRIS_GROUP_ID, PDF_GROUP_ID, ACE_GROUP_ID, SOQUICK_GROUP_ID}:
+        # --- 費用錄入邏輯：僅限 PDF Scanning 群組觸發 ---
+        if group_id == PDF_GROUP_ID:
             redis_val = r.get("global_last_pdf_parent")
             # 檢查是否有待錄入的 PDF 項目 且 訊息看起來像數字輸入
             if redis_val and "|" in redis_val and re.match(r'^\d+(?:\.\d+)?(?:[\s,;]+\d+(?:\.\d+)?)*$', text.strip()):
@@ -372,67 +392,31 @@ def webhook():
                         continue
 
 
-
-                # ── 空運 / 海運 PDF：需要 3 個數值 (或 2 個數值自動拆分) ──
+                # ── 空運 / 海運 PDF：需要 3 個數值 ──
                 else:
                     if len(nums) == 3:
                         expense, canada_price, intl_price = nums
                         ok, msg, item_name = monday_service.update_expense_and_rates(
                             last_pid, expense, canada_price, intl_price, last_bid, last_sub_bid, False
                         )
-                    elif len(nums) == 2:
-                        # [成本] [合拼單價]
-                        expense, total_unit = nums
-                        pkg_count, pkg_weight = monday_service.get_subitem_metrics(last_pid)
-                        
-                        # Sea freight: Intl=5, Air freight: Intl=10 or 14 based on weight
-                        is_sea_freight = (pdf_type == "sea")
-                        
-                        if is_sea_freight:
-                            intl_price = 5.0
-                            canada_price = total_unit - 5.0
-                            logic_msg = f"(海運 -> 國際5)"
-                        elif pkg_count == 1 and 0 < pkg_weight < 3.0:
-                            intl_price = 14.0
-                            canada_price = total_unit - 14.0
-                            logic_msg = f"(1包裹且{pkg_weight}kg<3kg -> 國際14)"
-                        else:
-                            intl_price = 10.0
-                            canada_price = total_unit - 10.0
-                            logic_msg = f"(空運一般 -> 國際10)"
-
-                        ok, msg, item_name = monday_service.update_expense_and_rates(
-                            last_pid, expense, canada_price, intl_price, last_bid, last_sub_bid, False
-                        )
-                        # Append logic explanation to success message
                         if ok:
-                            msg += f" {logic_msg}"
-
+                            line_push(group_id,
+                                f"✅ 錄入成功\n"
+                                f"📌 項目: {item_name}\n"
+                                f"💰 加境內支出: ${expense}\n"
+                                f"🇨🇦 加拿大單價: ${canada_price}\n"
+                                f"🌍 國際單價: ${intl_price}")
+                            r.delete("global_last_pdf_parent")
+                        else:
+                            line_push(group_id, f"❌ 錄入失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
+                        continue
                     else:
                         line_push(group_id,
-                            f"❌ 格式錯誤！空運/海運 PDF 請輸入 3 個數值 (直接指定) 或 2 個數值 (自動拆分)：\n"
-                            f"格式1: [加境內支出] [加拿大單價] [國際單價]\n"
-                            f"格式2: [加境內支出] [合計單價]\n"
+                            f"❌ 格式錯誤！空運/海運 PDF 請輸入 3 個數值：\n"
+                            f"[加境內支出] [加拿大單價] [國際單價]\n"
+                            f"例如：43.10 2.5 10\n"
                             f"⚠️ 如某欄為 0 請輸入 0")
                         continue
-
-                    # Common success logic for both branches
-                    if ok:
-                        success_msg = (
-                            f"✅ 錄入成功\n"
-                            f"📌 項目: {item_name}\n"
-                            f"💰 加境內支出: ${expense}\n"
-                            f"🇨🇦 加拿大單價: ${canada_price}\n"
-                            f"🌍 國際單價: ${intl_price}"
-                        )
-                        if 'logic_msg' in locals():
-                            success_msg += f"\n💡 計算邏輯: {logic_msg}"
-                        
-                        line_push(group_id, success_msg)
-                        r.delete("global_last_pdf_parent")
-                    else:
-                        line_push(group_id, f"❌ 錄入失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
-                    continue
 
 
         # ─── 查看帳單觸發入口 ───
@@ -468,21 +452,21 @@ def webhook():
                 ):
                     continue
         
-        # 目前功能指令 (僅限管理員私訊 或 PDF群組)
-        if text.strip() in ["目前功能", "目前可用人頭", "全群組可用人頭"] or text.startswith("help:") or text.startswith("可用人頭:"):
+        # 目前功能指令 (僅限管理員私訊)
+        if text.strip() == "目前功能" or text.startswith("help:"):
             current_user_id = src.get("userId")
             current_group_id = src.get("groupId")
             is_admin = (current_user_id == YVES_USER_ID or current_user_id == GORSKY_USER_ID)
             
             # Allow "help:..." in DMs or if admin wants to debug, but mainly for "目前功能" menu
-            # "目前功能" should be DM only to avoid spamming groups, except for PDF group
-            if is_admin and (not current_group_id or current_group_id == PDF_GROUP_ID):
+            # "目前功能" should be DM only to avoid spamming groups
+            if is_admin and not current_group_id:
                 handle_unpaid_event(
-                    current_group_id if current_group_id else current_user_id,  # sender_id (group or user)
-                    text,             # message_text
-                    event["replyToken"],  # reply_token
+                    current_user_id,  # sender_id (positional)
+                    text,             # message_text (positional)
+                    event["replyToken"],  # reply_token (positional)
                     user_id=current_user_id,
-                    group_id=current_group_id
+                    group_id=None
                 )
                 continue
         
@@ -492,13 +476,13 @@ def webhook():
             group_id = src.get("groupId")
 
             # 1. 判斷是否為管理員
-            is_admin = user_id in {YVES_USER_ID, GORSKY_USER_ID, VICKY_USER_ID}
+            is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
             
             # 2. 判斷是否為有效的自動查詢群組
-            is_valid_group = group_id in GROUP_TO_CLIENT_MAP
+            is_valid_group = group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, IRIS_GROUP_ID}
 
-            # 🟢 管理員或在指定群組內可使用 unpaid 指令
-            can_trigger = is_admin or is_valid_group
+            # 🟢 新邏輯：管理員隨時可用；一般成員僅限在指定群組內輸入 "unpaid"
+            can_trigger = is_admin or (is_valid_group and text.lower() == "unpaid")
 
             if can_trigger:
                 handle_unpaid_event(
@@ -559,7 +543,7 @@ def webhook():
             shipment_parser.handle_missing_confirm(event)   # 負責 Iris 分流與發送 Sender 給 Yves
             continue
 
-        # 4) 處理「申報相符」通知分流
+        # 4) 處理「申報相符」通知分流 (包含 Danny 自動觸發與管理員手動觸發)
         if dispatch_confirmation_notification(event, text, user_id):
             continue
         
@@ -589,12 +573,12 @@ def webhook():
             handle_soquick_and_ace_shipments(event)
             continue
 
-        # 7) Soquick "請通知…申報相符" messages and manual admin notifications
+        # 7) Soquick "請通知…申報相符" messages
 
         if (group_id in (SOQUICK_GROUP_ID, ACE_GROUP_ID)
-            and "申報相符" in text
-            and ("您好，請" in text or ("還沒" in text and "按" in text))):
-            log.info("[MAIN_DEBUG] Message matched soquick handler conditions - calling handle_soquick_full_notification")
+            and "您好，請" in text
+            and "按" in text
+            and "申報相符" in text):
             shipment_parser.handle_soquick_full_notification(event)
             continue          
 
