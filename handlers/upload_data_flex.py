@@ -41,6 +41,8 @@ def build_data_confirm_flex(data: Dict[str, Any]) -> dict:
     
     if data.get("box_id"):
         content_box.append(_kv_row("📦 Box ID", data["box_id"], "#0066cc"))
+    elif data.get("hai_yun"):
+        content_box.append(_kv_row("📦 Box ID", "⬜ 選填（海運）", "#888888"))
     else:
         content_box.append(_kv_row("📦 Box ID", "❌ 未提供", "#dc3545"))
     
@@ -61,17 +63,24 @@ def build_data_confirm_flex(data: Dict[str, Any]) -> dict:
     
     if data.get("tracking"):
         content_box.append(_kv_row("🔢 追蹤編號", data["tracking"], "#0066cc"))
+    elif data.get("hai_yun"):
+        content_box.append(_kv_row("🔢 追蹤編號", "⬜ 海運免填", "#888888"))
     else:
         content_box.append(_kv_row("🔢 追蹤編號", "⚠️ 未提供(將搜尋)", "#ffc107"))
 
     if data.get("hai_yun"):
         content_box.append(_kv_row("🚢 運送方式", data["hai_yun"], "#0066cc"))
+    elif data.get("kong_yun"):
+        content_box.append(_kv_row("✈️ 運送方式", data["kong_yun"], "#0066cc"))
     
     # Add instruction text
     body.append({"type": "separator", "margin": "lg"})
     
-    missing_fields = [k for k in ["box_id", "name", "dimension", "weight"] 
-                     if not data.get(k)]
+    missing_fields = (
+        [k for k in ["name", "dimension", "weight"] if not data.get(k)]
+        if data.get("hai_yun")
+        else [k for k in ["box_id", "name", "dimension", "weight"] if not data.get(k)]
+    )
     
     if missing_fields:
         body.append({

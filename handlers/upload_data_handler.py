@@ -191,6 +191,9 @@ def parse_name(text: str, existing_data: Dict[str, Any]) -> Optional[str]:
     cleaned = re.sub(r'\b1Z[A-Z0-9]{16}\b', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\b\d{12}\b', '', cleaned)
     
+    # Remove transport mode keywords so they don't pollute the name
+    cleaned = re.sub(r'海[運运]|空[運运]', '', cleaned)
+    
     # Clean up whitespace and punctuation
     cleaned = re.sub(r'[*×x\s\-_/\\]+', ' ', cleaned)
     cleaned = cleaned.strip()
@@ -206,6 +209,13 @@ def parse_hai_yun(text: str) -> Optional[str]:
     """Detect 海運 (ocean freight) in the message (traditional or simplified Chinese)."""
     if re.search(r'海[運运]', text):
         return "海運"
+    return None
+
+
+def parse_kong_yun(text: str) -> Optional[str]:
+    """Detect 空運 (air freight) in the message (traditional or simplified Chinese)."""
+    if re.search(r'空[運运]', text):
+        return "空運"
     return None
 
 
@@ -247,12 +257,21 @@ def parse_message(text: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
         if hai_yun:
             data["hai_yun"] = hai_yun
     
+    if not data.get("kong_yun"):
+        kong_yun = parse_kong_yun(text)
+        if kong_yun:
+            data["kong_yun"] = kong_yun
+    
     return data
 
 
 def is_data_complete(data: Dict[str, Any]) -> bool:
     """Check if all required fields are present."""
-    required = ["box_id", "name", "dimension", "weight"]
+    # 海運 packages don't require box_id or tracking number
+    if data.get("hai_yun"):
+        required = ["name", "dimension", "weight"]
+    else:
+        required = ["box_id", "name", "dimension", "weight"]
     return all(data.get(field) for field in required)
 
 
@@ -597,17 +616,17 @@ def upload_to_monday(tracking_no: str, dimensions: str, weight: str, box_id: str
 
 # ─── 打包資料表 Upload Function ───────────────────────────────────────────────
 
-def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str, hai_yun: str = "") -> bool:
+def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str, col_l_remark: str = "") -> bool:
     """
     Upload data to 打包資料表 Form Responses 1 if tracking not already present.
     
     Args:
         box_id: Box ID (e.g., YL123)
         name: Sender name or client ID
-        tracking: Tracking number or timestamp
+        tracking: Tracking number or timestamp (may be empty for 海運 packages)
         dimension: Dimension string (e.g., "40*62*32cm")
         weight: Weight string (e.g., "12.15kg")
-        hai_yun: "海運" if detected in the message, otherwise empty string
+        col_l_remark: Value for col L 其他備註（要拆）(e.g. "海運" or "空運")
         
     Returns:
         True if successful, False otherwise
@@ -623,12 +642,12 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         col_b_idx = header_map.get("廠商編號", 1)       # fallback: column B (index 1)
         col_l_idx = header_map.get("其他備註（要拆）", 11)  # fallback: column L (index 11)
         
-        # Check if tracking already exists in column H
-        col_h_values = ws.col_values(8)  # Column H
-        
-        if tracking in col_h_values:
-            log.info(f"[UPLOAD] Tracking {tracking} already exists in packing sheet")
-            return True  # Already exists, consider it success
+        # Check if tracking already exists in column H (skip when tracking is empty)
+        if tracking:
+            col_h_values = ws.col_values(8)  # Column H
+            if tracking in col_h_values:
+                log.info(f"[UPLOAD] Tracking {tracking} already exists in packing sheet")
+                return True  # Already exists, consider it success
         
         # Prepare row data
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -650,17 +669,19 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         row_data[10] = weight_clean   # K: Weight (without kg)
         
         # Determine col B (廠商編號) and col L (其他備註（要拆）) values
-        if hai_yun:
+        if col_l_remark == "海運":
             if box_id:
                 # Box ID present: col B = box_id, col L = 海運
                 row_data[col_b_idx] = box_id
-                row_data[col_l_idx] = hai_yun
+                row_data[col_l_idx] = col_l_remark
             else:
                 # No box ID: col B = 海運, col L = 海運
-                row_data[col_b_idx] = hai_yun
-                row_data[col_l_idx] = hai_yun
+                row_data[col_b_idx] = col_l_remark
+                row_data[col_l_idx] = col_l_remark
         else:
             row_data[col_b_idx] = box_id  # Normal: col B = box_id
+            if col_l_remark:              # e.g. 空運
+                row_data[col_l_idx] = col_l_remark
         
         ws.append_row(row_data)
         log.info(f"[UPLOAD] Successfully added to packing sheet: {tracking}")
@@ -706,7 +727,9 @@ def handle_upload_trigger(event: Dict[str, Any], redis_client) -> bool:
               "• 寄件人/客戶名稱\n"
               "• 尺寸 (長*寬*高cm)\n"
               "• 重量 (kg)\n"
-              "• 追蹤編號 (選填)\n\n"
+              "• 追蹤編號 (選填)\n"
+              "• 運送方式：空運 / 海運（簡體：空运 / 海运）\n\n"
+              "⚠️ 海運包裹：僅寫入打包資料表，不推送 Monday，請事後補充追蹤編號\n\n"
               "輸入 'end' 結束此模式")
     
     return True
@@ -762,7 +785,12 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
         if text == "確認上傳資料":
             data = _get_data(redis_client, user_id)
             
-            # Check if we need to search for tracking
+            # 海運 path: skip tracking search, write to packing sheet only
+            if data.get("hai_yun"):
+                _process_upload(redis_client, user_id, reply_token, data)
+                return True
+            
+            # Normal / 空運 path: need tracking
             if not data.get("tracking"):
                 matches = search_air_form_matches(data["name"])
                 
@@ -782,7 +810,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 if not valid_matches:
                     line_reply(reply_token,
                               "⚠️ 找到記錄但資料不完整\n"
-                              "請手動輸入追蹤編號，或選擇重新開始")
+                              "請手動輸入追蹤編號，或選擇重新開始，或輸入 'end' 結束")
                     return True
                 
                 elif len(valid_matches) == 1:
@@ -847,12 +875,44 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
 def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str, Any]):
     """Process the actual upload to Monday and packing sheet."""
     try:
+        hai_yun = data.get("hai_yun", "")
+        kong_yun = data.get("kong_yun", "")
+        col_l_remark = hai_yun if hai_yun else (kong_yun if kong_yun else "")
+        
+        if hai_yun:
+            # ── 海運 path: packing sheet only, skip Monday ──────────────────
+            sheet_success = upload_to_packing_sheet(
+                data.get("box_id", ""),
+                data["name"],
+                data.get("tracking", ""),
+                data["dimension"],
+                data["weight"],
+                col_l_remark
+            )
+            if sheet_success:
+                box_display = data.get("box_id") or "未提供"
+                msg = (f"✅ 海運記錄已寫入打包資料表！\n\n"
+                      f"📦 Box ID: {box_display}\n"
+                      f"👤 寄件人: {data['name']}\n"
+                      f"📏 尺寸: {data['dimension']}\n"
+                      f"⚖️ 重量: {data['weight']}\n\n"
+                      f"⚠️ 提醒：請至打包資料表補充追蹤編號，\n"
+                      f"並自行推送資料至 Monday\n\n"
+                      f"繼續輸入資料，或輸入 'end' 結束")
+            else:
+                msg = "❌ 打包資料表記錄失敗，請重試\n\n輸入重新開始或 'end' 結束"
+            line_reply(reply_token, msg)
+            _set_state(redis_client, user_id, "collecting")
+            _set_data(redis_client, user_id, {})
+            return
+        
+        # ── Normal / 空運 path: Monday + packing sheet ──────────────────────
         # Upload to Monday
         monday_success = upload_to_monday(
             data["tracking"],
             data["dimension"],
             data["weight"],
-            data["box_id"]
+            data.get("box_id", "")
         )
         
         # Upload to packing sheet
@@ -862,13 +922,13 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
             data["tracking"],
             data["dimension"],
             data["weight"],
-            data.get("hai_yun", "")
+            col_l_remark
         )
         
         # Send result
         if monday_success and sheet_success:
             msg = (f"✅ 資料上傳成功！\n\n"
-                  f"📦 Box ID: {data['box_id']}\n"
+                  f"📦 Box ID: {data.get('box_id', '未提供')}\n"
                   f"👤 寄件人: {data['name']}\n"
                   f"🔢 追蹤編號: {data['tracking']}\n"
                   f"📏 尺寸: {data['dimension']}\n"
