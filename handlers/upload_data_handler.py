@@ -82,8 +82,8 @@ def _set_reply_token(r, uid, token):
 # ─── Data Parsers ─────────────────────────────────────────────────────────────
 
 def parse_box_id(text: str) -> Optional[str]:
-    """Parse Box ID in format YL followed by 2-3 digits."""
-    match = re.search(r'\bYL(\d{2,3})\b', text, re.IGNORECASE)
+    """Parse Box ID in format YL followed by 2-4 digits."""
+    match = re.search(r'\bYL(\d{2,4})\b', text, re.IGNORECASE)
     if match:
         return f"YL{match.group(1)}"
     return None
@@ -179,7 +179,7 @@ def parse_name(text: str, existing_data: Dict[str, Any]) -> Optional[str]:
     cleaned = text
     
     # Remove box ID
-    cleaned = re.sub(r'\bYL\d{2,3}\b', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bYL\d{2,4}\b', '', cleaned, flags=re.IGNORECASE)
     
     # Remove dimensions
     cleaned = re.sub(r'\d+[×x*\s]+\d+[×x*\s]+\d+\s*(cm|in|inch|吋|公分|")?', '', cleaned, flags=re.IGNORECASE)
