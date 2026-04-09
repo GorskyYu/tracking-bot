@@ -156,12 +156,27 @@ def parse_tracking(text: str) -> Optional[str]:
     """
     Parse tracking number:
     - UPS: starts with 1Z followed by 16 more characters
+      Also handles spaced/OCR formats, e.g.:
+        "1Z HFO 545 20 2469 1579"  (spaces + O→0 substitution)
+        "TRK  4USUIVI: 1Z HFO 545 20 2469 1579"  (messy prefix)
     - FedEx: 12 digits (continuous or spaced as 4-4-4, e.g. "8898 6250 8870")
     """
-    # UPS format: 1Z + 16 characters
+    # UPS compact format: 1Z + 16 characters (no spaces)
     ups_match = re.search(r'\b(1Z[A-Z0-9]{16})\b', text, re.IGNORECASE)
     if ups_match:
         return ups_match.group(1).upper()
+
+    # UPS spaced/OCR format: find "1Z" (possibly preceded by garbage) then
+    # collect up to 16 alphanumeric tokens, strip spaces, fix O→0
+    ups_spaced = re.search(r'1Z\s*([A-Z0-9O\s]{10,40})', text, re.IGNORECASE)
+    if ups_spaced:
+        # Take everything after '1Z', collapse spaces, substitute letter-O with zero
+        raw = ups_spaced.group(1)
+        raw = re.sub(r'\s+', '', raw)        # remove all spaces
+        raw = re.sub(r'(?<=[A-Z])O(?=[A-Z0-9])|(?<=[0-9])O|O(?=[0-9])', '0', raw, flags=re.IGNORECASE)
+        candidate = ("1Z" + raw)[:18].upper()  # 1Z + 16 chars = 18 total
+        if re.fullmatch(r'1Z[A-Z0-9]{16}', candidate, re.IGNORECASE):
+            return candidate
 
     # FedEx format: 12 digits continuous
     fedex_match = re.search(r'\b(\d{12})\b', text)
@@ -192,13 +207,18 @@ def parse_name(text: str, existing_data: Dict[str, Any]) -> Optional[str]:
 
     # Remove dimensions
     cleaned = re.sub(r'\d+[×x*\s]+\d+[×x*\s]+\d+\s*(cm|in|inch|吋|公分|")?', '', cleaned, flags=re.IGNORECASE)
+
+    # Remove tracking BEFORE weight so the leading '1' in '1ZHF...' isn't
+    # stripped first (which would leave 'ZHF...' to be misread as a name)
+    cleaned = re.sub(r'\b1Z[A-Z0-9]{16}\b', '', cleaned, flags=re.IGNORECASE)
     
+    # Also remove spaced/prefixed UPS formats like '1Z HFO 545 20 ...' or 'TRK ...: 1Z HFO ...'
+    cleaned = re.sub(r'(?:[A-Z0-9_:\s]{0,20})?\b1Z\s*[A-Z0-9O\s]{10,40}', '', cleaned, flags=re.IGNORECASE)
+    
+    cleaned = re.sub(r'\b\d{12}\b', '', cleaned)
+
     # Remove weight
     cleaned = re.sub(r'\d+(?:\.\d+)?\s*(kg|lbs?|公斤|磅)?', '', cleaned, flags=re.IGNORECASE)
-    
-    # Remove tracking
-    cleaned = re.sub(r'\b1Z[A-Z0-9]{16}\b', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\b\d{12}\b', '', cleaned)
     
     # Remove transport mode keywords so they don't pollute the name
     cleaned = re.sub(r'海[運运]|空[運运]', '', cleaned)
