@@ -32,6 +32,7 @@ UPLOAD_TTL = 600  # 10 minutes
 # Google Sheet IDs
 AIR_FORM_SHEET_ID = "1BgmCA1DSotteYMZgAvYKiTRWEAfhoh7zK9oPaTTyt9Q"
 PACKING_SHEET_ID = "1vn_LSZlMGNlhId1N8hBjX-r3sptlw5liPd3nGpdAhsY"
+OCEAN_FORM_SHEET_ID = "1ziOWeUxNHkGaX4hfQ-lQkTXULBk2Lbdxitsh0fHniaE"
 
 
 # ─── Redis Key Helpers ────────────────────────────────────────────────────────
@@ -155,18 +156,23 @@ def parse_tracking(text: str) -> Optional[str]:
     """
     Parse tracking number:
     - UPS: starts with 1Z followed by 16 more characters
-    - FedEx: 12 digits
+    - FedEx: 12 digits (continuous or spaced as 4-4-4, e.g. "8898 6250 8870")
     """
     # UPS format: 1Z + 16 characters
     ups_match = re.search(r'\b(1Z[A-Z0-9]{16})\b', text, re.IGNORECASE)
     if ups_match:
         return ups_match.group(1).upper()
-    
-    # FedEx format: 12 digits
+
+    # FedEx format: 12 digits continuous
     fedex_match = re.search(r'\b(\d{12})\b', text)
     if fedex_match:
         return fedex_match.group(1)
-    
+
+    # FedEx format: 4-4-4 spaced (e.g. "8898 6250 8870")
+    spaced_match = re.search(r'\b(\d{4})\s+(\d{4})\s+(\d{4})\b', text)
+    if spaced_match:
+        return spaced_match.group(1) + spaced_match.group(2) + spaced_match.group(3)
+
     return None
 
 
@@ -177,10 +183,13 @@ def parse_name(text: str, existing_data: Dict[str, Any]) -> Optional[str]:
     """
     # Remove other parsed fields from text
     cleaned = text
-    
+
     # Remove box ID
     cleaned = re.sub(r'\bYL\d{2,4}\b', '', cleaned, flags=re.IGNORECASE)
-    
+
+    # Remove spaced FedEx tracking (4-4-4) before dimension cleanup eats it
+    cleaned = re.sub(r'\b\d{4}\s+\d{4}\s+\d{4}\b', '', cleaned)
+
     # Remove dimensions
     cleaned = re.sub(r'\d+[×x*\s]+\d+[×x*\s]+\d+\s*(cm|in|inch|吋|公分|")?', '', cleaned, flags=re.IGNORECASE)
     
@@ -251,7 +260,7 @@ def parse_message(text: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
         name = parse_name(text, data)
         if name:
             data["name"] = name
-    
+
     if not data.get("hai_yun"):
         hai_yun = parse_hai_yun(text)
         if hai_yun:
@@ -261,7 +270,16 @@ def parse_message(text: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
         kong_yun = parse_kong_yun(text)
         if kong_yun:
             data["kong_yun"] = kong_yun
-    
+
+    # Auto-lookup name from tracking when name is missing
+    if not data.get("name") and data.get("tracking"):
+        is_kong = bool(data.get("kong_yun"))
+        is_hai = bool(data.get("hai_yun"))
+        if is_kong or is_hai:
+            found_name = lookup_name_by_tracking(data["tracking"], is_kong, is_hai)
+            if found_name:
+                data["name"] = found_name
+
     return data
 
 
@@ -348,6 +366,59 @@ def search_air_form_matches(name_or_id: str) -> List[Dict[str, str]]:
     except Exception as e:
         log.error(f"[UPLOAD] Error searching air form: {e}", exc_info=True)
         return []
+
+
+# ─── Tracking-Based Name Lookup ───────────────────────────────────────────────
+
+def lookup_name_by_tracking(tracking: str, kong_yun: bool, hai_yun: bool) -> Optional[str]:
+    """
+    Search 空運資料表 (Tracking tab) or 海運資料表 (Workspace tab) for the
+    tracking number in cols 追蹤碼1/追蹤碼2/追蹤碼3 and return ABB會員帳號.
+    """
+    try:
+        gs = get_gspread_client()
+        if kong_yun:
+            ss = gs.open_by_key(AIR_FORM_SHEET_ID)
+            ws = ss.worksheet("Tracking")
+        elif hai_yun:
+            ss = gs.open_by_key(OCEAN_FORM_SHEET_ID)
+            ws = ss.worksheet("Workspace")
+        else:
+            return None
+
+        headers = ws.row_values(1)
+        header_map = {h.strip(): i for i, h in enumerate(headers)}
+
+        tracking_cols = [
+            header_map[col]
+            for col in ("追蹤碼1", "追蹤碼2", "追蹤碼3")
+            if col in header_map
+        ]
+        abb_col = header_map.get("ABB會員帳號")
+
+        if not tracking_cols or abb_col is None:
+            log.warning("[UPLOAD] Sheet missing 追蹤碼1/2/3 or ABB會員帳號 columns")
+            return None
+
+        all_rows = ws.get_all_values()
+        tracking_lower = tracking.lower()
+
+        for row in all_rows[1:]:
+            if len(row) <= abb_col:
+                continue
+            for col_idx in tracking_cols:
+                if col_idx < len(row) and row[col_idx].strip().lower() == tracking_lower:
+                    abb = row[abb_col].strip()
+                    if abb:
+                        log.info(f"[UPLOAD] Found ABB account '{abb}' for tracking {tracking}")
+                        return abb
+
+        log.info(f"[UPLOAD] No ABB account found for tracking {tracking}")
+        return None
+
+    except Exception as e:
+        log.error(f"[UPLOAD] Error looking up name by tracking: {e}", exc_info=True)
+        return None
 
 
 # ─── Helper: Ensure Unique Timestamp ─────────────────────────────────────────
