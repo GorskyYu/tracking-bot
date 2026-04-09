@@ -68,6 +68,7 @@ from handlers.upload_data_handler import (
     parse_box_id, parse_dimension, parse_weight, parse_hai_yun,
     upload_to_packing_sheet,
 )
+from handlers.upload_data_config import can_use_upload_data
 from services.barcode_service import ACE_PHOTO_GROUP_IDS as BARCODE_PHOTO_GROUPS
 
 # 工作排程
@@ -260,7 +261,10 @@ def webhook():
         if mtype == "text":
             if handle_upload_trigger(event, redis_client):
                 continue
-            if is_in_upload_session(redis_client, user_id):
+            # Only route to upload session if the current context is allowed
+            # (Ken's group or Yves/Gorsky private chat). This prevents an active
+            # session from intercepting messages sent in other group chats.
+            if is_in_upload_session(redis_client, user_id) and can_use_upload_data(user_id, group_id):
                 if handle_upload_message(event, redis_client):
                     continue
 

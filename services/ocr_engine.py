@@ -4,7 +4,6 @@ import json
 import base64
 import re
 import logging
-from datetime import datetime
 import fitz  # PyMuPDF: Converts PDF pages to images
 import openai
 from PIL import Image # Pillow: For rotation and precise cropping
@@ -40,32 +39,21 @@ Response Format:
 
 # STRICT FEDEX PROMPT: Expanded to capture Receiver Address for routing.
 FEDEX_SHIPPING_PROMPT = """
-Task: Extract sender and receiver info from this FedEx shipping label.
-IMPORTANT: Only extract text that is ACTUALLY PRINTED on the label.
-If a field is not clearly visible or does not exist, return an empty string "".
-Do NOT guess or invent any data.
+Task: Extract sender info and receiver info from this FedEx label.
+Focus on the "TO" section for receiver address, and "FROM" for sender.
 
-Look for:
-- "FROM" section: sender name, phone number, and client code/alias
-- "TO" section: receiver name, full street address, postal/ZIP code
-- Multiple reference fields may exist: "REF:", "INV:", "PO:"
-  PRIORITY: Extract the value from "REF:" field FIRST if it exists.
-  If no "REF:", then use "INV:", then "PO:" as fallback.
-  Return ONLY the value after the colon (no prefix).
-
-Response JSON (every value must be a string):
+Response JSON:
 {
   "sender": {
-    "name": "personal name only from the FROM section",
-    "phone": "phone number near FROM, or empty",
-    "client_id": "shop/alias code or empty"
+    "name": "string (From name)",
+    "client_id": "string (lines under name)"
   },
   "receiver": {
-    "name": "exact name from the TO section",
-    "address": "full street address from TO section",
-    "postal_code": "ZIP or postal code e.g. V6X 1Z7"
+    "name": "string (To name)",
+    "address": "string (Full address line)",
+    "postal_code": "string (ZIP/Postal code e.g. V6X 1Z7)"
   },
-  "reference_number": "VALUE AFTER REF: (timestamp, number, etc.) - NO LABEL PREFIX, or empty if none"
+  "reference_number": "string (Ref #, PO #, Invoice #)"
 }
 """
 
@@ -73,7 +61,7 @@ class OCRAgent:
     def __init__(self):
         """Initializes the worker with your OpenAI API keys."""
         self.api_key = os.getenv("OPENAI_API_KEY")
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o") # UPGRADE to gpt-4o for reliability
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.client = openai.Client(api_key=self.api_key)
 
     # --- SECTION 2: IMAGE PRE-PROCESSING (THE EYES) ---
@@ -83,11 +71,9 @@ class OCRAgent:
         images = []
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         for page in doc:
-            # Strip /Rotate before rendering.
-            # FedEx (and most shipping) PDFs draw content in correct reading
-            # orientation already; the /Rotate tag is for PDF-viewer display
-            # and causes PyMuPDF to produce a rotated image that confuses OCR.
-            page.set_rotation(0)
+            # FORCE the exact rotation that worked for your grid
+            page.set_rotation(-45) 
+                
             pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             images.append(img)
@@ -126,9 +112,7 @@ class OCRAgent:
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
         ]}]
         
-        response = self.client.chat.completions.create(
-            model=self.model, messages=messages, temperature=0
-        )
+        response = self.client.chat.completions.create(model=self.model, messages=messages)
         content = re.sub(r"```json|```", "", response.choices[0].message.content.strip()).strip()
         try:
             return json.loads(content)
@@ -155,9 +139,10 @@ class OCRAgent:
             # We capture the Sender, Client ID, and Reference in ONE box.
             log.info("[OCR] FedEx detected. Running Single-Zone extraction.")
             
-            # Send the FULL label image — cropping removes context and
-            # increases hallucination risk with smaller vision models.
+            # Expanded Area to capture 'TO' address (Top 60%)
+            # (Left: 0.0, Top: 0.0, Right: 1.0, Bottom: 0.60)
             res = self.extract_from_image(img, FEDEX_SHIPPING_PROMPT, 
+                                          crop_area=(0.0, 0.0, 1.0, 0.60), 
                                           debug_name="fedex_single_area_scan")
 
             data = {
@@ -168,26 +153,11 @@ class OCRAgent:
             }
 
             # --- Fedex Reference Number清洗邏輯 ---
-            # The reference_number from GPT-4o is already the prioritized value without the "REF:" prefix
-            # We just need to remove the trailing -N suffix
-            raw_ref = (data.get("reference_number") or "").strip()
+            raw_ref = data.get("reference_number", "")
             if raw_ref:
-                # If the ref looks like a date/timestamp (YYYY-MM-DD ...), preserve it;
-                # otherwise strip trailing -N / .N suffixes.
-                if re.match(r'^\d{4}[-/]\d{2}[-/]\d{2}', raw_ref):
-                    clean_ref = raw_ref
-                    # GPT-4o vision sometimes misreads year digits (e.g. 2026 → 2023).
-                    # Correct the year to the current year for timestamp-style refs.
-                    ts_match = re.match(r'^(\d{4})([-/]\d{2}[-/]\d{2}.*)$', clean_ref)
-                    if ts_match:
-                        ref_year = int(ts_match.group(1))
-                        current_year = datetime.now().year
-                        if ref_year != current_year:
-                            clean_ref = str(current_year) + ts_match.group(2)
-                            log.info(f"[OCR FIX] Year corrected: {ref_year} -> {current_year}")
-                else:
-                    # Remove trailing -digit or .digit suffix (e.g., "-1", "-2", ".1")
-                    clean_ref = re.sub(r'[-\.]\d+$', '', raw_ref).strip()
+                # 使用 Regex 正則表達式移除結尾的 -1, -2 等後綴
+                # r'-\d+$' 表示匹配字串結尾的「橫槓+數字」
+                clean_ref = re.sub(r'-\d+$', '', raw_ref).strip()
                 data["reference_number"] = clean_ref
                 log.info(f"[OCR CLEAN] Original: {raw_ref} -> Cleaned: {clean_ref}")
 
