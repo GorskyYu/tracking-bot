@@ -723,12 +723,15 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         # Prepare row data
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Remove units from dimension and weight for sheet storage
-        # Dimension: "52*52*41cm" → "52*52*41"
-        dimension_clean = dimension.replace("cm", "").replace("CM", "").strip()
+        # Strip unit suffix from dimension (parse_dimension returns "43*14*34cm")
+        dimension_clean = re.sub(r'\s*(cm|公分)\s*$', '', dimension, flags=re.IGNORECASE).strip()
         
-        # Weight: "18.50kg" → "18.50"
-        weight_clean = weight.replace("kg", "").replace("KG", "").strip()
+        # Weight: strip unit and convert to float so Google Sheets stores as a number
+        weight_str = re.sub(r'\s*(kg|公斤)\s*$', '', weight, flags=re.IGNORECASE).strip()
+        try:
+            weight_value = float(weight_str)
+        except (ValueError, TypeError):
+            weight_value = weight_str  # fallback: keep as string if unparseable
         
         # Build row with enough columns to cover col L
         num_cols = max(col_l_idx + 1, 12)
@@ -736,8 +739,8 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         row_data[0] = timestamp       # A: timestamp
         row_data[4] = name            # E: Sender Name/Client ID
         row_data[7] = tracking        # H: Tracking ID
-        row_data[8] = dimension_clean # I: Dimension (without cm)
-        row_data[10] = weight_clean   # K: Weight (without kg)
+        row_data[8] = dimension_clean # I: Dimension (no unit)
+        row_data[10] = weight_value   # K: Weight as number
         
         # Determine col B (廠商編號) and col L (其他備註（要拆）) values
         if col_l_remark == "海運":
