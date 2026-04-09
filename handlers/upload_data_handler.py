@@ -202,6 +202,13 @@ def parse_name(text: str, existing_data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def parse_hai_yun(text: str) -> Optional[str]:
+    """Detect 海運 (ocean freight) in the message (traditional or simplified Chinese)."""
+    if re.search(r'海[運运]', text):
+        return "海運"
+    return None
+
+
 def parse_message(text: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Parse a message and extract all possible fields.
@@ -234,6 +241,11 @@ def parse_message(text: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
         name = parse_name(text, data)
         if name:
             data["name"] = name
+    
+    if not data.get("hai_yun"):
+        hai_yun = parse_hai_yun(text)
+        if hai_yun:
+            data["hai_yun"] = hai_yun
     
     return data
 
@@ -585,7 +597,7 @@ def upload_to_monday(tracking_no: str, dimensions: str, weight: str, box_id: str
 
 # ─── 打包資料表 Upload Function ───────────────────────────────────────────────
 
-def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str) -> bool:
+def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str, hai_yun: str = "") -> bool:
     """
     Upload data to 打包資料表 Form Responses 1 if tracking not already present.
     
@@ -595,6 +607,7 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         tracking: Tracking number or timestamp
         dimension: Dimension string (e.g., "40*62*32cm")
         weight: Weight string (e.g., "12.15kg")
+        hai_yun: "海運" if detected in the message, otherwise empty string
         
     Returns:
         True if successful, False otherwise
@@ -603,6 +616,12 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         gs = get_gspread_client()
         ss = gs.open_by_key(PACKING_SHEET_ID)
         ws = ss.worksheet("Form Responses 1")
+        
+        # Resolve column indices by header name
+        headers = ws.row_values(1)
+        header_map = {h.strip(): i for i, h in enumerate(headers)}
+        col_b_idx = header_map.get("廠商編號", 1)       # fallback: column B (index 1)
+        col_l_idx = header_map.get("其他備註（要拆）", 11)  # fallback: column L (index 11)
         
         # Check if tracking already exists in column H
         col_h_values = ws.col_values(8)  # Column H
@@ -621,19 +640,27 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         # Weight: "18.50kg" → "18.50"
         weight_clean = weight.replace("kg", "").replace("KG", "").strip()
         
-        row_data = [
-            timestamp,         # A: timestamp
-            box_id,            # B: Box ID
-            "",                # C: empty
-            "",                # D: empty
-            name,              # E: Sender Name/Client ID
-            "",                # F: empty
-            "",                # G: empty
-            tracking,          # H: Tracking ID
-            dimension_clean,   # I: Dimension (without cm)
-            "",                # J: empty
-            weight_clean       # K: Weight (without kg)
-        ]
+        # Build row with enough columns to cover col L
+        num_cols = max(col_l_idx + 1, 12)
+        row_data = [""] * num_cols
+        row_data[0] = timestamp       # A: timestamp
+        row_data[4] = name            # E: Sender Name/Client ID
+        row_data[7] = tracking        # H: Tracking ID
+        row_data[8] = dimension_clean # I: Dimension (without cm)
+        row_data[10] = weight_clean   # K: Weight (without kg)
+        
+        # Determine col B (廠商編號) and col L (其他備註（要拆）) values
+        if hai_yun:
+            if box_id:
+                # Box ID present: col B = box_id, col L = 海運
+                row_data[col_b_idx] = box_id
+                row_data[col_l_idx] = hai_yun
+            else:
+                # No box ID: col B = 海運, col L = 海運
+                row_data[col_b_idx] = hai_yun
+                row_data[col_l_idx] = hai_yun
+        else:
+            row_data[col_b_idx] = box_id  # Normal: col B = box_id
         
         ws.append_row(row_data)
         log.info(f"[UPLOAD] Successfully added to packing sheet: {tracking}")
@@ -830,11 +857,12 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
         
         # Upload to packing sheet
         sheet_success = upload_to_packing_sheet(
-            data["box_id"],
+            data.get("box_id", ""),
             data["name"],
             data["tracking"],
             data["dimension"],
-            data["weight"]
+            data["weight"],
+            data.get("hai_yun", "")
         )
         
         # Send result

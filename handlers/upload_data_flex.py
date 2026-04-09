@@ -63,6 +63,9 @@ def build_data_confirm_flex(data: Dict[str, Any]) -> dict:
         content_box.append(_kv_row("🔢 追蹤編號", data["tracking"], "#0066cc"))
     else:
         content_box.append(_kv_row("🔢 追蹤編號", "⚠️ 未提供(將搜尋)", "#ffc107"))
+
+    if data.get("hai_yun"):
+        content_box.append(_kv_row("🚢 運送方式", data["hai_yun"], "#0066cc"))
     
     # Add instruction text
     body.append({"type": "separator", "margin": "lg"})
