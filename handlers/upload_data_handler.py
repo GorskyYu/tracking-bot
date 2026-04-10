@@ -93,10 +93,10 @@ def _set_correcting_field(r, uid, field):
 # ─── Data Parsers ─────────────────────────────────────────────────────────────
 
 def parse_box_id(text: str) -> Optional[str]:
-    """Parse Box ID in format YL followed by 2-4 digits."""
-    match = re.search(r'\bYL(\d{2,4})\b', text, re.IGNORECASE)
+    """Parse Box ID in format: 2 letters followed by 2-4 digits, e.g. YL123, SP22, SQ10."""
+    match = re.search(r'\b([A-Z]{2}\d{2,4})\b', text, re.IGNORECASE)
     if match:
-        return f"YL{match.group(1)}"
+        return match.group(1).upper()
     return None
 
 
@@ -222,8 +222,8 @@ def parse_name(text: str, existing_data: Dict[str, Any]) -> Optional[str]:
     # Remove other parsed fields from text
     cleaned = text
 
-    # Remove box ID
-    cleaned = re.sub(r'\bYL\d{2,4}\b', '', cleaned, flags=re.IGNORECASE)
+    # Remove box ID (2 letters + 2-4 digits, e.g. YL123, SP22)
+    cleaned = re.sub(r'\b[A-Z]{2}\d{2,4}\b', '', cleaned, flags=re.IGNORECASE)
 
     # Remove spaced FedEx tracking (4-4-4) before dimension cleanup eats it
     cleaned = re.sub(r'\b\d{4}\s+\d{4}\s+\d{4}\b', '', cleaned)
