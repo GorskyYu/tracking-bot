@@ -228,8 +228,10 @@ def parse_name(text: str, existing_data: Dict[str, Any]) -> Optional[str]:
     # Remove spaced FedEx tracking (4-4-4) before dimension cleanup eats it
     cleaned = re.sub(r'\b\d{4}\s+\d{4}\s+\d{4}\b', '', cleaned)
 
-    # Remove dimensions
-    cleaned = re.sub(r'\d+[×x*\s]+\d+[×x*\s]+\d+\s*(cm|in|inch|吋|公分|")?', '', cleaned, flags=re.IGNORECASE)
+    # Remove dimensions — explicit separators only (*, ×, x); NO space as separator
+    # to prevent false-matching decimal digits like the "5" in "70.5" with the
+    # next number separated by a space.
+    cleaned = re.sub(r'\d+(?:\.\d+)?[×x*]+\d+(?:\.\d+)?[×x*]+\d+(?:\.\d+)?\s*(cm|in|inch|吋|公分|")?', '', cleaned, flags=re.IGNORECASE)
 
     # Remove tracking BEFORE weight so the leading '1' in '1ZHF...' isn't
     # stripped first (which would leave 'ZHF...' to be misread as a name)
