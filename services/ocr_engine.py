@@ -42,11 +42,17 @@ FEDEX_SHIPPING_PROMPT = """
 Task: Extract sender info and receiver info from this FedEx label.
 Focus on the "TO" section for receiver address, and "FROM" for sender.
 
+CRITICAL RULES:
+- For sender name: read the EXACT characters visible in the FROM section, one letter at a time. DO NOT guess, infer, or substitute with similar names. If a name looks like "Ya-Hsuan", do not change it to "Yi-Mian" or anything else.
+- company/org name is usually in ALL CAPS or near the top of the FROM block; person name is the mixed-case name.
+- "client_id" = the company/org name in the FROM block (e.g. "LAMMOND").
+- "name" = the individual person's name in the FROM block, copied character-for-character.
+
 Response JSON:
 {
   "sender": {
-    "name": "string (From name)",
-    "client_id": "string (lines under name)"
+    "name": "string (person's From name, exact spelling)",
+    "client_id": "string (company/org name from FROM block)"
   },
   "receiver": {
     "name": "string (To name)",

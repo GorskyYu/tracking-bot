@@ -67,6 +67,9 @@ class MondaySyncService:
     def _sync_to_google_sheet(self, ref_no, tracking_numbers):
         """完全復刻原版 Google Sheet 功能 (含高亮與報錯通知)"""
         try:
+            # Defensive strip: remove trailing -1/-2/etc. in case OCR didn't clean it
+            ref_no = re.sub(r'-\d+$', '', ref_no).strip()
+
             gs = self.get_gspread()
             ss = gs.open_by_key(self.sheet_id)
             ws = ss.worksheet("Tracking")
@@ -76,6 +79,11 @@ class MondaySyncService:
 
             if not row_idx:
                 log.warning(f"[GSHEET] '{ref_no}' not found in A:A. Skip sheet write.")
+                tracking_str = ", ".join(tracking_numbers) if tracking_numbers else "無單號"
+                self.line_push(
+                    self.line_status_group,
+                    f"⚠️ [PDF→空運表單] 未找到對應 REF: {ref_no}\n🏷 單號: {tracking_str}\n💡 請手動更新 Tracking tab"
+                )
                 return
 
             # 填入最多 3 筆追蹤碼到 S, T, U 欄
