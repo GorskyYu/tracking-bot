@@ -95,22 +95,35 @@ def parse_dimension(text: str) -> Optional[str]:
     Parse dimension in format: 62*42*38cm or 62*42*38 or 62 42 38
     Converts inches to cm if specified.
     Returns format: "62*42*38cm"
+
+    Two patterns are tried in order:
+    1. Explicit separators (*, ×, x)  — always unambiguous, no digit-count limit.
+    2. Space-separated             — each value must be EXACTLY 1–3 digits (token-bounded).
+       This prevents false matches on:
+         • FedEx 4-4-4 tracking  e.g. "8704 3041 4731"
+         • UPS segment numbers   e.g. "545 20 2469 1579"
     """
-    # Match dimension patterns (support ×, x, *, or space as separator)
-    # (?<![A-Za-z]) prevents matching digits that are part of a box ID like YL401
-    pattern = r'(?<![A-Za-z])(\d+(?:\.\d+)?)[×x*\s]+(\d+(?:\.\d+)?)[×x*\s]+(\d+(?:\.\d+)?)(?:\s*)(cm|公分|in|inch|吋|")?'
-    match = re.search(pattern, text, re.IGNORECASE)
-    
+    # Pattern 1: explicit separator (*, ×, x) — no digit-count restriction needed
+    explicit_sep = r'(?<![A-Za-z])(\d+(?:\.\d+)?)[×x*]+(\d+(?:\.\d+)?)[×x*]+(\d+(?:\.\d+)?)(?:\s*)(cm|公分|in|inch|吋|")?'
+    match = re.search(explicit_sep, text, re.IGNORECASE)
     if match:
         l, w, h = map(float, match.group(1, 2, 3))
         unit = (match.group(4) or "cm").lower()
-        
-        # Convert inches to cm
         if unit.startswith(("in", "吋", '"')):
             l, w, h = l * 2.54, w * 2.54, h * 2.54
-        
         return f"{int(l)}*{int(w)}*{int(h)}cm"
-    
+
+    # Pattern 2: space-separated — each number must be exactly 1–3 digits
+    # (?<![A-Za-z0-9]) and (?!\d) enforce token boundaries so "8704" won't match
+    space_sep = r'(?<![A-Za-z0-9])(\d{1,3})(?!\d)\s+(\d{1,3})(?!\d)\s+(\d{1,3})(?!\d)(?:\s*)(cm|公分|in|inch|吋|")?'
+    match = re.search(space_sep, text, re.IGNORECASE)
+    if match:
+        l, w, h = float(match.group(1)), float(match.group(2)), float(match.group(3))
+        unit = (match.group(4) or "cm").lower()
+        if unit.startswith(("in", "吋", '"')):
+            l, w, h = l * 2.54, w * 2.54, h * 2.54
+        return f"{int(l)}*{int(w)}*{int(h)}cm"
+
     return None
 
 
