@@ -4,10 +4,12 @@
 Manages the multi-step upload data conversation via LINE Flex Messages.
 
 State Machine (persisted in Redis with 10-min TTL):
-  collecting      → 等待使用者輸入資料
-  confirming      → 資料已解析，等待確認
-  selecting_match → 等待使用者選擇匹配記錄
-  uploading       → 正在上傳資料
+  collecting        → 等待使用者輸入資料
+  confirming        → 資料已解析，等待確認
+  selecting_match   → 等待使用者選擇匹配記錄
+  correcting_field  → 等待使用者選擇要更正的欄位
+  correcting_value  → 等待使用者輸入新值
+  uploading         → 正在上傳資料
 """
 
 import json
@@ -22,7 +24,7 @@ from sheets import get_gspread_client
 from config import MONDAY_API_TOKEN
 from services.line_service import line_reply, line_push, line_reply_flex, line_push_flex
 from handlers.upload_data_config import can_use_upload_data
-from handlers.upload_data_flex import build_data_confirm_flex, build_match_selection_flex
+from handlers.upload_data_flex import build_data_confirm_flex, build_match_selection_flex, build_field_selection_flex
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +70,7 @@ def _set_matches(r, uid, matches):
 
 
 def _clear_session(r, uid):
-    for suffix in ("state", "data", "matches", "reply_token"):
+    for suffix in ("state", "data", "matches", "reply_token", "correcting_field"):
         r.delete(_key(uid, suffix))
 
 
@@ -78,6 +80,14 @@ def _get_reply_token(r, uid):
 
 def _set_reply_token(r, uid, token):
     r.set(_key(uid, "reply_token"), token, ex=UPLOAD_TTL)
+
+
+def _get_correcting_field(r, uid):
+    return r.get(_key(uid, "correcting_field"))
+
+
+def _set_correcting_field(r, uid, field):
+    r.set(_key(uid, "correcting_field"), field, ex=UPLOAD_TTL)
 
 
 # ─── Data Parsers ─────────────────────────────────────────────────────────────
@@ -913,6 +923,18 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
     
     # State: confirming
     elif state == "confirming":
+        if text == "更正資料":
+            flex = build_field_selection_flex()
+            line_reply_flex(reply_token, "✏️ 更正資料", flex)
+            _set_state(redis_client, user_id, "correcting_field")
+            return True
+
+        if text == "返回確認":
+            data = _get_data(redis_client, user_id)
+            flex = build_data_confirm_flex(data)
+            line_reply_flex(reply_token, "📦 包裹資料確認", flex)
+            return True
+
         if text == "確認上傳資料":
             data = _get_data(redis_client, user_id)
             
@@ -999,7 +1021,93 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 return True
         
         return True
-    
+
+    # State: correcting_field — user picks which field to update
+    elif state == "correcting_field":
+        _field_map = {
+            "更正_box_id":    "box_id",
+            "更正_name":      "name",
+            "更正_dimension": "dimension",
+            "更正_weight":    "weight",
+            "更正_tracking":  "tracking",
+            "更正_transport": "transport",
+        }
+        if text == "返回確認":
+            data = _get_data(redis_client, user_id)
+            flex = build_data_confirm_flex(data)
+            line_reply_flex(reply_token, "📦 包裹資料確認", flex)
+            _set_state(redis_client, user_id, "confirming")
+            return True
+
+        field = _field_map.get(text)
+        if field:
+            _set_correcting_field(redis_client, user_id, field)
+            _set_state(redis_client, user_id, "correcting_value")
+            _field_prompts = {
+                "box_id":    "Box ID （例：YL123）",
+                "name":      "寄件人/客戶姓名",
+                "dimension": "尺寸 （例：40*30*20）",
+                "weight":    "重量 （例：12.5kg）",
+                "tracking":  "追蹤編號",
+                "transport": "運送方式 （空運 / 海運）",
+            }
+            line_reply(reply_token, f"✏️ 請輸入新的 {_field_prompts[field]}：")
+        else:
+            # Unrecognised text — re-show the field selection
+            flex = build_field_selection_flex()
+            line_reply_flex(reply_token, "✏️ 請選擇要更正的欄位", flex)
+        return True
+
+    # State: correcting_value — user types the new value for the chosen field
+    elif state == "correcting_value":
+        field = _get_correcting_field(redis_client, user_id)
+        data = _get_data(redis_client, user_id)
+
+        if not field:
+            # Safety fallback: lost state, go back to confirming
+            flex = build_data_confirm_flex(data)
+            line_reply_flex(reply_token, "📦 包裹資料確認", flex)
+            _set_state(redis_client, user_id, "confirming")
+            return True
+
+        if field == "box_id":
+            val = parse_box_id(text) or text.strip().upper()
+            data["box_id"] = val
+        elif field == "name":
+            data["name"] = text.strip()
+        elif field == "dimension":
+            val = parse_dimension(text)
+            if not val:
+                line_reply(reply_token, "⚠️ 無法識別尺寸格式，請重新輸入 （例：40*30*20）")
+                return True
+            data["dimension"] = val
+        elif field == "weight":
+            val = parse_weight(text)
+            if not val:
+                line_reply(reply_token, "⚠️ 無法識別重量格式，請重新輸入 （例：12.5kg）")
+                return True
+            data["weight"] = val
+        elif field == "tracking":
+            val = parse_tracking(text) or text.strip()
+            data["tracking"] = val
+        elif field == "transport":
+            if re.search(r'海[運运]', text):
+                data["hai_yun"] = "海運"
+                data.pop("kong_yun", None)
+            elif re.search(r'空[運运]', text):
+                data["kong_yun"] = "空運"
+                data.pop("hai_yun", None)
+            else:
+                line_reply(reply_token, "⚠️ 請輸入「空運」或「海運」")
+                return True
+
+        _set_data(redis_client, user_id, data)
+        redis_client.delete(_key(user_id, "correcting_field"))
+        _set_state(redis_client, user_id, "confirming")
+        flex = build_data_confirm_flex(data)
+        line_reply_flex(reply_token, "📦 包裹資料確認", flex)
+        return True
+
     return False
 
 

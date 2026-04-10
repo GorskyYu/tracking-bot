@@ -108,6 +108,9 @@ def build_data_confirm_flex(data: Dict[str, Any]) -> dict:
     
     footer_contents.extend([
         {"type": "button", "height": "sm", "style": "secondary",
+         "color": "#ff8c00",
+         "action": {"type": "message", "label": "✏️ 更正資料", "text": "更正資料"}},
+        {"type": "button", "height": "sm", "style": "secondary",
          "action": {"type": "message", "label": "🔄 重新開始", "text": "重新開始"}},
         {"type": "button", "height": "sm", "style": "secondary",
          "action": {"type": "message", "label": "❌ 取消", "text": "取消上傳"}}
@@ -177,4 +180,48 @@ def build_match_selection_flex(matches: List[Dict[str, str]]) -> dict:
                  "action": {"type": "message", "label": "取消並重新開始", "text": "重新開始"}}
             ]
         }
+    }
+
+
+def build_field_selection_flex() -> dict:
+    """
+    Build flex message prompting the user to pick which field to correct.
+    Each button sends a message like "更正_box_id" which the handler intercepts.
+    """
+    fields = [
+        ("📦 Box ID",     "更正_box_id"),
+        ("👤 寄件人/客戶", "更正_name"),
+        ("📏 尺寸",       "更正_dimension"),
+        ("⚖️ 重量",       "更正_weight"),
+        ("🔢 追蹤編號",   "更正_tracking"),
+        ("🚢 運送方式",   "更正_transport"),
+    ]
+
+    buttons = [
+        {
+            "type": "button", "height": "sm", "style": "secondary",
+            "action": {"type": "message", "label": label, "text": text},
+        }
+        for label, text in fields
+    ]
+    buttons.append({
+        "type": "button", "height": "sm", "style": "secondary",
+        "action": {"type": "message", "label": "← 返回確認", "text": "返回確認"},
+    })
+
+    return {
+        "type": "bubble",
+        "body": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "✏️ 更正哪個欄位？",
+                 "weight": "bold", "size": "xl", "color": "#1a1a1a"},
+                {"type": "text", "text": "請選擇要更正的欄位：",
+                 "size": "sm", "color": "#888888", "margin": "md"},
+            ],
+        },
+        "footer": {
+            "type": "box", "layout": "vertical", "spacing": "sm",
+            "contents": buttons,
+        },
     }
