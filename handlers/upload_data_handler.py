@@ -415,6 +415,294 @@ def search_air_form_matches(name_or_id: str) -> List[Dict[str, str]]:
         return []
 
 
+# ─── 海運資料表 Search Function ──────────────────────────────────────────────
+
+def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
+    """
+    Search 海運資料表 Form Responses 1 for matches.
+    Uses a 90-day lookback window (vs 30 days for air freight).
+
+    Columns:
+        A: Timestamp
+        C: 寄件人中文姓名
+        D: 寄件人英文姓名或 Line 名稱
+        E: Abowbow會員帳號
+
+    Args:
+        name_or_id: Name or Client ID to search for
+
+    Returns:
+        List of matching records with timestamp, chinese_name, english_name,
+        client_id, and sheet_row (1-based, for Workspace writes).
+    """
+    try:
+        gs = get_gspread_client()
+        ss = gs.open_by_key(OCEAN_FORM_SHEET_ID)
+        ws = ss.worksheet("Form Responses 1")
+
+        all_data = ws.get_all_values()
+        if len(all_data) < 2:
+            return []
+
+        rows = all_data[1:]
+        ninety_days_ago = datetime.now() - timedelta(days=90)
+
+        matches = []
+        search_lower = name_or_id.lower()
+
+        for i, row in enumerate(rows):
+            if len(row) < 5:
+                continue
+
+            timestamp_str  = row[0] if len(row) > 0 else ""   # Col A
+            chinese_name   = row[2] if len(row) > 2 else ""   # Col C
+            english_name   = row[3] if len(row) > 3 else ""   # Col D
+            client_id      = row[4] if len(row) > 4 else ""   # Col E
+
+            if timestamp_str:
+                try:
+                    row_time = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                    if row_time < ninety_days_ago:
+                        continue
+                except Exception:
+                    continue
+
+            if (search_lower in english_name.lower() or
+                search_lower in client_id.lower() or
+                english_name.lower() in search_lower or
+                client_id.lower() in search_lower):
+
+                matches.append({
+                    "timestamp": timestamp_str,
+                    "chinese_name": chinese_name,
+                    "english_name": english_name,
+                    "client_id": client_id,
+                    "sheet_row": i + 2,  # 1-based row in Form Responses 1
+                })
+
+        return matches
+
+    except Exception as e:
+        log.error(f"[UPLOAD] Error searching sea form: {e}", exc_info=True)
+        return []
+
+
+# ─── Sea Freight Monday Item Creation ─────────────────────────────────────────
+
+# Monday board IDs for sea freight (same as 加台海運資料表 config)
+SEA_PARENT_BOARD_ID  = os.getenv("SEA_PARENT_BOARD_ID", "8783157722")
+SEA_SUBITEM_BOARD_ID = os.getenv("SEA_SUBITEM_BOARD_ID", "8783157868")
+
+
+def create_sea_monday_items(
+    match: Dict[str, Any],
+    dimension: str,
+    weight: str,
+) -> Dict[str, Any]:
+    """
+    Replicate the createPickupItem() logic from the 海運資料表 spreadsheet.
+
+    1. Construct parent name:  YYYYMMDD - ABB帳號 - 中文名 英文名
+    2. Find or create parent item in 加台海運 Monday board.
+    3. Ensure no duplicate subitem → create subitem with timestamp as name.
+    4. Set subitem columns (客人種類, ABB帳號, 尺寸, 重量, 收款狀態, etc.).
+    5. Write tracking code (subitem name) to Workspace tab 追蹤碼1/2/3.
+
+    Args:
+        match:     Dict with timestamp, chinese_name, english_name, client_id, sheet_row.
+        dimension: e.g. "40*62*32cm"
+        weight:    e.g. "12.15kg"
+
+    Returns:
+        dict with keys: success (bool), parent_id, subitem_id, tracking (the subitem name),
+        and optionally error.
+    """
+    try:
+        headers_api = {
+            "Authorization": MONDAY_API_TOKEN,
+            "Content-Type": "application/json",
+        }
+
+        timestamp_str = match["timestamp"]        # e.g. "2026-04-11 14:30:00"
+        chinese_name  = match["chinese_name"]
+        english_name  = match["english_name"]
+        client_id     = match["client_id"]        # Abowbow帳號
+        sheet_row     = match["sheet_row"]         # 1-based row
+
+        # --- Construct subitem name (same as spreadsheet logic) ---------------
+        sub_name = timestamp_str  # e.g. "2026-04-11 14:30:00"
+
+        # --- Construct parent name  YYYYMMDD - ABB帳號 - 中文名 英文名 --------
+        date_ymd = sub_name[:10].replace("-", "")  # "20260411"
+        parent_name = f"{date_ymd} - {client_id} - {chinese_name}"
+        if english_name:
+            parent_name += f" {english_name}"
+
+        # --- Find or create parent item on SEA board --------------------------
+        find_q = """
+        query ($b: ID!, $v: String!) {
+            items_page_by_column_values(
+                board_id: $b, limit: 1,
+                columns: [{column_id: "name", column_values: [$v]}]
+            ) { items { id } }
+        }
+        """
+        resp = requests.post(
+            MONDAY_API_URL, headers=headers_api,
+            json={"query": find_q, "variables": {"b": SEA_PARENT_BOARD_ID, "v": parent_name}},
+            timeout=15,
+        )
+        items = resp.json().get("data", {}).get("items_page_by_column_values", {}).get("items", [])
+
+        if items:
+            parent_id = items[0]["id"]
+            log.info(f"[SEA] Found existing parent '{parent_name}' → {parent_id}")
+        else:
+            create_q = """
+            mutation ($b: ID!, $name: String!) {
+                create_item(board_id: $b, item_name: $name) { id }
+            }
+            """
+            resp = requests.post(
+                MONDAY_API_URL, headers=headers_api,
+                json={"query": create_q, "variables": {"b": SEA_PARENT_BOARD_ID, "name": parent_name}},
+                timeout=15,
+            )
+            parent_id = resp.json()["data"]["create_item"]["id"]
+            log.info(f"[SEA] Created parent '{parent_name}' → {parent_id}")
+
+        # --- Fetch existing subitems to prevent duplicates --------------------
+        subs_q = """
+        query ($id: [ID!]) {
+            items(ids: $id) { subitems { id name } }
+        }
+        """
+        resp = requests.post(
+            MONDAY_API_URL, headers=headers_api,
+            json={"query": subs_q, "variables": {"id": [parent_id]}},
+            timeout=15,
+        )
+        existing_subs = resp.json().get("data", {}).get("items", [{}])[0].get("subitems", [])
+        existing_names = {s["name"]: s["id"] for s in existing_subs}
+
+        # Determine subitem numbering (same as spreadsheet: #1 = no suffix, #2+ = suffix)
+        start_index = len(existing_subs) + 1
+        final_sub_name = sub_name if start_index == 1 else f"{sub_name} #{start_index}"
+
+        # --- Create subitem if it doesn't already exist -----------------------
+        if final_sub_name in existing_names:
+            subitem_id = existing_names[final_sub_name]
+            log.info(f"[SEA] Reusing existing subitem '{final_sub_name}' → {subitem_id}")
+        else:
+            create_sub_q = """
+            mutation ($pid: ID!, $name: String!) {
+                create_subitem(parent_item_id: $pid, item_name: $name) { id }
+            }
+            """
+            resp = requests.post(
+                MONDAY_API_URL, headers=headers_api,
+                json={"query": create_sub_q, "variables": {"pid": parent_id, "name": final_sub_name}},
+                timeout=15,
+            )
+            subitem_id = resp.json()["data"]["create_subitem"]["id"]
+            log.info(f"[SEA] Created subitem '{final_sub_name}' → {subitem_id}")
+
+        # --- Set subitem columns (mirror spreadsheet logic) -------------------
+        set_col_q = """
+        mutation ($item: ID!, $board: ID!, $col: String!, $val: String!) {
+            change_simple_column_value(item_id: $item, board_id: $board,
+                column_id: $col, value: $val) { id }
+        }
+        """
+        set_col_json_q = """
+        mutation ($item: ID!, $board: ID!, $col: String!, $val: JSON!) {
+            change_column_value(item_id: $item, board_id: $board,
+                column_id: $col, value: $val) { id }
+        }
+        """
+
+        def _set_simple(col_id, value):
+            requests.post(
+                MONDAY_API_URL, headers=headers_api,
+                json={"query": set_col_q, "variables": {
+                    "item": subitem_id, "board": SEA_SUBITEM_BOARD_ID,
+                    "col": col_id, "val": str(value),
+                }},
+                timeout=10,
+            )
+
+        def _set_json(col_id, label):
+            requests.post(
+                MONDAY_API_URL, headers=headers_api,
+                json={"query": set_col_json_q, "variables": {
+                    "item": subitem_id, "board": SEA_SUBITEM_BOARD_ID,
+                    "col": col_id, "val": json.dumps({"label": label}),
+                }},
+                timeout=10,
+            )
+
+        # 客人種類 → 溫哥華散客
+        _set_simple("color__1", "溫哥華散客")
+        # ABB帳號
+        if client_id:
+            try:
+                _set_simple("text_mkywx26t", client_id)
+            except Exception:
+                pass  # column may not exist
+        # 尺寸 (__1__cm__1)
+        dims_match = re.match(r'(\d+)\*(\d+)\*(\d+)', dimension)
+        if dims_match:
+            _set_simple("__1__cm__1", f"{dims_match.group(1)}*{dims_match.group(2)}*{dims_match.group(3)}")
+        # 重量 (numeric__1)
+        weight_match = re.match(r'([\d.]+)', weight)
+        if weight_match:
+            _set_simple("numeric__1", weight_match.group(1))
+        # 收款狀態 → 溫哥華收款
+        _set_json("status__1", "溫哥華收款")
+        # 國際物流 → 海運
+        _set_json("status_18__1", "海運")
+        # 台灣物流 → 新竹物流
+        _set_json("status_19__1", "新竹物流")
+        # 地點 → Y/R/Simply
+        _set_json("location__1", "Y/R/Simply")
+
+        # --- Write tracking code to Workspace tab (追蹤碼1/2/3, cols S/T/U) ---
+        try:
+            gs = get_gspread_client()
+            ss = gs.open_by_key(OCEAN_FORM_SHEET_ID)
+            ws = ss.worksheet("Workspace")
+            ws_headers = ws.row_values(1)
+            ws_header_map = {h.strip(): idx for idx, h in enumerate(ws_headers)}
+
+            # Find which 追蹤碼 slot is empty for this row
+            written = False
+            for track_col in ("追蹤碼1", "追蹤碼2", "追蹤碼3"):
+                col_idx = ws_header_map.get(track_col)
+                if col_idx is None:
+                    continue
+                cell_val = ws.cell(sheet_row, col_idx + 1).value
+                if not cell_val or not str(cell_val).strip():
+                    ws.update_cell(sheet_row, col_idx + 1, final_sub_name)
+                    log.info(f"[SEA] Wrote tracking '{final_sub_name}' to Workspace {track_col} row {sheet_row}")
+                    written = True
+                    break
+            if not written:
+                log.warning(f"[SEA] All 追蹤碼 slots occupied for row {sheet_row}")
+        except Exception as ws_err:
+            log.error(f"[SEA] Failed to write tracking to Workspace: {ws_err}", exc_info=True)
+
+        return {
+            "success": True,
+            "parent_id": parent_id,
+            "subitem_id": subitem_id,
+            "tracking": final_sub_name,
+        }
+
+    except Exception as e:
+        log.error(f"[SEA] Error creating Monday items: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 # ─── Tracking-Based Name Lookup ───────────────────────────────────────────────
 
 # Maps 追蹤碼N column name → corresponding content column name
@@ -940,10 +1228,46 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
         if text == "確認上傳資料":
             data = _get_data(redis_client, user_id)
             
-            # 海運 path: skip tracking search, write to packing sheet only
+            # 海運 path: search 海運資料表 for match, then create Monday items
             if data.get("hai_yun"):
-                _process_upload(redis_client, user_id, reply_token, data)
-                return True
+                if not data.get("tracking"):
+                    matches = search_sea_form_matches(data["name"])
+                    valid_matches = [
+                        m for m in (matches or [])
+                        if isinstance(m, dict) and m.get("timestamp")
+                    ]
+
+                    if not valid_matches:
+                        # No match found — proceed without Monday (same as before)
+                        _process_upload(redis_client, user_id, reply_token, data)
+                        return True
+                    elif len(valid_matches) == 1:
+                        data["_sea_match"] = valid_matches[0]
+                        _set_data(redis_client, user_id, data)
+                        _process_upload(redis_client, user_id, reply_token, data)
+                        return True
+                    else:
+                        _set_matches(redis_client, user_id, valid_matches)
+                        _set_state(redis_client, user_id, "selecting_match")
+                        try:
+                            flex = build_match_selection_flex(valid_matches)
+                            line_reply_flex(reply_token, "🔍 海運：請選擇匹配項目", flex)
+                        except Exception as e:
+                            log.error(f"[UPLOAD] Error building sea match flex: {e}", exc_info=True)
+                            match_text = "🔍 找到以下海運記錄，請回覆選項編號：\n\n"
+                            for i, m in enumerate(valid_matches[:5]):
+                                match_text += f"【{i+1}】\n"
+                                match_text += f"時間: {m.get('timestamp', 'N/A')}\n"
+                                match_text += f"中文: {m.get('chinese_name', 'N/A')}\n"
+                                match_text += f"英文: {m.get('english_name', 'N/A')}\n"
+                                match_text += f"客戶: {m.get('client_id', 'N/A')}\n\n"
+                            match_text += "請輸入「選擇匹配1」、「選擇匹配2」等指令"
+                            line_reply(reply_token, match_text)
+                        return True
+                else:
+                    # Has tracking already (manually provided)
+                    _process_upload(redis_client, user_id, reply_token, data)
+                    return True
             
             # Normal / 空運 path: need tracking
             if not data.get("tracking"):
@@ -1015,12 +1339,21 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
             
             if 0 <= idx < len(matches):
                 data = _get_data(redis_client, user_id)
-                original_timestamp = matches[idx]["timestamp"]
-                unique_timestamp = ensure_unique_timestamp(original_timestamp)
-                data["tracking"] = unique_timestamp
-                _set_data(redis_client, user_id, data)
-                _process_upload(redis_client, user_id, reply_token, data)
-                return True
+
+                if data.get("hai_yun"):
+                    # Sea freight: store selected match for Monday creation
+                    data["_sea_match"] = matches[idx]
+                    _set_data(redis_client, user_id, data)
+                    _process_upload(redis_client, user_id, reply_token, data)
+                    return True
+                else:
+                    # Air freight: use timestamp as tracking
+                    original_timestamp = matches[idx]["timestamp"]
+                    unique_timestamp = ensure_unique_timestamp(original_timestamp)
+                    data["tracking"] = unique_timestamp
+                    _set_data(redis_client, user_id, data)
+                    _process_upload(redis_client, user_id, reply_token, data)
+                    return True
         
         return True
 
@@ -1121,7 +1454,22 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
         col_l_remark = hai_yun if hai_yun else (kong_yun if kong_yun else "")
         
         if hai_yun:
-            # ── 海運 path: packing sheet only, skip Monday ──────────────────
+            # ── 海運 path: create Monday items if match found, then packing sheet ──
+            sea_match = data.get("_sea_match")
+            monday_success = False
+            monday_tracking = ""
+
+            if sea_match:
+                result = create_sea_monday_items(
+                    sea_match, data["dimension"], data["weight"],
+                )
+                if result.get("success"):
+                    monday_success = True
+                    monday_tracking = result.get("tracking", "")
+                    data["tracking"] = monday_tracking  # use as packing sheet tracking
+                else:
+                    log.warning(f"[UPLOAD] Sea Monday creation failed: {result.get('error')}")
+
             sheet_success = upload_to_packing_sheet(
                 data.get("box_id", ""),
                 data["name"],
@@ -1131,18 +1479,46 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                 col_l_remark,
                 data.get("package_content", ""),
             )
-            if sheet_success:
-                box_display = data.get("box_id") or "未提供"
-                msg = (f"✅ 海運記錄已寫入打包資料表！\n\n"
+
+            box_display = data.get("box_id") or "未提供"
+            if monday_success and sheet_success:
+                msg = (f"✅ 海運資料上傳成功！\n\n"
                       f"📦 Box ID: {box_display}\n"
                       f"👤 寄件人: {data['name']}\n"
+                      f"🔢 追蹤編號: {monday_tracking}\n"
                       f"📏 尺寸: {data['dimension']}\n"
                       f"⚖️ 重量: {data['weight']}\n\n"
-                      f"⚠️ 提醒：請至打包資料表補充追蹤編號，\n"
-                      f"並自行推送資料至 Monday\n\n"
+                      f"✓ Monday 海運板塊 已建立\n"
+                      f"✓ 打包資料表 已記錄\n\n"
                       f"繼續輸入資料，或輸入 'end' 結束")
+            elif monday_success:
+                msg = (f"⚠️ 部分成功\n\n"
+                      f"✓ Monday 海運板塊 已建立\n"
+                      f"✗ 打包資料表 記錄失敗\n\n"
+                      f"繼續輸入資料，或輸入 'end' 結束")
+            elif sheet_success:
+                if sea_match:
+                    msg = (f"⚠️ 部分成功\n\n"
+                          f"📦 Box ID: {box_display}\n"
+                          f"👤 寄件人: {data['name']}\n"
+                          f"📏 尺寸: {data['dimension']}\n"
+                          f"⚖️ 重量: {data['weight']}\n\n"
+                          f"✗ Monday 海運板塊 建立失敗\n"
+                          f"✓ 打包資料表 已記錄\n\n"
+                          f"繼續輸入資料，或輸入 'end' 結束")
+                else:
+                    msg = (f"✅ 海運記錄已寫入打包資料表！\n\n"
+                          f"📦 Box ID: {box_display}\n"
+                          f"👤 寄件人: {data['name']}\n"
+                          f"📏 尺寸: {data['dimension']}\n"
+                          f"⚖️ 重量: {data['weight']}\n\n"
+                          f"⚠️ 未找到海運資料表匹配，Monday 項目未建立\n"
+                          f"請至打包資料表補充追蹤編號，\n"
+                          f"並自行推送資料至 Monday\n\n"
+                          f"繼續輸入資料，或輸入 'end' 結束")
             else:
-                msg = "❌ 打包資料表記錄失敗，請重試\n\n輸入重新開始或 'end' 結束"
+                msg = "❌ 上傳失敗，請重試\n\n輸入重新開始或 'end' 結束"
+
             line_reply(reply_token, msg)
             _set_state(redis_client, user_id, "collecting")
             _set_data(redis_client, user_id, {})
