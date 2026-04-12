@@ -777,6 +777,10 @@ def create_sea_monday_items(
 def update_sea_subitem_data(subitem_id: str, dimension: str, weight: str):
     """Write dimension / weight to a specific Monday sea-freight subitem."""
     try:
+        _headers = {
+            "Authorization": MONDAY_API_TOKEN,
+            "Content-Type": "application/json",
+        }
         set_col_q = """
         mutation ($item: ID!, $board: ID!, $col: String!, $val: String!) {
             change_simple_column_value(item_id: $item, board_id: $board,
@@ -787,7 +791,7 @@ def update_sea_subitem_data(subitem_id: str, dimension: str, weight: str):
         weight_m = re.match(r'([\d.]+)', weight)
         if dims_m:
             requests.post(
-                MONDAY_API_URL, headers=headers_api,
+                MONDAY_API_URL, headers=_headers,
                 json={"query": set_col_q, "variables": {
                     "item": subitem_id, "board": SEA_SUBITEM_BOARD_ID,
                     "col": "__1__cm__1", "val": f"{dims_m.group(1)}*{dims_m.group(2)}*{dims_m.group(3)}",
@@ -795,7 +799,7 @@ def update_sea_subitem_data(subitem_id: str, dimension: str, weight: str):
             )
         if weight_m:
             requests.post(
-                MONDAY_API_URL, headers=headers_api,
+                MONDAY_API_URL, headers=_headers,
                 json={"query": set_col_q, "variables": {
                     "item": subitem_id, "board": SEA_SUBITEM_BOARD_ID,
                     "col": "numeric__1", "val": weight_m.group(1),
