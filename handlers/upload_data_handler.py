@@ -522,16 +522,25 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
 
 def _build_combined_sea_options(valid_matches: list) -> list:
     """
-    Given multiple sea form matches, read their Workspace tracking IDs (追蹤碼1/2/3)
-    and return a flat list of tracking options across all form rows.
+    Given multiple sea form matches, return a flat list of all tracking options
+    across all form rows for the user to pick from.
+
+    Strategy (in order):
+      1. Read Workspace 追蹤碼1/2/3 for each form row.
+      2. For any row where Workspace gives fewer trackings than declared, fall
+         back to querying the Monday parent item and reading its subitems.
+         Subitems are sliced by offset (sum of num_packages of earlier matches
+         that share the same Monday parent).
+      3. If neither source has data, emit a "[待建立]" placeholder.
 
     Each option dict has:
-        tracking    – existing tracking string (or "[待建立] <timestamp>" if none)
+        tracking    – existing tracking string (or "[待建立] <timestamp>")
         content     – package content text for that slot
-        subitem_id  – empty string (resolved at selection time via Monday API)
-        _sea_match  – the full form-row match dict (for Monday creation / subitem lookup)
-        _create_new – True only if this row has no Workspace trackings yet
+        subitem_id  – Monday subitem ID if available, else ""
+        _sea_match  – the full form-row match dict
+        _create_new – True only when a brand-new subitem must be created
     """
+    # ── 1. Read Workspace tab ──────────────────────────────────────────────────
     try:
         gs = get_gspread_client()
         ws_ss = gs.open_by_key(OCEAN_FORM_SHEET_ID)
@@ -541,16 +550,17 @@ def _build_combined_sea_options(valid_matches: list) -> list:
         ws_all = ws_tab.get_all_values()
     except Exception as e:
         log.error(f"[SEA] Failed to read Workspace for combined tracking options: {e}", exc_info=True)
-        return []
+        ws_header_map = {}
+        ws_all = []
 
     track_col_names = ("追蹤碼1", "追蹤碼2", "追蹤碼3")
-    combined = []
 
+    # ── 2. Read Workspace trackings for each match ────────────────────────────
+    ws_per_match = []
     for m in valid_matches:
-        row_idx = m["sheet_row"]  # 1-based; mirrors Form Responses 1 row numbering
-        ws_row = ws_all[row_idx - 1] if row_idx <= len(ws_all) else []
-        pkg_contents = m.get("package_contents", [])
-
+        row_idx = m["sheet_row"]  # 1-based, mirrors Form Responses 1 row numbers
+        ws_row = ws_all[row_idx - 1] if 0 < row_idx <= len(ws_all) else []
+        num_packages = m.get("num_packages", 0) or max(1, len(m.get("package_contents", [])))
         slot_trackings = []
         for col_name in track_col_names:
             col_i = ws_header_map.get(col_name)
@@ -558,8 +568,62 @@ def _build_combined_sea_options(valid_matches: list) -> list:
                 val = ws_row[col_i].strip()
                 if val:
                     slot_trackings.append(val)
+        log.info(f"[SEA] combined_options: sheet_row={row_idx}, ts={m['timestamp']}, "
+                 f"num_packages={num_packages}, ws_trackings={slot_trackings}, total_ws={len(ws_all)}")
+        ws_per_match.append((m, num_packages, slot_trackings))
 
-        if slot_trackings:
+    # ── 3. Monday fallback: query parent subitems when Workspace is incomplete ─
+    # Cache parent → listing so we only query Monday once per unique parent.
+    _headers_api = {"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"}
+    parent_subs_cache: dict = {}   # parent_name -> [{"id": ..., "name": ...}]
+
+    def _get_parent_subs(m: dict) -> list:
+        cn, en, cid = m["chinese_name"], m.get("english_name", ""), m.get("client_id", "")
+        date_ymd = m["timestamp"][:10].replace("-", "")
+        pname = f"{date_ymd} - {cid} - {cn}" + (f" {en}" if en else "")
+        if pname in parent_subs_cache:
+            return parent_subs_cache[pname]
+        try:
+            q = """
+            query ($b: ID!, $v: String!) {
+                items_page_by_column_values(
+                    board_id: $b, limit: 1,
+                    columns: [{column_id: "name", column_values: [$v]}]
+                ) { items { subitems { id name } } }
+            }
+            """
+            resp = requests.post(
+                MONDAY_API_URL, headers=_headers_api,
+                json={"query": q, "variables": {"b": SEA_PARENT_BOARD_ID, "v": pname}},
+                timeout=15,
+            )
+            items = resp.json().get("data", {}).get("items_page_by_column_values", {}).get("items", [])
+            subs = items[0].get("subitems", []) if items else []
+            log.info(f"[SEA] combined_options Monday fallback: '{pname}' → {[s['name'] for s in subs]}")
+        except Exception as e:
+            log.error(f"[SEA] combined_options Monday query error: {e}", exc_info=True)
+            subs = []
+        parent_subs_cache[pname] = subs
+        return subs
+
+    # Track how many subitems each match consumes from the shared Monday parent
+    parent_offset: dict = {}  # parent_name -> int offset
+
+    def _parent_name(m: dict) -> str:
+        cn, en, cid = m["chinese_name"], m.get("english_name", ""), m.get("client_id", "")
+        date_ymd = m["timestamp"][:10].replace("-", "")
+        return f"{date_ymd} - {cid} - {cn}" + (f" {en}" if en else "")
+
+    # ── 4. Build combined list ─────────────────────────────────────────────────
+    combined = []
+    for m, num_packages, slot_trackings in ws_per_match:
+        pkg_contents = m.get("package_contents", [])
+        pname = _parent_name(m)
+        offset = parent_offset.get(pname, 0)
+        parent_offset[pname] = offset + num_packages
+
+        if len(slot_trackings) >= num_packages:
+            # Workspace has all slots for this row → use them
             for i, trk in enumerate(slot_trackings):
                 combined.append({
                     "tracking": trk,
@@ -568,15 +632,41 @@ def _build_combined_sea_options(valid_matches: list) -> list:
                     "_sea_match": m,
                 })
         else:
-            # No trackings written yet — placeholder; subitem will be created on selection
-            combined.append({
-                "tracking": f"[待建立] {m['timestamp']}",
-                "content": pkg_contents[0] if pkg_contents else "",
-                "subitem_id": "",
-                "_sea_match": m,
-                "_create_new": True,
-            })
+            # Workspace is missing some or all → try Monday
+            all_subs = _get_parent_subs(m)
+            my_subs = all_subs[offset:offset + num_packages]
+            # Items already in Workspace (avoid duplicates)
+            ws_set = set(slot_trackings)
+            added = 0
+            for i, sub in enumerate(my_subs):
+                if sub["name"] not in ws_set:
+                    combined.append({
+                        "tracking": sub["name"],
+                        "content": pkg_contents[i] if i < len(pkg_contents) else "",
+                        "subitem_id": sub["id"],
+                        "_sea_match": m,
+                    })
+                    added += 1
+            # Also keep any Workspace ones not already covered
+            for i, trk in enumerate(slot_trackings):
+                if trk not in {opt["tracking"] for opt in combined}:
+                    combined.append({
+                        "tracking": trk,
+                        "content": pkg_contents[i] if i < len(pkg_contents) else "",
+                        "subitem_id": "",
+                        "_sea_match": m,
+                    })
+            if added == 0 and not slot_trackings:
+                # Nothing anywhere yet — placeholder
+                combined.append({
+                    "tracking": f"[待建立] {m['timestamp']}",
+                    "content": pkg_contents[0] if pkg_contents else "",
+                    "subitem_id": "",
+                    "_sea_match": m,
+                    "_create_new": True,
+                })
 
+    log.info(f"[SEA] combined_options result: {[o['tracking'] for o in combined]}")
     return combined
 
 

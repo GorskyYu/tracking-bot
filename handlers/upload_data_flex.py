@@ -234,6 +234,68 @@ def build_field_selection_flex() -> dict:
     }
 
 
+def _build_sea_selection_bubble(chunk: list, global_offset: int, total: int) -> dict:
+    """Build one bubble for a page of sea-tracking-selection options.
+
+    Args:
+        chunk:         Slice of the full subitems list for this bubble.
+        global_offset: Index of chunk[0] in the full list (for 1-based button labels).
+        total:         Total number of options across all bubbles (for header text).
+    """
+    body_contents = [
+        {
+            "type": "text",
+            "text": "🚢 請選擇對應追蹤號碼",
+            "weight": "bold", "size": "xl", "color": "#1a1a1a",
+        },
+        {
+            "type": "text",
+            "text": (f"這個箱子的追蹤號碼是哪一個？（共 {total} 個選項）"
+                     if total > 3 else "這個箱子的追蹤號碼是哪一個？"),
+            "size": "sm", "color": "#888888", "margin": "md", "wrap": True,
+        },
+    ]
+    buttons = []
+    for local_i, item in enumerate(chunk):
+        global_i = global_offset + local_i          # 0-based global index
+        option_no = global_i + 1                    # 1-based for button text
+        tracking = item.get("tracking", "")
+        content = item.get("content", "")
+        preview = (content[:60] + "…") if len(content) > 60 else (content or "(無包裹內容)")
+        body_contents.append({
+            "type": "box", "layout": "vertical",
+            "margin": "lg",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": f"選項{option_no}：{tracking}",
+                    "weight": "bold", "size": "sm", "color": "#0057b8",
+                },
+                {
+                    "type": "text",
+                    "text": preview,
+                    "size": "xs", "color": "#555555", "wrap": True,
+                },
+            ],
+        })
+        buttons.append({
+            "type": "button",
+            "height": "sm",
+            "style": "primary" if local_i == 0 else "secondary",
+            "action": {
+                "type": "message",
+                "label": tracking[:40],
+                "text": f"選擇追蹤{option_no}",
+            },
+        })
+
+    return {
+        "type": "bubble",
+        "body": {"type": "box", "layout": "vertical", "contents": body_contents},
+        "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": buttons},
+    }
+
+
 def build_sea_tracking_selection_flex(subitems: list) -> dict:
     """
     Build a flex message asking the user which sea-freight tracking number
@@ -244,69 +306,17 @@ def build_sea_tracking_selection_flex(subitems: list) -> dict:
         {"tracking": str, "content": str, "subitem_id": str}
 
     The button text is "選擇追蹤N" (1-indexed), which the handler reads.
+    Supports up to 9 options via a carousel (3 options per bubble page).
     """
-    buttons = []
-    for i, item in enumerate(subitems[:3]):  # cap at 3 for UI cleanliness
-        tracking = item.get("tracking", "")
-        content = item.get("content", "")
-        preview = (content[:55] + "…") if len(content) > 55 else content
-        label_text = f"📦 {tracking}"
-        if preview:
-            label_text += f"\n{preview}"
-        buttons.append({
-            "type": "button",
-            "height": "sm",
-            "style": "primary" if i == 0 else "secondary",
-            "action": {
-                "type": "message",
-                "label": tracking[:40],          # LINE label limit
-                "text": f"選擇追蹤{i + 1}",
-            },
-        })
+    total = len(subitems)
+    page_size = 3
 
-    body_contents = [
-        {
-            "type": "text",
-            "text": "🚢 請選擇對應追蹤號碼",
-            "weight": "bold", "size": "xl", "color": "#1a1a1a",
-        },
-        {
-            "type": "text",
-            "text": "這個箱子的追蹤號碼是哪一個？",
-            "size": "sm", "color": "#888888", "margin": "md", "wrap": True,
-        },
-    ]
+    if total <= page_size:
+        return _build_sea_selection_bubble(subitems, global_offset=0, total=total)
 
-    # Add a preview row per subitem so the user can read content before tapping
-    for i, item in enumerate(subitems[:3]):
-        tracking = item.get("tracking", "")
-        content = item.get("content", "")
-        preview = (content[:60] + "…") if len(content) > 60 else (content or "(無包裹內容)")
-        body_contents.append({
-            "type": "box", "layout": "vertical",
-            "margin": "lg",
-            "contents": [
-                {
-                    "type": "text",
-                    "text": f"選項{i + 1}：{tracking}",
-                    "weight": "bold", "size": "sm", "color": "#0057b8",
-                },
-                {
-                    "type": "text",
-                    "text": preview,
-                    "size": "xs", "color": "#555555", "wrap": True,
-                },
-            ],
-        })
-
-    return {
-        "type": "bubble",
-        "body": {
-            "type": "box", "layout": "vertical",
-            "contents": body_contents,
-        },
-        "footer": {
-            "type": "box", "layout": "vertical", "spacing": "sm",
-            "contents": buttons,
-        },
-    }
+    # Multiple pages → carousel
+    bubbles = []
+    for start in range(0, total, page_size):
+        chunk = subitems[start:start + page_size]
+        bubbles.append(_build_sea_selection_bubble(chunk, global_offset=start, total=total))
+    return {"type": "carousel", "contents": bubbles}
