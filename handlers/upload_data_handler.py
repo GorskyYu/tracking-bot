@@ -288,6 +288,9 @@ def parse_message(text: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
         if bid_upper.startswith('AB'):
             if not data.get("vendor_box_id"):
                 data["vendor_box_id"] = bid_upper
+                # Auto-set 海運 when ABxx is detected (廠商箱號 implies sea freight)
+                data["hai_yun"] = "海運"
+                data.pop("kong_yun", None)
         else:
             if not data.get("box_id"):
                 data["box_id"] = bid_upper
