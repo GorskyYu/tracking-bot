@@ -469,6 +469,10 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
             if len(row) < 5:
                 continue
 
+            assigned_to = row[1] if len(row) > 1 else ""  # Col B
+            if assigned_to.strip().lower() == "cancelled":
+                continue
+
             timestamp_str  = row[0]  if len(row) > 0  else ""  # Col A
             chinese_name   = row[2]  if len(row) > 2  else ""  # Col C
             english_name   = row[3]  if len(row) > 3  else ""  # Col D
