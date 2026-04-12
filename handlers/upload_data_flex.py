@@ -1,4 +1,4 @@
-"""
+﻿"""
 上傳資料流程 - Flex Message 建構模組
 ────────────────────────────────────────
 Flex Message JSON builders for upload data feature.
@@ -45,6 +45,12 @@ def build_data_confirm_flex(data: Dict[str, Any]) -> dict:
         content_box.append(_kv_row("📦 Box ID", "⬜ 選填（海運）", "#888888"))
     else:
         content_box.append(_kv_row("📦 Box ID", "❌ 未提供", "#dc3545"))
+    
+    # 廠商箱號 (AB-prefix): show for sea freight or when present
+    if data.get("vendor_box_id"):
+        content_box.append(_kv_row("🏢 廠商箱號", data["vendor_box_id"], "#0066cc"))
+    elif data.get("hai_yun"):
+        content_box.append(_kv_row("🏢 廠商箱號", "⬜ 選填（ABxx）", "#888888"))
     
     if data.get("name"):
         content_box.append(_kv_row("👤 寄件人/客戶", data["name"], "#0066cc"))
@@ -190,6 +196,7 @@ def build_field_selection_flex() -> dict:
     """
     fields = [
         ("📦 Box ID",     "更正_box_id"),
+        ("🏢 廠商箱號",  "更正_vendor_box_id"),
         ("👤 寄件人/客戶", "更正_name"),
         ("📏 尺寸",       "更正_dimension"),
         ("⚖️ 重量",       "更正_weight"),

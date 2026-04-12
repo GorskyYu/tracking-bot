@@ -1,4 +1,4 @@
-"""
+﻿"""
 上傳資料處理器 - Upload Data Handler
 ────────────────────────────────────────────
 Manages the multi-step upload data conversation via LINE Flex Messages.
@@ -281,10 +281,16 @@ def parse_message(text: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
     data = existing_data.copy()
     
     # Try to parse each field if not already present
-    if not data.get("box_id"):
-        box_id = parse_box_id(text)
-        if box_id:
-            data["box_id"] = box_id
+    # Route box IDs by prefix: AB → vendor_box_id (col D); others → box_id (col B)
+    all_box_ids = re.findall(r'\b([A-Z]{2}\d{2,4})\b', text, re.IGNORECASE)
+    for bid in all_box_ids:
+        bid_upper = bid.upper()
+        if bid_upper.startswith('AB'):
+            if not data.get("vendor_box_id"):
+                data["vendor_box_id"] = bid_upper
+        else:
+            if not data.get("box_id"):
+                data["box_id"] = bid_upper
     
     if not data.get("dimension"):
         dimension = parse_dimension(text)
@@ -492,12 +498,14 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
 # Monday board IDs for sea freight (same as 加台海運資料表 config)
 SEA_PARENT_BOARD_ID  = os.getenv("SEA_PARENT_BOARD_ID", "8783157722")
 SEA_SUBITEM_BOARD_ID = os.getenv("SEA_SUBITEM_BOARD_ID", "8783157868")
+MONDAY_API_URL = "https://api.monday.com/v2"
 
 
 def create_sea_monday_items(
     match: Dict[str, Any],
     dimension: str,
     weight: str,
+    vendor_box_id: str = "",
 ) -> Dict[str, Any]:
     """
     Replicate the createPickupItem() logic from the 海運資料表 spreadsheet.
@@ -665,6 +673,12 @@ def create_sea_monday_items(
         _set_json("status_19__1", "新竹物流")
         # 地點 → Y/R/Simply
         _set_json("location__1", "Y/R/Simply")
+        # 廠商箱號 (text57__1) → AB vendor box ID if provided
+        if vendor_box_id:
+            try:
+                _set_simple("text57__1", vendor_box_id)
+            except Exception:
+                pass  # column may not exist on this board
 
         # --- Write tracking code to Workspace tab (追蹤碼1/2/3, cols S/T/U) ---
         try:
@@ -1042,7 +1056,7 @@ def upload_to_monday(tracking_no: str, dimensions: str, weight: str, box_id: str
 
 # ─── 打包資料表 Upload Function ───────────────────────────────────────────────
 
-def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str, col_l_remark: str = "", package_content: str = "") -> bool:
+def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str, col_l_remark: str = "", package_content: str = "", vendor_box_id: str = "") -> bool:
     """
     Upload data to 打包資料表 Form Responses 1 if tracking not already present.
     
@@ -1067,6 +1081,7 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         headers = ws.row_values(1)
         header_map = {h.strip(): i for i, h in enumerate(headers)}
         col_b_idx = header_map.get("廠商編號", 1)       # fallback: column B (index 1)
+        col_d_idx = header_map.get("箱號", 3)              # fallback: column D (index 3)
         col_l_idx = header_map.get("其他備註（要拆）", 11)  # fallback: column L (index 11)
         
         # Check if tracking already exists in column H (skip when tracking is empty)
@@ -1099,20 +1114,25 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         row_data[9] = package_content  # J: Package contents (第X件包裹內容物清單)
         row_data[10] = weight_value    # K: Weight as number
         
-        # Determine col B (廠商編號) and col L (其他備註（要拆）) values
+        # Determine col B (廠商編號), col D (箱號 / 廠商箱號), col L (其他備註（要拆）) values
         if col_l_remark == "海運":
             if box_id:
-                # Box ID present: col B = box_id, col L = 海運
+                # YL/SP box ID present: col B = box_id, col L = 海運
                 row_data[col_b_idx] = box_id
                 row_data[col_l_idx] = col_l_remark
             else:
                 # No box ID: col B = 海運, col L = 海運
                 row_data[col_b_idx] = col_l_remark
                 row_data[col_l_idx] = col_l_remark
+            # AB vendor box ID → col D (箱號)
+            if vendor_box_id:
+                row_data[col_d_idx] = vendor_box_id
         else:
             row_data[col_b_idx] = box_id  # Normal: col B = box_id
             if col_l_remark:              # e.g. 空運
                 row_data[col_l_idx] = col_l_remark
+            if vendor_box_id:
+                row_data[col_d_idx] = vendor_box_id
         
         ws.append_row(row_data)
         log.info(f"[UPLOAD] Successfully added to packing sheet: {tracking}")
@@ -1366,6 +1386,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
             "更正_weight":    "weight",
             "更正_tracking":  "tracking",
             "更正_transport": "transport",
+            "更正_vendor_box_id": "vendor_box_id",
         }
         if text == "返回確認":
             data = _get_data(redis_client, user_id)
@@ -1385,6 +1406,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 "weight":    "重量 （例：12.5kg）",
                 "tracking":  "追蹤編號",
                 "transport": "運送方式 （空運 / 海運）",
+                "vendor_box_id": "廠商箱號 （例：AB12）",
             }
             line_reply(reply_token, f"✏️ 請輸入新的 {_field_prompts[field]}：")
         else:
@@ -1425,6 +1447,12 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
         elif field == "tracking":
             val = parse_tracking(text) or text.strip()
             data["tracking"] = val
+        elif field == "vendor_box_id":
+            val = parse_box_id(text) or text.strip().upper()
+            if val:
+                data["vendor_box_id"] = val
+            else:
+                data.pop("vendor_box_id", None)
         elif field == "transport":
             if re.search(r'海[運运]', text):
                 data["hai_yun"] = "海運"
@@ -1462,6 +1490,7 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
             if sea_match:
                 result = create_sea_monday_items(
                     sea_match, data["dimension"], data["weight"],
+                    vendor_box_id=data.get("vendor_box_id", ""),
                 )
                 if result.get("success"):
                     monday_success = True
@@ -1478,6 +1507,7 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                 data["weight"],
                 col_l_remark,
                 data.get("package_content", ""),
+                data.get("vendor_box_id", ""),
             )
 
             box_display = data.get("box_id") or "未提供"
