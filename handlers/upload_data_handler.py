@@ -1114,9 +1114,9 @@ def upload_to_monday(tracking_no: str, dimensions: str, weight: str, box_id: str
 
 # ─── 打包資料表 Upload Function ───────────────────────────────────────────────
 
-def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str, col_l_remark: str = "", package_content: str = "", vendor_box_id: str = "") -> bool:
+def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str, col_l_remark: str = "", package_content: str = "", vendor_box_id: str = "") -> dict:
     """
-    Upload data to 打包資料表 Form Responses 1 if tracking not already present.
+    Upload data to 打包資料表 Form Responses 1 if not a duplicate.
     
     Args:
         box_id: Box ID (e.g., YL123)
@@ -1126,28 +1126,43 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         weight: Weight string (e.g., "12.15kg")
         col_l_remark: Value for col L 其他備註（要拆）(e.g. "海運" or "空運")
         package_content: Package contents from 第X件包裹內容物清單, written to col J
+        vendor_box_id: AB box ID written to col D
         
     Returns:
-        True if successful, False otherwise
+        Dict with keys:
+        - "success": bool (True if inserted or duplicate/ok, False on error)
+        - "duplicate": bool (True if duplicate found, not inserted)
+        - "message": str (Human-readable status message)
     """
     try:
         gs = get_gspread_client()
         ss = gs.open_by_key(PACKING_SHEET_ID)
         ws = ss.worksheet("Form Responses 1")
         
-        # Resolve column indices by header name
+        # Resolve column indices by header name (for flexible column ordering)
         headers = ws.row_values(1)
         header_map = {h.strip(): i for i, h in enumerate(headers)}
-        col_b_idx = header_map.get("廠商編號", 1)       # fallback: column B (index 1)
-        col_d_idx = header_map.get("箱號", 3)              # fallback: column D (index 3)
-        col_l_idx = header_map.get("其他備註（要拆）", 11)  # fallback: column L (index 11)
+        col_b_idx = header_map.get("廠商編號", 1)           # fallback: B
+        col_d_idx = header_map.get("箱號", 3)               # fallback: D
+        col_h_idx = header_map.get("追蹤編號", 7)           # fallback: H
+        col_i_idx = header_map.get("尺寸", 8)               # fallback: I
+        col_j_idx = header_map.get("內容物", 9)             # fallback: J
+        col_k_idx = header_map.get("重量", 10)              # fallback: K
+        col_l_idx = header_map.get("其他備註（要拆）", 11)    # fallback: L
         
-        # Check if tracking already exists in column H (skip when tracking is empty)
+        # Check for duplicates: tracking + name combination
+        all_rows = ws.get_all_values()[1:]  # Skip header
         if tracking:
-            col_h_values = ws.col_values(8)  # Column H
-            if tracking in col_h_values:
-                log.info(f"[UPLOAD] Tracking {tracking} already exists in packing sheet")
-                return True  # Already exists, consider it success
+            for row in all_rows:
+                if len(row) > col_h_idx and row[col_h_idx].strip() == tracking:
+                    # Verify it's the same sender (use index 4 for default name column)
+                    if len(row) > 4 and row[4].strip() == name:
+                        log.info(f"[UPLOAD] Duplicate found: tracking={tracking}, name={name}")
+                        return {
+                            "success": True,
+                            "duplicate": True,
+                            "message": f"✓ 重複記錄已略過（追蹤碼: {tracking}）"
+                        }
         
         # Prepare row data
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1165,12 +1180,12 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         # Build row with enough columns to cover col L
         num_cols = max(col_l_idx + 1, 12)
         row_data = [""] * num_cols
-        row_data[0] = timestamp       # A: timestamp
-        row_data[4] = name            # E: Sender Name/Client ID
-        row_data[7] = tracking        # H: Tracking ID
-        row_data[8] = dimension_clean  # I: Dimension (no unit)
-        row_data[9] = package_content  # J: Package contents (第X件包裹內容物清單)
-        row_data[10] = weight_value    # K: Weight as number
+        row_data[0] = timestamp                              # A: timestamp
+        row_data[4] = name                                   # E: Sender Name/Client ID (default index 4)
+        row_data[col_h_idx] = tracking                       # H: Tracking ID
+        row_data[col_i_idx] = dimension_clean                # I: Dimension (no unit)
+        row_data[col_j_idx] = package_content                # J: Package contents (內容物)
+        row_data[col_k_idx] = weight_value                   # K: Weight as number
         
         # Determine col B (廠商編號), col D (箱號 / 廠商箱號), col L (其他備註（要拆）) values
         if col_l_remark == "海運":
@@ -1193,11 +1208,20 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
                 row_data[col_d_idx] = vendor_box_id
         
         ws.append_row(row_data)
-        log.info(f"[UPLOAD] Successfully added to packing sheet: {tracking}")
-        return True
+        log.info(f"[UPLOAD] Successfully added to packing sheet: {tracking} (content: {package_content})")
+        return {
+            "success": True,
+            "duplicate": False,
+            "message": f"✓ 打包資料表已記錄"
+        }
         
     except Exception as e:
         log.error(f"[UPLOAD] Error uploading to packing sheet: {e}", exc_info=True)
+        return {
+            "success": False,
+            "duplicate": False,
+            "message": f"✗ 打包資料表寫入失敗: {str(e)}"
+        }
         return False
 
 
@@ -1448,7 +1472,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 data["tracking"] = sea_trackings[idx]["tracking"]
                 _set_data(redis_client, user_id, data)
 
-                sheet_success = upload_to_packing_sheet(
+                sheet_result = upload_to_packing_sheet(
                     data.get("box_id", ""),
                     data["name"],
                     data["tracking"],
@@ -1459,20 +1483,23 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                     data.get("vendor_box_id", ""),
                 )
                 box_display = data.get("box_id") or "未提供"
-                if sheet_success:
+                if sheet_result["success"]:
                     msg = (f"\u2705 \u6d77\u904b\u8cc7\u6599\u4e0a\u50b3\u6210\u529f\uff01\n\n"
                            f"\ud83d\udce6 Box ID: {box_display}\n"
                            f"\ud83d\udc64 \u5bc4\u4ef6\u4eba: {data['name']}\n"
                            f"\ud83d\udd22 \u8ffd\u8e64\u7de8\u865f: {data['tracking']}\n"
                            f"\ud83d\udcaf \u5c3a\u5bf8: {data['dimension']}\n"
                            f"\u2696\ufe0f \u91cd\u91cf: {data['weight']}\n\n"
-                           f"\u2713 Monday \u6d77\u904b\u677f\u584a \u5df2\u5efa\u7acb\n"
-                           f"\u2713 \u6253\u5305\u8cc7\u6599\u8868 \u5df2\u8a18\u9304\n\n"
-                           f"\u7e7c\u7e8c\u8f38\u5165\u8cc7\u6599\uff0c\u6216\u8f38\u5165 'end' \u7d50\u675f")
+                           f"\u2713 Monday \u6d77\u904b\u677f\u584a \u5df2\u5efa\u7acb\n")
+                    if sheet_result["duplicate"]:
+                        msg += f"\u26a0\ufe0f {sheet_result['message']}\n\n"
+                    else:
+                        msg += f"\u2713 \u6253\u5305\u8cc7\u6599\u8868 \u5df2\u8a18\u9304\n\n"
+                    msg += f"\u7e7c\u7e8c\u8f38\u5165\u8cc7\u6599\uff0c\u6216\u8f38\u5165 'end' \u7d50\u675f"
                 else:
                     msg = (f"\u26a0\ufe0f \u90e8\u5206\u6210\u529f\n\n"
                            f"\u2713 Monday \u6d77\u904b\u677f\u584a \u5df2\u5efa\u7acb\n"
-                           f"\u2717 \u6253\u5305\u8cc7\u6599\u8868 \u8a18\u9304\u5931\u6557\n\n"
+                           f"\u2717 \u6253\u5305\u8cc7\u6599\u8868 \u8a18\u9304\u5931\u6557\n\u7531: {sheet_result['message']}\n\n"
                            f"\u7e7c\u7e8c\u8f38\u5165\u8cc7\u6599\uff0c\u6216\u8f38\u5165 'end' \u7d50\u675f")
                 redis_client.delete(_key(user_id, "sea_trackings"))
                 _set_state(redis_client, user_id, "collecting")
@@ -1627,7 +1654,7 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                 else:
                     log.warning(f"[UPLOAD] Sea Monday creation failed: {result.get('error')}")
 
-            sheet_success = upload_to_packing_sheet(
+            sheet_result = upload_to_packing_sheet(
                 data.get("box_id", ""),
                 data["name"],
                 data.get("tracking", ""),
@@ -1639,31 +1666,37 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
             )
 
             box_display = data.get("box_id") or "未提供"
-            if monday_success and sheet_success:
+            if monday_success and sheet_result["success"]:
                 msg = (f"✅ 海運資料上傳成功！\n\n"
                       f"📦 Box ID: {box_display}\n"
                       f"👤 寄件人: {data['name']}\n"
                       f"🔢 追蹤編號: {monday_tracking}\n"
                       f"📏 尺寸: {data['dimension']}\n"
                       f"⚖️ 重量: {data['weight']}\n\n"
-                      f"✓ Monday 海運板塊 已建立\n"
-                      f"✓ 打包資料表 已記錄\n\n"
-                      f"繼續輸入資料，或輸入 'end' 結束")
+                      f"✓ Monday 海運板塊 已建立\n")
+                if sheet_result["duplicate"]:
+                    msg += f"⚠️ {sheet_result['message']}\n\n"
+                else:
+                    msg += f"✓ 打包資料表 已記錄\n\n"
+                msg += f"繼續輸入資料，或輸入 'end' 結束"
             elif monday_success:
                 msg = (f"⚠️ 部分成功\n\n"
                       f"✓ Monday 海運板塊 已建立\n"
-                      f"✗ 打包資料表 記錄失敗\n\n"
+                      f"✗ 打包資料表 記錄失敗: {sheet_result['message']}\n\n"
                       f"繼續輸入資料，或輸入 'end' 結束")
-            elif sheet_success:
+            elif sheet_result["success"]:
                 if sea_match:
                     msg = (f"⚠️ 部分成功\n\n"
                           f"📦 Box ID: {box_display}\n"
                           f"👤 寄件人: {data['name']}\n"
                           f"📏 尺寸: {data['dimension']}\n"
                           f"⚖️ 重量: {data['weight']}\n\n"
-                          f"✗ Monday 海運板塊 建立失敗\n"
-                          f"✓ 打包資料表 已記錄\n\n"
-                          f"繼續輸入資料，或輸入 'end' 結束")
+                          f"✗ Monday 海運板塊 建立失敗\n")
+                    if sheet_result["duplicate"]:
+                        msg += f"⚠️ {sheet_result['message']}\n\n"
+                    else:
+                        msg += f"✓ 打包資料表 已記錄\n\n"
+                    msg += f"繼續輸入資料，或輸入 'end' 結束"
                 else:
                     msg = (f"✅ 海運記錄已寫入打包資料表！\n\n"
                           f"📦 Box ID: {box_display}\n"
@@ -1675,7 +1708,7 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                           f"並自行推送資料至 Monday\n\n"
                           f"繼續輸入資料，或輸入 'end' 結束")
             else:
-                msg = "❌ 上傳失敗，請重試\n\n輸入重新開始或 'end' 結束"
+                msg = f"❌ 上傳失敗: {sheet_result['message']}\n\n輸入重新開始或 'end' 結束"
 
             line_reply(reply_token, msg)
             _set_state(redis_client, user_id, "collecting")
@@ -1692,7 +1725,7 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
         )
         
         # Upload to packing sheet
-        sheet_success = upload_to_packing_sheet(
+        sheet_result = upload_to_packing_sheet(
             data.get("box_id", ""),
             data["name"],
             data["tracking"],
@@ -1703,28 +1736,34 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
         )
         
         # Send result
-        if monday_success and sheet_success:
+        if monday_success and sheet_result["success"]:
             msg = (f"✅ 資料上傳成功！\n\n"
                   f"📦 Box ID: {data.get('box_id', '未提供')}\n"
                   f"👤 寄件人: {data['name']}\n"
                   f"🔢 追蹤編號: {data['tracking']}\n"
                   f"📏 尺寸: {data['dimension']}\n"
                   f"⚖️ 重量: {data['weight']}\n\n"
-                  f"✓ Monday 已更新\n"
-                  f"✓ 打包資料表 已記錄\n\n"
-                  f"繼續輸入資料，或輸入 'end' 結束")
+                  f"✓ Monday 已更新\n")
+            if sheet_result["duplicate"]:
+                msg += f"⚠️ {sheet_result['message']}\n\n"
+            else:
+                msg += f"✓ 打包資料表 已記錄\n\n"
+            msg += f"繼續輸入資料，或輸入 'end' 結束"
         elif monday_success:
             msg = (f"⚠️ 部分成功\n\n"
                   f"✓ Monday 已更新\n"
-                  f"✗ 打包資料表 記錄失敗\n\n"
+                  f"✗ 打包資料表 記錄失敗: {sheet_result['message']}\n\n"
                   f"繼續輸入資料，或輸入 'end' 結束")
-        elif sheet_success:
+        elif sheet_result["success"]:
             msg = (f"⚠️ 部分成功\n\n"
-                  f"✗ Monday 更新失敗\n"
-                  f"✓ 打包資料表 已記錄\n\n"
-                  f"繼續輸入資料，或輸入 'end' 結束")
+                  f"✗ Monday 更新失敗\n")
+            if sheet_result["duplicate"]:
+                msg += f"⚠️ {sheet_result['message']}\n\n"
+            else:
+                msg += f"✓ 打包資料表 已記錄\n\n"
+            msg += f"繼續輸入資料，或輸入 'end' 結束"
         else:
-            msg = "❌ 上傳失敗，請檢查數據後重試\n\n輸入重新開始或 'end' 結束"
+            msg = f"❌ 上傳失敗: {sheet_result['message']}\n\n輸入重新開始或 'end' 結束"
         
         line_reply(reply_token, msg)
         

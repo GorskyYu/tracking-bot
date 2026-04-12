@@ -280,7 +280,7 @@ def webhook():
             if last_tracking and box_id_parsed and (dim_parsed or wt_parsed):
                 hai_yun_parsed = parse_hai_yun(text)
                 col_l = hai_yun_parsed if hai_yun_parsed else "空運"
-                ok = upload_to_packing_sheet(
+                result = upload_to_packing_sheet(
                     box_id=box_id_parsed,
                     name="",
                     tracking=last_tracking,
@@ -289,10 +289,13 @@ def webhook():
                     col_l_remark=col_l,
                 )
                 redis_client.delete(barcode_pending_key)
-                if ok:
-                    line_push(group_id, f"✅ 已記錄至打包資料表\n📦 {box_id_parsed} | 🔢 {last_tracking}")
+                if result["success"]:
+                    msg = f"✅ 已記錄至打包資料表\n📦 {box_id_parsed} | 🔢 {last_tracking}"
+                    if result["duplicate"]:
+                        msg += f"\n⚠️ {result['message']}"
+                    line_push(group_id, msg)
                 else:
-                    line_push(group_id, f"❌ 打包資料表記錄失敗\n📦 {box_id_parsed}")
+                    line_push(group_id, f"❌ 打包資料表記錄失敗\n📦 {box_id_parsed}\n{result['message']}")
                 continue
             elif not last_tracking and box_id_parsed and (dim_parsed or wt_parsed):
                 # Box ID with package data but no prior barcode scan for this group
