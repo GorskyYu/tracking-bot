@@ -158,9 +158,11 @@ def parse_weight(text: str) -> Optional[str]:
         return f"{weight:.2f}kg"
     
     # If no unit found, look for a standalone number (not part of dimensions)
+    # First remove box ID patterns (ABxx, YLxx, SPxx, etc.) to avoid matching them as weight
+    cleaned = re.sub(r'\b[A-Z]{2}\d{2,4}\b', '', text, flags=re.IGNORECASE)
     # Avoid matching numbers that are part of dimension pattern (X*X*X)
     pattern_standalone = r'(?<!\*)(?<!\d)(\d+(?:\.\d+)?)(?!\*|\d)'
-    matches = re.findall(pattern_standalone, text)
+    matches = re.findall(pattern_standalone, cleaned)
     
     # Get the last standalone number as weight (dimensions usually come first)
     if matches:
