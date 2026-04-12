@@ -1185,32 +1185,80 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         col_k_idx = header_map.get("重量", 10)              # fallback: K
         col_l_idx = header_map.get("其他備註（要拆）", 11)    # fallback: L
         
-        # Check for duplicates: tracking + name combination
-        all_rows = ws.get_all_values()[1:]  # Skip header
-        if tracking:
-            for row in all_rows:
-                if len(row) > col_h_idx and row[col_h_idx].strip() == tracking:
-                    # Verify it's the same sender (use index 4 for default name column)
-                    if len(row) > 4 and row[4].strip() == name:
-                        log.info(f"[UPLOAD] Duplicate found: tracking={tracking}, name={name}")
-                        return {
-                            "success": True,
-                            "duplicate": True,
-                            "message": f"✓ 重複記錄已略過（追蹤碼: {tracking}）"
-                        }
-        
-        # Prepare row data
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+        # Pre-compute cleaned dimension / weight (needed for both dup-check and insert)
         # Strip unit suffix from dimension (parse_dimension returns "43*14*34cm")
         dimension_clean = re.sub(r'\s*(cm|公分)\s*$', '', dimension, flags=re.IGNORECASE).strip()
-        
+
         # Weight: strip unit and convert to float so Google Sheets stores as a number
         weight_str = re.sub(r'\s*(kg|公斤)\s*$', '', weight, flags=re.IGNORECASE).strip()
         try:
             weight_value = float(weight_str)
         except (ValueError, TypeError):
             weight_value = weight_str  # fallback: keep as string if unparseable
+
+        def _norm_dim(d: str):
+            """Sort dimension parts so 43*68*43 == 43*43*68."""
+            parts = re.findall(r'\d+', d)
+            return tuple(sorted(int(p) for p in parts)) if len(parts) == 3 else None
+
+        def _norm_weight(w) -> float | None:
+            try:
+                return float(re.sub(r'[^\d.]', '', str(w)))
+            except (ValueError, TypeError):
+                return None
+
+        new_dim_norm = _norm_dim(dimension_clean)
+        new_weight_norm = _norm_weight(weight_value)
+
+        # Compute new col B value (same logic as the insert path)
+        if col_l_remark == "海運":
+            new_b_val = box_id if box_id else col_l_remark
+        else:
+            new_b_val = box_id
+
+        # Check for duplicates:
+        #   Primary:  same tracking + same name
+        #   Fallback: same name + same normalised dimensions + same weight
+        # When a duplicate is found, update col B (廠商編號) and col D (箱號) on the
+        # existing row so corrections are applied without creating a second entry.
+        all_rows = ws.get_all_values()[1:]  # Skip header
+        dup_row_idx = None  # 0-based index in all_rows
+        for i, row in enumerate(all_rows):
+            row_name = row[4].strip() if len(row) > 4 else ""
+            if row_name != name:
+                continue
+            row_tracking = row[col_h_idx].strip() if len(row) > col_h_idx else ""
+            # Primary match: tracking
+            if tracking and row_tracking == tracking:
+                dup_row_idx = i
+                break
+            # Fallback match: normalised dimensions + weight
+            row_dim_norm = _norm_dim(row[col_i_idx].strip() if len(row) > col_i_idx else "")
+            row_weight_norm = _norm_weight(row[col_k_idx].strip() if len(row) > col_k_idx else "")
+            if (new_dim_norm and row_dim_norm == new_dim_norm
+                    and new_weight_norm is not None and row_weight_norm == new_weight_norm):
+                dup_row_idx = i
+                break
+
+        if dup_row_idx is not None:
+            sheet_row = dup_row_idx + 2  # +1 for skipped header, +1 for 1-based
+            updated_fields = []
+            if new_b_val:
+                ws.update_cell(sheet_row, col_b_idx + 1, new_b_val)
+                updated_fields.append(f"廠商編號={new_b_val}")
+            if vendor_box_id:
+                ws.update_cell(sheet_row, col_d_idx + 1, vendor_box_id)
+                updated_fields.append(f"箱號={vendor_box_id}")
+            log.info(f"[UPLOAD] Duplicate for {name} (row {sheet_row}), updated: {updated_fields}")
+            return {
+                "success": True,
+                "duplicate": True,
+                "message": (f"✓ 重複記錄，已更新 {', '.join(updated_fields)}"
+                            if updated_fields else f"✓ 重複記錄已略過（{name}）"),
+            }
+
+        # Prepare row data
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         # Build row with enough columns to cover col L
         num_cols = max(col_l_idx + 1, 12)
