@@ -239,6 +239,40 @@ def build_service_select_flex(all_services: List[ServiceQuote],
     }
 
 
+# ─── GV Delivery Selection Flex ──────────────────────────────────────────────
+
+def build_gv_delivery_flex() -> dict:
+    """Bubble asking GV users to pick Drop Off or Pickup."""
+    return {
+        "type": "bubble",
+        "body": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "🚚 境內段運送服務",
+                 "weight": "bold", "size": "lg", "color": "#1a1a1a"},
+                {"type": "text", "wrap": True,
+                 "text": "📍 偵測到大溫地區郵遞區號，無需境內段運送。\n請選擇您的投遞方式：",
+                 "size": "sm", "color": "#888888", "margin": "md"},
+            ],
+        },
+        "footer": {
+            "type": "box", "layout": "horizontal", "spacing": "sm",
+            "contents": [
+                {"type": "button", "height": "sm", "style": "primary",
+                 "color": "#28a745",
+                 "action": {"type": "message",
+                            "label": "🏢 自行送倉 Drop Off",
+                            "text": "報價選擇送倉"}},
+                {"type": "button", "height": "sm", "style": "primary",
+                 "color": "#17a2b8",
+                 "action": {"type": "message",
+                            "label": "🚚 上門取件 Pickup",
+                            "text": "報價選擇取件"}},
+            ],
+        },
+    }
+
+
 # ─── Mode Selection Flex ─────────────────────────────────────────────────────
 
 def build_mode_select_flex() -> dict:

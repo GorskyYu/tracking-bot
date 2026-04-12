@@ -23,6 +23,7 @@ from services.quote_service import (
     get_te_quotes, get_cp_quotes,
     calculate_box_weights, build_quote_text,
     WAREHOUSE_POSTAL, _fmt_postal, OpenAIQuotaExceeded,
+    is_greater_vancouver,
 )
 from services.line_service import (
     line_push, line_reply, line_push_flex,
@@ -34,8 +35,8 @@ from handlers.quote_config import (
 )
 from handlers.quote_flex import (
     build_confirm_flex, build_service_select_flex,
-    build_mode_select_flex, build_result_flex,
-    build_post_quote_flex,
+    build_gv_delivery_flex, build_mode_select_flex,
+    build_result_flex, build_post_quote_flex,
 )
 
 log = logging.getLogger(__name__)
@@ -83,7 +84,8 @@ def _append_buffer(r, uid, text):
 
 def _clear_session(r, uid):
     for suffix in ("state", "data", "buffer", "target",
-                    "services", "selected_svc", "selected_mode", "profile"):
+                    "services", "selected_svc", "selected_mode", "profile",
+                    "gv_delivery"):
         r.delete(_key(uid, suffix))
 
 
@@ -150,6 +152,14 @@ def _set_selected_mode(r, uid, mode: str):
 
 def _get_selected_mode(r, uid) -> Optional[str]:
     return r.get(_key(uid, "selected_mode"))
+
+
+def _set_gv_delivery(r, uid, delivery: str):
+    r.set(_key(uid, "gv_delivery"), delivery, ex=QUOTE_TTL)
+
+
+def _get_gv_delivery(r, uid) -> Optional[str]:
+    return r.get(_key(uid, "gv_delivery"))
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
@@ -219,6 +229,14 @@ def handle_quote_message(event: dict, user_id: str,
 
     if state == "correcting":
         return _on_correcting(r, user_id, target_id, text)
+
+    if state == "choosing_gv_delivery":
+        if text == "報價選擇送倉":
+            return _on_gv_delivery_selected(r, user_id, target_id, "dropoff", profile)
+        if text == "報價選擇取件":
+            return _on_gv_delivery_selected(r, user_id, target_id, "pickup", profile)
+        line_push(target_id, "請點選「🏢 自行送倉」或「🚚 上門取件」按鈕。")
+        return True
 
     if state == "choosing_service":
         if text.startswith("報價選擇服務_"):
@@ -383,6 +401,13 @@ def _on_confirmed(r, uid, target, profile):
 
     from_postal = postal_codes[0]
 
+    # ── GV postal code → skip domestic leg, ask drop-off / pickup ────
+    if len(postal_codes) == 1 and is_greater_vancouver(from_postal):
+        _set_state(r, uid, "choosing_gv_delivery")
+        flex = build_gv_delivery_flex()
+        line_push_flex(target, "🚚 境內段運送服務", flex)
+        return True
+
     if len(postal_codes) >= 2:
         # 加境內: ship between two Canadian addresses
         to_postal = postal_codes[1]
@@ -456,6 +481,37 @@ def _on_correcting(r, uid, target, text):
 
     flex = build_confirm_flex(parsed)
     line_push_flex(target, "📦 包裹資料確認", flex)
+    return True
+
+
+def _on_gv_delivery_selected(r, uid, target, delivery, profile):
+    """User picked Drop Off or Pickup for GV postal code."""
+    _set_gv_delivery(r, uid, delivery)
+
+    data = _get_data(r, uid)
+    if not data:
+        line_push(target, "❌ 資料遺失，請重新輸入「開始報價」。")
+        _clear_session(r, uid)
+        return True
+
+    # Create a dummy $0 domestic service (no domestic shipping needed for GV)
+    label = "Drop Off" if delivery == "dropoff" else "Pickup"
+    dummy_svc = ServiceQuote(
+        carrier="Local", name=label,
+        freight=0, surcharges=0, tax=0, total=0,
+        eta="N/A", surcharge_details="", source="GV",
+    )
+    _set_services(r, uid, [dummy_svc])
+    _set_selected_svc(r, uid, 0)
+
+    # Profile forces mode? (e.g. Iris → always 加台空運)
+    if not profile.allow_mode_select and profile.forced_mode:
+        return _on_mode_selected(r, uid, target, profile.forced_mode, profile)
+
+    # Ask air/sea
+    _set_state(r, uid, "choosing_mode")
+    flex = build_mode_select_flex()
+    line_push_flex(target, "請選擇運送方式", flex)
     return True
 
 
@@ -671,10 +727,15 @@ def _calculate_and_send_quote(r, uid, target, mode, from_postal, to_postal,
     try:
         box_weights = calculate_box_weights(packages, mode)
 
+        # Retrieve GV delivery type if set (drop-off / pickup)
+        gv_delivery = _get_gv_delivery(r, uid)
+        pickup_fee = -1 if gv_delivery == "pickup" else 0
+
         # Build canned text using the selected service
         quote_text = build_quote_text(
             mode, from_postal, to_postal,
             packages, box_weights, selected_svc, all_services,
+            gv_delivery=gv_delivery, pickup_fee=pickup_fee,
         )
 
         # Build comparison flex (titled "境內段運費比較")
