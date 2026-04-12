@@ -625,6 +625,27 @@ def create_sea_monday_items(
         num_packages = num_packages_declared if num_packages_declared >= 1 else max(1, len(package_contents))
         log.info(f"[SEA] 包裹數 declared={num_packages_declared}, package_contents={package_contents}, using num_packages={num_packages}")
 
+        existing_count = len(existing_subs)
+
+        # --- If all subitems already exist, just return them for selection ----
+        # (e.g. second physical box of a multi-package shipment)
+        if existing_count >= num_packages:
+            log.info(f"[SEA] All {num_packages} subitems already exist (existing={existing_count}), skipping creation")
+            created_subitems = []
+            for i, s in enumerate(existing_subs[:num_packages]):
+                pkg_content = package_contents[i] if i < len(package_contents) else ""
+                created_subitems.append({
+                    "tracking": s["name"],
+                    "content": pkg_content,
+                    "subitem_id": s["id"],
+                })
+            return {
+                "success": True,
+                "parent_id": parent_id,
+                "subitems": created_subitems,
+                "tracking": created_subitems[0]["tracking"] if created_subitems else "",
+            }
+
         # --- Shared GraphQL templates -----------------------------------------
         create_sub_q = """
         mutation ($pid: ID!, $name: String!) {
@@ -674,19 +695,26 @@ def create_sea_monday_items(
 
         dims_m = re.match(r'(\d+)\*(\d+)\*(\d+)', dimension)
         weight_m = re.match(r'([\d.]+)', weight)
-        existing_count = len(existing_subs)
 
+        # Only create subitems that are still missing
+        # (existing_count < num_packages at this point)
         created_subitems = []
         for pkg_idx in range(num_packages):
             # Name: no suffix for index 0, #N for subsequent
-            overall_idx = existing_count + pkg_idx
+            overall_idx = pkg_idx  # absolute index (0-based) within this customer's subitems
             pkg_sub_name = sub_name if overall_idx == 0 else f"{sub_name} #{overall_idx + 1}"
             pkg_content = package_contents[pkg_idx] if pkg_idx < len(package_contents) else ""
 
-            # Find or create this subitem
+            # Reuse if it already exists, else create
             if pkg_sub_name in existing_names:
                 s_id = existing_names[pkg_sub_name]
                 log.info(f"[SEA] Reusing existing subitem '{pkg_sub_name}' → {s_id}")
+                created_subitems.append({
+                    "tracking": pkg_sub_name,
+                    "content": pkg_content,
+                    "subitem_id": s_id,
+                })
+                continue
             else:
                 resp = requests.post(
                     MONDAY_API_URL, headers=headers_api,
