@@ -234,7 +234,8 @@ def build_field_selection_flex() -> dict:
     }
 
 
-def _build_sea_selection_bubble(chunk: list, global_offset: int, total: int, box_id: str = "") -> dict:
+def _build_sea_selection_bubble(chunk: list, global_offset: int, total: int,
+                                box_id: str = "", merged_info: dict = None) -> dict:
     """Build one bubble for a page of sea-tracking-selection options.
 
     Args:
@@ -242,6 +243,9 @@ def _build_sea_selection_bubble(chunk: list, global_offset: int, total: int, box
         global_offset: Index of chunk[0] in the full list (for 1-based button labels).
         total:         Total number of options across all bubbles (for header text).
         box_id:        Current box ID to display in the header.
+        merged_info:   If all options share the same chinese_name/english_name/client_id,
+                       these are merged into one dict shown in the header.
+                       Keys: chinese_name, english_name, client_id (each str or None).
     """
     _box_label = f"({box_id})" if box_id else ""
     body_contents = [
@@ -257,6 +261,27 @@ def _build_sea_selection_bubble(chunk: list, global_offset: int, total: int, box
             "size": "sm", "color": "#888888", "margin": "md", "wrap": True,
         },
     ]
+
+    # ── Merged customer info (shown once in header if identical) ──
+    if merged_info:
+        info_parts = []
+        cn = merged_info.get("chinese_name")
+        en = merged_info.get("english_name")
+        cid = merged_info.get("client_id")
+        if cn:
+            info_parts.append(f"中文名: {cn}")
+        if en:
+            info_parts.append(f"英文名: {en}")
+        if cid:
+            info_parts.append(f"Abowbow: {cid}")
+        if info_parts:
+            body_contents.append({
+                "type": "text",
+                "text": " ｜ ".join(info_parts),
+                "size": "xs", "color": "#333333", "margin": "md", "wrap": True,
+            })
+            body_contents.append({"type": "separator", "margin": "md"})
+
     buttons = []
     for local_i, item in enumerate(chunk):
         global_i = global_offset + local_i          # 0-based global index
@@ -264,21 +289,44 @@ def _build_sea_selection_bubble(chunk: list, global_offset: int, total: int, box
         tracking = item.get("tracking", "")
         content = item.get("content", "")
         preview = (content[:60] + "…") if len(content) > 60 else (content or "(無包裹內容)")
+
+        option_contents = [
+            {
+                "type": "text",
+                "text": f"選項{option_no}：{tracking}",
+                "weight": "bold", "size": "sm", "color": "#0057b8",
+            },
+            {
+                "type": "text",
+                "text": preview,
+                "size": "xs", "color": "#555555", "wrap": True,
+            },
+        ]
+
+        # Per-option customer info (only when NOT merged)
+        if not merged_info:
+            sea_match = item.get("_sea_match", {})
+            per_parts = []
+            cn = sea_match.get("chinese_name", "")
+            en = sea_match.get("english_name", "")
+            cid = sea_match.get("client_id", "")
+            if cn:
+                per_parts.append(f"中文: {cn}")
+            if en:
+                per_parts.append(f"英文: {en}")
+            if cid:
+                per_parts.append(f"ABB: {cid}")
+            if per_parts:
+                option_contents.append({
+                    "type": "text",
+                    "text": " ｜ ".join(per_parts),
+                    "size": "xxs", "color": "#999999", "wrap": True,
+                })
+
         body_contents.append({
             "type": "box", "layout": "vertical",
             "margin": "lg",
-            "contents": [
-                {
-                    "type": "text",
-                    "text": f"選項{option_no}：{tracking}",
-                    "weight": "bold", "size": "sm", "color": "#0057b8",
-                },
-                {
-                    "type": "text",
-                    "text": preview,
-                    "size": "xs", "color": "#555555", "wrap": True,
-                },
-            ],
+            "contents": option_contents,
         })
         buttons.append({
             "type": "button",
@@ -305,7 +353,8 @@ def build_sea_tracking_selection_flex(subitems: list, box_id: str = "") -> dict:
     and a short package-content preview.
 
     `subitems` is a list of dicts:
-        {"tracking": str, "content": str, "subitem_id": str}
+        {"tracking": str, "content": str, "subitem_id": str,
+         "_sea_match": {"chinese_name": ..., "english_name": ..., "client_id": ...}}
 
     The button text is "選擇追蹤N" (1-indexed), which the handler reads.
     Supports up to 9 options via a carousel (3 options per bubble page).
@@ -313,12 +362,37 @@ def build_sea_tracking_selection_flex(subitems: list, box_id: str = "") -> dict:
     total = len(subitems)
     page_size = 3
 
+    # ── Compute merged customer info (merge if all options share the same) ──
+    merged_info = None
+    if total > 0:
+        first_m = (subitems[0].get("_sea_match") or {})
+        cn_set = set()
+        en_set = set()
+        cid_set = set()
+        for item in subitems:
+            m = item.get("_sea_match") or {}
+            cn_set.add(m.get("chinese_name", ""))
+            en_set.add(m.get("english_name", ""))
+            cid_set.add(m.get("client_id", ""))
+        # Remove empties for comparison
+        cn_vals = cn_set - {""}
+        en_vals = en_set - {""}
+        cid_vals = cid_set - {""}
+        if len(cn_vals) <= 1 and len(en_vals) <= 1 and len(cid_vals) <= 1:
+            merged_info = {
+                "chinese_name": cn_vals.pop() if cn_vals else None,
+                "english_name": en_vals.pop() if en_vals else None,
+                "client_id": cid_vals.pop() if cid_vals else None,
+            }
+
     if total <= page_size:
-        return _build_sea_selection_bubble(subitems, global_offset=0, total=total, box_id=box_id)
+        return _build_sea_selection_bubble(subitems, global_offset=0, total=total,
+                                           box_id=box_id, merged_info=merged_info)
 
     # Multiple pages → carousel
     bubbles = []
     for start in range(0, total, page_size):
         chunk = subitems[start:start + page_size]
-        bubbles.append(_build_sea_selection_bubble(chunk, global_offset=start, total=total, box_id=box_id))
+        bubbles.append(_build_sea_selection_bubble(chunk, global_offset=start, total=total,
+                                                    box_id=box_id, merged_info=merged_info))
     return {"type": "carousel", "contents": bubbles}
