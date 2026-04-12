@@ -774,8 +774,10 @@ def create_sea_monday_items(
         return {"success": False, "error": str(e)}
 
 
-def update_sea_subitem_data(subitem_id: str, dimension: str, weight: str):
-    """Write dimension / weight to a specific Monday sea-freight subitem."""
+def update_sea_subitem_data(subitem_id: str, dimension: str, weight: str, vendor_box_id: str = "") -> list:
+    """Write dimension / weight / vendor_box_id to a Monday sea-freight subitem.
+    Returns list of updated field descriptions for caller to include in reply."""
+    updated = []
     try:
         _headers = {
             "Authorization": MONDAY_API_TOKEN,
@@ -790,13 +792,15 @@ def update_sea_subitem_data(subitem_id: str, dimension: str, weight: str):
         dims_m = re.match(r'(\d+)\*(\d+)\*(\d+)', dimension)
         weight_m = re.match(r'([\d.]+)', weight)
         if dims_m:
+            dim_val = f"{dims_m.group(1)}*{dims_m.group(2)}*{dims_m.group(3)}"
             requests.post(
                 MONDAY_API_URL, headers=_headers,
                 json={"query": set_col_q, "variables": {
                     "item": subitem_id, "board": SEA_SUBITEM_BOARD_ID,
-                    "col": "__1__cm__1", "val": f"{dims_m.group(1)}*{dims_m.group(2)}*{dims_m.group(3)}",
+                    "col": "__1__cm__1", "val": dim_val,
                 }}, timeout=10,
             )
+            updated.append(f"\u5c3a\u5bf8={dim_val}")
         if weight_m:
             requests.post(
                 MONDAY_API_URL, headers=_headers,
@@ -805,9 +809,20 @@ def update_sea_subitem_data(subitem_id: str, dimension: str, weight: str):
                     "col": "numeric__1", "val": weight_m.group(1),
                 }}, timeout=10,
             )
-        log.info(f"[SEA] Updated subitem {subitem_id} dim={dimension} weight={weight}")
+            updated.append(f"\u91cd\u91cf={weight_m.group(1)}")
+        if vendor_box_id:
+            requests.post(
+                MONDAY_API_URL, headers=_headers,
+                json={"query": set_col_q, "variables": {
+                    "item": subitem_id, "board": SEA_SUBITEM_BOARD_ID,
+                    "col": "text57__1", "val": vendor_box_id,
+                }}, timeout=10,
+            )
+            updated.append(f"\u5ee0\u5546\u7b31\u865f={vendor_box_id}")
+        log.info(f"[SEA] Updated subitem {subitem_id}: {updated}")
     except Exception as e:
         log.error(f"[SEA] Failed to update subitem data: {e}", exc_info=True)
+    return updated
 
 
 # ─── Tracking-Based Name Lookup ───────────────────────────────────────────────
@@ -1555,10 +1570,14 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 data["tracking"] = sea_trackings[idx]["tracking"]
                 _set_data(redis_client, user_id, data)
 
-                # Update the selected Monday subitem with this box's dimension/weight
+                # Update the selected Monday subitem with this box's dimension/weight/vendor_box_id
                 sel_subitem_id = sea_trackings[idx].get("subitem_id", "")
+                monday_updates = []
                 if sel_subitem_id:
-                    update_sea_subitem_data(sel_subitem_id, data["dimension"], data["weight"])
+                    monday_updates = update_sea_subitem_data(
+                        sel_subitem_id, data["dimension"], data["weight"],
+                        data.get("vendor_box_id", ""),
+                    )
 
                 pkg_content = sea_trackings[idx].get("content", "")
                 sheet_result = upload_to_packing_sheet(
@@ -1572,6 +1591,9 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                     data.get("vendor_box_id", ""),
                 )
                 box_display = data.get("box_id") or "未提供"
+                _monday_line = ("✓ Monday 海運子項目 已更新"
+                                + (f"：{', '.join(monday_updates)}" if monday_updates else "")
+                                + "\n")
                 if sheet_result["success"]:
                     msg = (f"\u2705 \u6d77\u904b\u8cc7\u6599\u4e0a\u50b3\u6210\u529f\uff01\n\n"
                            f"\ud83d\udce6 Box ID: {box_display}\n"
@@ -1579,7 +1601,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                            f"\ud83d\udd22 \u8ffd\u8e64\u7de8\u865f: {data['tracking']}\n"
                            f"\ud83d\udcaf \u5c3a\u5bf8: {data['dimension']}\n"
                            f"\u2696\ufe0f \u91cd\u91cf: {data['weight']}\n\n"
-                           f"\u2713 Monday \u6d77\u904b\u5b50\u9805\u76ee \u5df2\u66f4\u65b0\n")
+                           + _monday_line)
                     if sheet_result["duplicate"]:
                         msg += f"\u26a0\ufe0f {sheet_result['message']}\n\n"
                     else:
@@ -1587,8 +1609,8 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                     msg += f"\u7e7c\u7e8c\u8f38\u5165\u8cc7\u6599\uff0c\u6216\u8f38\u5165 'end' \u7d50\u675f"
                 else:
                     msg = (f"\u26a0\ufe0f \u90e8\u5206\u6210\u529f\n\n"
-                           f"\u2713 Monday \u6d77\u904b\u5b50\u9805\u76ee \u5df2\u66f4\u65b0\n"
-                           f"\u2717 \u6253\u5305\u8cc7\u6599\u8868 \u8a18\u9304\u5931\u6557\n\u7531: {sheet_result['message']}\n\n"
+                           + _monday_line
+                           + f"\u2717 \u6253\u5305\u8cc7\u6599\u8868 \u8a18\u9304\u5931\u6557\n\u7531: {sheet_result['message']}\n\n"
                            f"\u7e7c\u7e8c\u8f38\u5165\u8cc7\u6599\uff0c\u6216\u8f38\u5165 'end' \u7d50\u675f")
                 redis_client.delete(_key(user_id, "sea_trackings"))
                 _set_state(redis_client, user_id, "collecting")
@@ -1705,6 +1727,7 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
             sea_match = data.get("_sea_match")
             monday_success = False
             monday_tracking = ""
+            monday_updates = []
 
             if sea_match:
                 result = create_sea_monday_items(
@@ -1740,10 +1763,13 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                     monday_success = True
                     monday_tracking = result.get("tracking", "")
                     data["tracking"] = monday_tracking
-                    # Single subitem: set dim/weight now
+                    # Single subitem: set dim/weight/vendor_box_id now
                     single_sub_id = subitems[0].get("subitem_id", "")
                     if single_sub_id:
-                        update_sea_subitem_data(single_sub_id, data["dimension"], data["weight"])
+                        monday_updates = update_sea_subitem_data(
+                            single_sub_id, data["dimension"], data["weight"],
+                            data.get("vendor_box_id", ""),
+                        )
                 else:
                     log.warning(f"[UPLOAD] Sea Monday creation failed: {result.get('error')}")
 
@@ -1759,6 +1785,9 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
             )
 
             box_display = data.get("box_id") or "未提供"
+            _m_line = ("✓ Monday 海運板塊 已建立"
+                       + (f"：{', '.join(monday_updates)}" if monday_updates else "")
+                       + "\n")
             if monday_success and sheet_result["success"]:
                 msg = (f"✅ 海運資料上傳成功！\n\n"
                       f"📦 Box ID: {box_display}\n"
@@ -1766,7 +1795,7 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                       f"🔢 追蹤編號: {monday_tracking}\n"
                       f"📏 尺寸: {data['dimension']}\n"
                       f"⚖️ 重量: {data['weight']}\n\n"
-                      f"✓ Monday 海運板塊 已建立\n")
+                      + _m_line)
                 if sheet_result["duplicate"]:
                     msg += f"⚠️ {sheet_result['message']}\n\n"
                 else:
@@ -1774,8 +1803,8 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                 msg += f"繼續輸入資料，或輸入 'end' 結束"
             elif monday_success:
                 msg = (f"⚠️ 部分成功\n\n"
-                      f"✓ Monday 海運板塊 已建立\n"
-                      f"✗ 打包資料表 記錄失敗: {sheet_result['message']}\n\n"
+                      + _m_line
+                      + f"✗ 打包資料表 記錄失敗: {sheet_result['message']}\n\n"
                       f"繼續輸入資料，或輸入 'end' 結束")
             elif sheet_result["success"]:
                 if sea_match:
