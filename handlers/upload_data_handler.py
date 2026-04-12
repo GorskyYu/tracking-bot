@@ -731,10 +731,9 @@ def create_sea_monday_items(
                     _set_simple(s_id, "text_mkywx26t", client_id)
                 except Exception:
                     pass
-            if dims_m:
-                _set_simple(s_id, "__1__cm__1", f"{dims_m.group(1)}*{dims_m.group(2)}*{dims_m.group(3)}")
-            if weight_m:
-                _set_simple(s_id, "numeric__1", weight_m.group(1))
+            # NOTE: dimension / weight are NOT set here.
+            # They are set later via update_sea_subitem_data() when the user
+            # selects which subitem this physical box belongs to.
             _set_json(s_id, "status__1", "溫哥華收款")
             _set_json(s_id, "status_18__1", "海運")
             _set_json(s_id, "status_19__1", "新竹物流")
@@ -773,6 +772,38 @@ def create_sea_monday_items(
     except Exception as e:
         log.error(f"[SEA] Error creating Monday items: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
+
+
+def update_sea_subitem_data(subitem_id: str, dimension: str, weight: str):
+    """Write dimension / weight to a specific Monday sea-freight subitem."""
+    try:
+        set_col_q = """
+        mutation ($item: ID!, $board: ID!, $col: String!, $val: String!) {
+            change_simple_column_value(item_id: $item, board_id: $board,
+                column_id: $col, value: $val) { id }
+        }
+        """
+        dims_m = re.match(r'(\d+)\*(\d+)\*(\d+)', dimension)
+        weight_m = re.match(r'([\d.]+)', weight)
+        if dims_m:
+            requests.post(
+                MONDAY_API_URL, headers=headers_api,
+                json={"query": set_col_q, "variables": {
+                    "item": subitem_id, "board": SEA_SUBITEM_BOARD_ID,
+                    "col": "__1__cm__1", "val": f"{dims_m.group(1)}*{dims_m.group(2)}*{dims_m.group(3)}",
+                }}, timeout=10,
+            )
+        if weight_m:
+            requests.post(
+                MONDAY_API_URL, headers=headers_api,
+                json={"query": set_col_q, "variables": {
+                    "item": subitem_id, "board": SEA_SUBITEM_BOARD_ID,
+                    "col": "numeric__1", "val": weight_m.group(1),
+                }}, timeout=10,
+            )
+        log.info(f"[SEA] Updated subitem {subitem_id} dim={dimension} weight={weight}")
+    except Exception as e:
+        log.error(f"[SEA] Failed to update subitem data: {e}", exc_info=True)
 
 
 # ─── Tracking-Based Name Lookup ───────────────────────────────────────────────
@@ -1472,6 +1503,12 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 data["tracking"] = sea_trackings[idx]["tracking"]
                 _set_data(redis_client, user_id, data)
 
+                # Update the selected Monday subitem with this box's dimension/weight
+                sel_subitem_id = sea_trackings[idx].get("subitem_id", "")
+                if sel_subitem_id:
+                    update_sea_subitem_data(sel_subitem_id, data["dimension"], data["weight"])
+
+                pkg_content = sea_trackings[idx].get("content", "")
                 sheet_result = upload_to_packing_sheet(
                     data.get("box_id", ""),
                     data["name"],
@@ -1479,7 +1516,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                     data["dimension"],
                     data["weight"],
                     "海運",
-                    data.get("package_content", ""),
+                    pkg_content,
                     data.get("vendor_box_id", ""),
                 )
                 box_display = data.get("box_id") or "未提供"
@@ -1490,7 +1527,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                            f"\ud83d\udd22 \u8ffd\u8e64\u7de8\u865f: {data['tracking']}\n"
                            f"\ud83d\udcaf \u5c3a\u5bf8: {data['dimension']}\n"
                            f"\u2696\ufe0f \u91cd\u91cf: {data['weight']}\n\n"
-                           f"\u2713 Monday \u6d77\u904b\u677f\u584a \u5df2\u5efa\u7acb\n")
+                           f"\u2713 Monday \u6d77\u904b\u5b50\u9805\u76ee \u5df2\u66f4\u65b0\n")
                     if sheet_result["duplicate"]:
                         msg += f"\u26a0\ufe0f {sheet_result['message']}\n\n"
                     else:
@@ -1498,7 +1535,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                     msg += f"\u7e7c\u7e8c\u8f38\u5165\u8cc7\u6599\uff0c\u6216\u8f38\u5165 'end' \u7d50\u675f"
                 else:
                     msg = (f"\u26a0\ufe0f \u90e8\u5206\u6210\u529f\n\n"
-                           f"\u2713 Monday \u6d77\u904b\u677f\u584a \u5df2\u5efa\u7acb\n"
+                           f"\u2713 Monday \u6d77\u904b\u5b50\u9805\u76ee \u5df2\u66f4\u65b0\n"
                            f"\u2717 \u6253\u5305\u8cc7\u6599\u8868 \u8a18\u9304\u5931\u6557\n\u7531: {sheet_result['message']}\n\n"
                            f"\u7e7c\u7e8c\u8f38\u5165\u8cc7\u6599\uff0c\u6216\u8f38\u5165 'end' \u7d50\u675f")
                 redis_client.delete(_key(user_id, "sea_trackings"))
@@ -1651,6 +1688,10 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                     monday_success = True
                     monday_tracking = result.get("tracking", "")
                     data["tracking"] = monday_tracking
+                    # Single subitem: set dim/weight now
+                    single_sub_id = subitems[0].get("subitem_id", "")
+                    if single_sub_id:
+                        update_sea_subitem_data(single_sub_id, data["dimension"], data["weight"])
                 else:
                     log.warning(f"[UPLOAD] Sea Monday creation failed: {result.get('error')}")
 
