@@ -462,17 +462,8 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
         matches = []
         search_lower = name_or_id.lower()
 
-        # Also read Workspace tab once to get package content per row
-        ws_tab = ss.worksheet("Workspace")
-        ws_all = ws_tab.get_all_values()
-        ws_headers_row = ws_all[0] if ws_all else []
-        ws_hmap = {h.strip(): ci for ci, h in enumerate(ws_headers_row)}
-        content_col_names = ["\u7b2c\u4e00\u4ef6\u5305\u88f9\u5167\u5bb9\u7269\u6e05\u55ae",
-                             "\u7b2c\u4e8c\u4ef6\u5305\u88f9\u5167\u5bb9\u7269\u6e05\u55ae",
-                             "\u7b2c\u4e09\u4ef6\u5305\u88f9\u5167\u5bb9\u7269\u6e05\u55ae"]
-        content_col_idxs = [ws_hmap.get(n) for n in content_col_names]
-        log.info(f"[SEA] Workspace headers: {list(ws_hmap.keys())[:15]}")
-        log.info(f"[SEA] Content col indices: {content_col_idxs}")
+        # Content columns are in Form Responses 1 (same row): Q, Y, AI
+        content_col_idxs = [16, 24, 34]  # 0-indexed: Q=16, Y=24, AI=34
 
         for i, row in enumerate(rows):
             if len(row) < 5:
@@ -497,12 +488,11 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
                 english_name.lower() in search_lower or
                 client_id.lower() in search_lower):
 
-                # Read package contents from the same row in Workspace
-                ws_row_data = ws_all[i + 1] if (i + 1) < len(ws_all) else []
+                # Read package contents from this row (cols Q, Y, AI)
                 package_contents = []
-                for ci in content_col_idxs:
-                    if ci is not None and ci < len(ws_row_data):
-                        val = ws_row_data[ci].strip()
+                for col_idx in content_col_idxs:
+                    if col_idx < len(row):
+                        val = row[col_idx].strip()
                         if val:
                             package_contents.append(val)
 
