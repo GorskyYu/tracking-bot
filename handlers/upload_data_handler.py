@@ -970,7 +970,7 @@ def update_sea_subitem_data(subitem_id: str, dimension: str, weight: str, vendor
                     "col": "text57__1", "val": vendor_box_id,
                 }}, timeout=10,
             )
-            updated.append(f"\u5ee0\u5546\u7b31\u865f={vendor_box_id}")
+            updated.append(f"\u5ee0\u5546\u7bb1\u865f={vendor_box_id}")
         log.info(f"[SEA] Updated subitem {subitem_id}: {updated}")
     except Exception as e:
         log.error(f"[SEA] Failed to update subitem data: {e}", exc_info=True)
@@ -1619,7 +1619,8 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                             _set_data(redis_client, user_id, data)
                             try:
                                 from handlers.upload_data_flex import build_sea_tracking_selection_flex
-                                flex = build_sea_tracking_selection_flex(combined_options)
+                                _box_display = data.get("box_id") or ""
+                                flex = build_sea_tracking_selection_flex(combined_options, box_id=_box_display)
                                 line_reply_flex(reply_token, "📦 找到多筆海運記錄，請選擇追蹤碼", flex)
                             except Exception as fx_err:
                                 log.error(f"[UPLOAD] Error building combined tracking flex: {fx_err}", exc_info=True)
@@ -1757,36 +1758,36 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
 
                 sel_subitem_id = selected.get("subitem_id", "")
                 monday_updates = []
+                data["tracking"] = selected.get("tracking", "")
 
                 if not sel_subitem_id and selected.get("_sea_match"):
-                    # subitem_id wasn't pre-fetched — resolve now via Monday API.
-                    # create_sea_monday_items() reuses existing subitems when they
-                    # already exist, so this is safe to call at selection time.
-                    resolve_result = create_sea_monday_items(
-                        selected["_sea_match"],
-                        data["dimension"], data["weight"],
-                        vendor_box_id=data.get("vendor_box_id", ""),
-                    )
-                    if resolve_result.get("success"):
-                        target_trk = selected.get("tracking", "")
-                        for s in resolve_result.get("subitems", []):
-                            if s["tracking"] == target_trk or selected.get("_create_new"):
-                                sel_subitem_id = s["subitem_id"]
-                                # For _create_new items, use the real tracking created
-                                if selected.get("_create_new"):
-                                    target_trk = s["tracking"]
-                                break
-                        if not sel_subitem_id and resolve_result.get("subitems"):
-                            sel_subitem_id = resolve_result["subitems"][0]["subitem_id"]
-                            target_trk = resolve_result["subitems"][0]["tracking"]
-                        # dim/weight already written inside create_sea_monday_items
-                        # (it deferred to update_sea_subitem_data path below)
-                        data["tracking"] = target_trk
-                    else:
-                        log.warning(f"[SEA] Could not resolve subitem for selection: {resolve_result.get('error')}")
-                        data["tracking"] = selected["tracking"]
-                else:
-                    data["tracking"] = selected["tracking"]
+                    # subitem_id wasn't pre-fetched — look it up by tracking name
+                    # on the Monday subitem board directly.
+                    target_trk = data["tracking"]
+                    _headers_api = {"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"}
+                    try:
+                        find_sub_q = """
+                        query ($b: ID!, $v: String!) {
+                            items_page_by_column_values(
+                                board_id: $b, limit: 1,
+                                columns: [{column_id: "name", column_values: [$v]}]
+                            ) { items { id name } }
+                        }
+                        """
+                        resp = requests.post(
+                            MONDAY_API_URL, headers=_headers_api,
+                            json={"query": find_sub_q, "variables": {"b": SEA_SUBITEM_BOARD_ID, "v": target_trk}},
+                            timeout=15,
+                        )
+                        found_items = resp.json().get("data", {}).get("items_page_by_column_values", {}).get("items", [])
+                        if found_items:
+                            sel_subitem_id = found_items[0]["id"]
+                            log.info(f"[SEA] Resolved subitem by name '{target_trk}' → {sel_subitem_id}")
+                        else:
+                            log.warning(f"[SEA] No Monday subitem found for tracking '{target_trk}'")
+                    except Exception as e:
+                        log.error(f"[SEA] Error resolving subitem by name: {e}", exc_info=True)
+
                 _set_data(redis_client, user_id, data)
 
                 # Update dim / weight / vendor_box_id on the resolved subitem
@@ -1964,7 +1965,8 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                         _set_state(redis_client, user_id, "selecting_sea_tracking")
                         try:
                             from handlers.upload_data_flex import build_sea_tracking_selection_flex
-                            flex = build_sea_tracking_selection_flex(subitems)
+                            _box_display = data.get("box_id") or ""
+                            flex = build_sea_tracking_selection_flex(subitems, box_id=_box_display)
                             line_reply_flex(reply_token, "\ud83d\udce6 \u9019\u500b\u7b71\u5c6c\u65bc\u54ea\u4ef6\u5305\u88f9\uff1f", flex)
                         except Exception as fx_err:
                             log.error(f"[UPLOAD] Error building sea tracking selection flex: {fx_err}", exc_info=True)

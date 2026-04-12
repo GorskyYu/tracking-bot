@@ -234,14 +234,16 @@ def build_field_selection_flex() -> dict:
     }
 
 
-def _build_sea_selection_bubble(chunk: list, global_offset: int, total: int) -> dict:
+def _build_sea_selection_bubble(chunk: list, global_offset: int, total: int, box_id: str = "") -> dict:
     """Build one bubble for a page of sea-tracking-selection options.
 
     Args:
         chunk:         Slice of the full subitems list for this bubble.
         global_offset: Index of chunk[0] in the full list (for 1-based button labels).
         total:         Total number of options across all bubbles (for header text).
+        box_id:        Current box ID to display in the header.
     """
+    _box_label = f"({box_id})" if box_id else ""
     body_contents = [
         {
             "type": "text",
@@ -250,8 +252,8 @@ def _build_sea_selection_bubble(chunk: list, global_offset: int, total: int) -> 
         },
         {
             "type": "text",
-            "text": (f"這個箱子的追蹤號碼是哪一個？（共 {total} 個選項）"
-                     if total > 3 else "這個箱子的追蹤號碼是哪一個？"),
+            "text": (f"這個箱子{_box_label}的追蹤號碼是哪一個？"
+                     + (f"（共 {total} 個選項）" if total > 3 else "")),
             "size": "sm", "color": "#888888", "margin": "md", "wrap": True,
         },
     ]
@@ -296,7 +298,7 @@ def _build_sea_selection_bubble(chunk: list, global_offset: int, total: int) -> 
     }
 
 
-def build_sea_tracking_selection_flex(subitems: list) -> dict:
+def build_sea_tracking_selection_flex(subitems: list, box_id: str = "") -> dict:
     """
     Build a flex message asking the user which sea-freight tracking number
     belongs to the current physical box.  Each entry shows the tracking label
@@ -312,11 +314,11 @@ def build_sea_tracking_selection_flex(subitems: list) -> dict:
     page_size = 3
 
     if total <= page_size:
-        return _build_sea_selection_bubble(subitems, global_offset=0, total=total)
+        return _build_sea_selection_bubble(subitems, global_offset=0, total=total, box_id=box_id)
 
     # Multiple pages → carousel
     bubbles = []
     for start in range(0, total, page_size):
         chunk = subitems[start:start + page_size]
-        bubbles.append(_build_sea_selection_bubble(chunk, global_offset=start, total=total))
+        bubbles.append(_build_sea_selection_bubble(chunk, global_offset=start, total=total, box_id=box_id))
     return {"type": "carousel", "contents": bubbles}
