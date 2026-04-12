@@ -232,3 +232,81 @@ def build_field_selection_flex() -> dict:
             "contents": buttons,
         },
     }
+
+
+def build_sea_tracking_selection_flex(subitems: list) -> dict:
+    """
+    Build a flex message asking the user which sea-freight tracking number
+    belongs to the current physical box.  Each entry shows the tracking label
+    and a short package-content preview.
+
+    `subitems` is a list of dicts:
+        {"tracking": str, "content": str, "subitem_id": str}
+
+    The button text is "選擇追蹤N" (1-indexed), which the handler reads.
+    """
+    buttons = []
+    for i, item in enumerate(subitems[:3]):  # cap at 3 for UI cleanliness
+        tracking = item.get("tracking", "")
+        content = item.get("content", "")
+        preview = (content[:55] + "…") if len(content) > 55 else content
+        label_text = f"📦 {tracking}"
+        if preview:
+            label_text += f"\n{preview}"
+        buttons.append({
+            "type": "button",
+            "height": "sm",
+            "style": "primary" if i == 0 else "secondary",
+            "action": {
+                "type": "message",
+                "label": tracking[:40],          # LINE label limit
+                "text": f"選擇追蹤{i + 1}",
+            },
+        })
+
+    body_contents = [
+        {
+            "type": "text",
+            "text": "🚢 請選擇對應追蹤號碼",
+            "weight": "bold", "size": "xl", "color": "#1a1a1a",
+        },
+        {
+            "type": "text",
+            "text": "這個箱子的追蹤號碼是哪一個？",
+            "size": "sm", "color": "#888888", "margin": "md", "wrap": True,
+        },
+    ]
+
+    # Add a preview row per subitem so the user can read content before tapping
+    for i, item in enumerate(subitems[:3]):
+        tracking = item.get("tracking", "")
+        content = item.get("content", "")
+        preview = (content[:60] + "…") if len(content) > 60 else (content or "(無包裹內容)")
+        body_contents.append({
+            "type": "box", "layout": "vertical",
+            "margin": "lg",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": f"選項{i + 1}：{tracking}",
+                    "weight": "bold", "size": "sm", "color": "#0057b8",
+                },
+                {
+                    "type": "text",
+                    "text": preview,
+                    "size": "xs", "color": "#555555", "wrap": True,
+                },
+            ],
+        })
+
+    return {
+        "type": "bubble",
+        "body": {
+            "type": "box", "layout": "vertical",
+            "contents": body_contents,
+        },
+        "footer": {
+            "type": "box", "layout": "vertical", "spacing": "sm",
+            "contents": buttons,
+        },
+    }

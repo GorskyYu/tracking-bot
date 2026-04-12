@@ -70,7 +70,7 @@ def _set_matches(r, uid, matches):
 
 
 def _clear_session(r, uid):
-    for suffix in ("state", "data", "matches", "reply_token", "correcting_field"):
+    for suffix in ("state", "data", "matches", "reply_token", "correcting_field", "sea_trackings"):
         r.delete(_key(uid, suffix))
 
 
@@ -461,6 +461,16 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
         matches = []
         search_lower = name_or_id.lower()
 
+        # Also read Workspace tab once to get package content per row
+        ws_tab = ss.worksheet("Workspace")
+        ws_all = ws_tab.get_all_values()
+        ws_headers_row = ws_all[0] if ws_all else []
+        ws_hmap = {h.strip(): ci for ci, h in enumerate(ws_headers_row)}
+        content_col_names = ["\u7b2c\u4e00\u4ef6\u5305\u88f9\u5167\u5bb9\u7269\u6e05\u55ae",
+                             "\u7b2c\u4e8c\u4ef6\u5305\u88f9\u5167\u5bb9\u7269\u6e05\u55ae",
+                             "\u7b2c\u4e09\u4ef6\u5305\u88f9\u5167\u5bb9\u7269\u6e05\u55ae"]
+        content_col_idxs = [ws_hmap.get(n) for n in content_col_names]
+
         for i, row in enumerate(rows):
             if len(row) < 5:
                 continue
@@ -483,12 +493,22 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
                 english_name.lower() in search_lower or
                 client_id.lower() in search_lower):
 
+                # Read package contents from the same row in Workspace
+                ws_row_data = ws_all[i + 1] if (i + 1) < len(ws_all) else []
+                package_contents = []
+                for ci in content_col_idxs:
+                    if ci is not None and ci < len(ws_row_data):
+                        val = ws_row_data[ci].strip()
+                        if val:
+                            package_contents.append(val)
+
                 matches.append({
                     "timestamp": timestamp_str,
                     "chinese_name": chinese_name,
                     "english_name": english_name,
                     "client_id": client_id,
                     "sheet_row": i + 2,  # 1-based row in Form Responses 1
+                    "package_contents": package_contents,
                 })
 
         return matches
@@ -598,29 +618,16 @@ def create_sea_monday_items(
         existing_subs = resp.json().get("data", {}).get("items", [{}])[0].get("subitems", [])
         existing_names = {s["name"]: s["id"] for s in existing_subs}
 
-        # Determine subitem numbering (same as spreadsheet: #1 = no suffix, #2+ = suffix)
-        start_index = len(existing_subs) + 1
-        final_sub_name = sub_name if start_index == 1 else f"{sub_name} #{start_index}"
+        # --- Determine how many subitems to create (1 per declared package) --
+        package_contents = match.get("package_contents", [])
+        num_packages = max(1, len(package_contents))
 
-        # --- Create subitem if it doesn't already exist -----------------------
-        if final_sub_name in existing_names:
-            subitem_id = existing_names[final_sub_name]
-            log.info(f"[SEA] Reusing existing subitem '{final_sub_name}' → {subitem_id}")
-        else:
-            create_sub_q = """
-            mutation ($pid: ID!, $name: String!) {
-                create_subitem(parent_item_id: $pid, item_name: $name) { id }
-            }
-            """
-            resp = requests.post(
-                MONDAY_API_URL, headers=headers_api,
-                json={"query": create_sub_q, "variables": {"pid": parent_id, "name": final_sub_name}},
-                timeout=15,
-            )
-            subitem_id = resp.json()["data"]["create_subitem"]["id"]
-            log.info(f"[SEA] Created subitem '{final_sub_name}' → {subitem_id}")
-
-        # --- Set subitem columns (mirror spreadsheet logic) -------------------
+        # --- Shared GraphQL templates -----------------------------------------
+        create_sub_q = """
+        mutation ($pid: ID!, $name: String!) {
+            create_subitem(parent_item_id: $pid, item_name: $name) { id }
+        }
+        """
         set_col_q = """
         mutation ($item: ID!, $board: ID!, $col: String!, $val: String!) {
             change_simple_column_value(item_id: $item, board_id: $board,
@@ -634,87 +641,101 @@ def create_sea_monday_items(
         }
         """
 
-        def _set_simple(col_id, value):
+        def _set_simple(s_id, col_id, value):
             requests.post(
                 MONDAY_API_URL, headers=headers_api,
                 json={"query": set_col_q, "variables": {
-                    "item": subitem_id, "board": SEA_SUBITEM_BOARD_ID,
+                    "item": s_id, "board": SEA_SUBITEM_BOARD_ID,
                     "col": col_id, "val": str(value),
                 }},
                 timeout=10,
             )
 
-        def _set_json(col_id, label):
+        def _set_json(s_id, col_id, label):
             requests.post(
                 MONDAY_API_URL, headers=headers_api,
                 json={"query": set_col_json_q, "variables": {
-                    "item": subitem_id, "board": SEA_SUBITEM_BOARD_ID,
+                    "item": s_id, "board": SEA_SUBITEM_BOARD_ID,
                     "col": col_id, "val": json.dumps({"label": label}),
                 }},
                 timeout=10,
             )
 
-        # 客人種類 → 溫哥華散客
-        _set_simple("color__1", "溫哥華散客")
-        # ABB帳號
-        if client_id:
-            try:
-                _set_simple("text_mkywx26t", client_id)
-            except Exception:
-                pass  # column may not exist
-        # 尺寸 (__1__cm__1)
-        dims_match = re.match(r'(\d+)\*(\d+)\*(\d+)', dimension)
-        if dims_match:
-            _set_simple("__1__cm__1", f"{dims_match.group(1)}*{dims_match.group(2)}*{dims_match.group(3)}")
-        # 重量 (numeric__1)
-        weight_match = re.match(r'([\d.]+)', weight)
-        if weight_match:
-            _set_simple("numeric__1", weight_match.group(1))
-        # 收款狀態 → 溫哥華收款
-        _set_json("status__1", "溫哥華收款")
-        # 國際物流 → 海運
-        _set_json("status_18__1", "海運")
-        # 台灣物流 → 新竹物流
-        _set_json("status_19__1", "新竹物流")
-        # 地點 → Y/R/Simply
-        _set_json("location__1", "Y/R/Simply")
-        # 廠商箱號 (text57__1) → AB vendor box ID if provided
-        if vendor_box_id:
-            try:
-                _set_simple("text57__1", vendor_box_id)
-            except Exception:
-                pass  # column may not exist on this board
+        # Open Workspace once for all tracking writes
+        gs = get_gspread_client()
+        ws_ss = gs.open_by_key(OCEAN_FORM_SHEET_ID)
+        ws_tab = ws_ss.worksheet("Workspace")
+        ws_headers = ws_tab.row_values(1)
+        ws_header_map = {h.strip(): idx for idx, h in enumerate(ws_headers)}
+        track_col_names = ("追蹤碼1", "追蹤碼2", "追蹤碼3")
 
-        # --- Write tracking code to Workspace tab (追蹤碼1/2/3, cols S/T/U) ---
-        try:
-            gs = get_gspread_client()
-            ss = gs.open_by_key(OCEAN_FORM_SHEET_ID)
-            ws = ss.worksheet("Workspace")
-            ws_headers = ws.row_values(1)
-            ws_header_map = {h.strip(): idx for idx, h in enumerate(ws_headers)}
+        dims_m = re.match(r'(\d+)\*(\d+)\*(\d+)', dimension)
+        weight_m = re.match(r'([\d.]+)', weight)
+        existing_count = len(existing_subs)
 
-            # Find which 追蹤碼 slot is empty for this row
-            written = False
-            for track_col in ("追蹤碼1", "追蹤碼2", "追蹤碼3"):
+        created_subitems = []
+        for pkg_idx in range(num_packages):
+            # Name: no suffix for index 0, #N for subsequent
+            overall_idx = existing_count + pkg_idx
+            pkg_sub_name = sub_name if overall_idx == 0 else f"{sub_name} #{overall_idx + 1}"
+            pkg_content = package_contents[pkg_idx] if pkg_idx < len(package_contents) else ""
+
+            # Find or create this subitem
+            if pkg_sub_name in existing_names:
+                s_id = existing_names[pkg_sub_name]
+                log.info(f"[SEA] Reusing existing subitem '{pkg_sub_name}' → {s_id}")
+            else:
+                resp = requests.post(
+                    MONDAY_API_URL, headers=headers_api,
+                    json={"query": create_sub_q, "variables": {"pid": parent_id, "name": pkg_sub_name}},
+                    timeout=15,
+                )
+                s_id = resp.json()["data"]["create_subitem"]["id"]
+                log.info(f"[SEA] Created subitem '{pkg_sub_name}' → {s_id}")
+
+            # Set columns on this subitem
+            _set_simple(s_id, "color__1", "溫哥華散客")
+            if client_id:
+                try:
+                    _set_simple(s_id, "text_mkywx26t", client_id)
+                except Exception:
+                    pass
+            if dims_m:
+                _set_simple(s_id, "__1__cm__1", f"{dims_m.group(1)}*{dims_m.group(2)}*{dims_m.group(3)}")
+            if weight_m:
+                _set_simple(s_id, "numeric__1", weight_m.group(1))
+            _set_json(s_id, "status__1", "溫哥華收款")
+            _set_json(s_id, "status_18__1", "海運")
+            _set_json(s_id, "status_19__1", "新竹物流")
+            _set_json(s_id, "location__1", "Y/R/Simply")
+            if vendor_box_id:
+                try:
+                    _set_simple(s_id, "text57__1", vendor_box_id)
+                except Exception:
+                    pass
+
+            # Write tracking to Workspace 追蹤碼N at the correct slot
+            if pkg_idx < len(track_col_names):
+                track_col = track_col_names[pkg_idx]
                 col_idx = ws_header_map.get(track_col)
-                if col_idx is None:
-                    continue
-                cell_val = ws.cell(sheet_row, col_idx + 1).value
-                if not cell_val or not str(cell_val).strip():
-                    ws.update_cell(sheet_row, col_idx + 1, final_sub_name)
-                    log.info(f"[SEA] Wrote tracking '{final_sub_name}' to Workspace {track_col} row {sheet_row}")
-                    written = True
-                    break
-            if not written:
-                log.warning(f"[SEA] All 追蹤碼 slots occupied for row {sheet_row}")
-        except Exception as ws_err:
-            log.error(f"[SEA] Failed to write tracking to Workspace: {ws_err}", exc_info=True)
+                if col_idx is not None:
+                    try:
+                        ws_tab.update_cell(sheet_row, col_idx + 1, pkg_sub_name)
+                        log.info(f"[SEA] Wrote tracking '{pkg_sub_name}' to Workspace {track_col} row {sheet_row}")
+                    except Exception as ws_err:
+                        log.error(f"[SEA] Failed to write tracking to Workspace: {ws_err}", exc_info=True)
+
+            created_subitems.append({
+                "tracking": pkg_sub_name,
+                "content": pkg_content,
+                "subitem_id": s_id,
+            })
 
         return {
             "success": True,
             "parent_id": parent_id,
-            "subitem_id": subitem_id,
-            "tracking": final_sub_name,
+            "subitems": created_subitems,
+            "tracking": created_subitems[0]["tracking"] if created_subitems else "",
         }
 
     except Exception as e:
@@ -1382,6 +1403,51 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
         
         return True
 
+    # State: selecting_sea_tracking — user picks which package this box corresponds to
+    elif state == "selecting_sea_tracking":
+        match_pattern = re.match(r'\u9078\u64c7\u8ffd\u8e64(\d+)', text)
+        if match_pattern:
+            idx = int(match_pattern.group(1)) - 1
+            raw = redis_client.get(_key(user_id, "sea_trackings"))
+            sea_trackings = json.loads(raw) if raw else []
+
+            if 0 <= idx < len(sea_trackings):
+                data = _get_data(redis_client, user_id)
+                data["tracking"] = sea_trackings[idx]["tracking"]
+                _set_data(redis_client, user_id, data)
+
+                sheet_success = upload_to_packing_sheet(
+                    data.get("box_id", ""),
+                    data["name"],
+                    data["tracking"],
+                    data["dimension"],
+                    data["weight"],
+                    "海運",
+                    data.get("package_content", ""),
+                    data.get("vendor_box_id", ""),
+                )
+                box_display = data.get("box_id") or "未提供"
+                if sheet_success:
+                    msg = (f"\u2705 \u6d77\u904b\u8cc7\u6599\u4e0a\u50b3\u6210\u529f\uff01\n\n"
+                           f"\ud83d\udce6 Box ID: {box_display}\n"
+                           f"\ud83d\udc64 \u5bc4\u4ef6\u4eba: {data['name']}\n"
+                           f"\ud83d\udd22 \u8ffd\u8e64\u7de8\u865f: {data['tracking']}\n"
+                           f"\ud83d\udcaf \u5c3a\u5bf8: {data['dimension']}\n"
+                           f"\u2696\ufe0f \u91cd\u91cf: {data['weight']}\n\n"
+                           f"\u2713 Monday \u6d77\u904b\u677f\u584a \u5df2\u5efa\u7acb\n"
+                           f"\u2713 \u6253\u5305\u8cc7\u6599\u8868 \u5df2\u8a18\u9304\n\n"
+                           f"\u7e7c\u7e8c\u8f38\u5165\u8cc7\u6599\uff0c\u6216\u8f38\u5165 'end' \u7d50\u675f")
+                else:
+                    msg = (f"\u26a0\ufe0f \u90e8\u5206\u6210\u529f\n\n"
+                           f"\u2713 Monday \u6d77\u904b\u677f\u584a \u5df2\u5efa\u7acb\n"
+                           f"\u2717 \u6253\u5305\u8cc7\u6599\u8868 \u8a18\u9304\u5931\u6557\n\n"
+                           f"\u7e7c\u7e8c\u8f38\u5165\u8cc7\u6599\uff0c\u6216\u8f38\u5165 'end' \u7d50\u675f")
+                redis_client.delete(_key(user_id, "sea_trackings"))
+                _set_state(redis_client, user_id, "collecting")
+                _set_data(redis_client, user_id, {})
+                line_reply(reply_token, msg)
+        return True
+
     # State: correcting_field — user picks which field to update
     elif state == "correcting_field":
         _field_map = {
@@ -1498,9 +1564,33 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                     vendor_box_id=data.get("vendor_box_id", ""),
                 )
                 if result.get("success"):
+                    subitems = result.get("subitems", [])
+                    if len(subitems) > 1:
+                        # Multiple packages: ask user to select which one this box is
+                        redis_client.set(
+                            _key(user_id, "sea_trackings"),
+                            json.dumps(subitems, ensure_ascii=False),
+                            ex=UPLOAD_TTL,
+                        )
+                        _set_state(redis_client, user_id, "selecting_sea_tracking")
+                        try:
+                            from handlers.upload_data_flex import build_sea_tracking_selection_flex
+                            flex = build_sea_tracking_selection_flex(subitems)
+                            line_reply_flex(reply_token, "\ud83d\udce6 \u9019\u500b\u7b71\u5c6c\u65bc\u54ea\u4ef6\u5305\u88f9\uff1f", flex)
+                        except Exception as fx_err:
+                            log.error(f"[UPLOAD] Error building sea tracking selection flex: {fx_err}", exc_info=True)
+                            msg = "\ud83d\udce6 \u8acb\u9078\u64c7\u6b64\u7b71\u5c6c\u65bc\u54ea\u4ef6\u5305\u88f9\uff1a\n\n"
+                            for i, s in enumerate(subitems[:3]):
+                                msg += f"\u300a{i+1}\u300b \u8ffd\u8e64\u78bc: {s['tracking']}\n"
+                                if s.get("content"):
+                                    msg += f"\u5167\u5bb9: {s['content'][:60]}\n"
+                                msg += "\n"
+                            msg += "\u8acb\u8f38\u5165\u300c\u9078\u64c7\u8ffd\u8e641\u300d\u3001\u300c\u9078\u64c7\u8ffd\u8e642\u300d\u7b49\u6307\u4ee4"
+                            line_reply(reply_token, msg)
+                        return
                     monday_success = True
                     monday_tracking = result.get("tracking", "")
-                    data["tracking"] = monday_tracking  # use as packing sheet tracking
+                    data["tracking"] = monday_tracking
                 else:
                     log.warning(f"[UPLOAD] Sea Monday creation failed: {result.get('error')}")
 
