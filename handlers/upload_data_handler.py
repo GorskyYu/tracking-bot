@@ -483,8 +483,10 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
                 except Exception:
                     continue
 
-            if (search_lower in english_name.lower() or
+            if (search_lower in chinese_name.lower() or
+                search_lower in english_name.lower() or
                 search_lower in client_id.lower() or
+                chinese_name.lower() in search_lower or
                 english_name.lower() in search_lower or
                 client_id.lower() in search_lower):
 
@@ -1257,6 +1259,8 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
 
         if dup_row_idx is not None:
             sheet_row = dup_row_idx + 2  # +1 for skipped header, +1 for 1-based
+            existing_row = all_rows[dup_row_idx]
+            existing_tracking = existing_row[col_h_idx].strip() if len(existing_row) > col_h_idx else ""
             updated_fields = []
             if new_b_val:
                 ws.update_cell(sheet_row, col_b_idx + 1, new_b_val)
@@ -1264,10 +1268,11 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
             if vendor_box_id:
                 ws.update_cell(sheet_row, col_d_idx + 1, vendor_box_id)
                 updated_fields.append(f"箱號={vendor_box_id}")
-            log.info(f"[UPLOAD] Duplicate for {name} (row {sheet_row}), updated: {updated_fields}")
+            log.info(f"[UPLOAD] Duplicate for {name} (row {sheet_row}), updated: {updated_fields}, existing_tracking={existing_tracking}")
             return {
                 "success": True,
                 "duplicate": True,
+                "existing_tracking": existing_tracking,
                 "message": (f"✓ 重複記錄，已更新 {', '.join(updated_fields)}"
                             if updated_fields else f"✓ 重複記錄已略過（{name}）"),
             }
@@ -1432,6 +1437,9 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
             if data.get("hai_yun"):
                 if not data.get("tracking"):
                     matches = search_sea_form_matches(data["name"])
+                    # Fallback: search by box_id (廠商編號 often = ABB帳號 in col E)
+                    if not matches and data.get("box_id"):
+                        matches = search_sea_form_matches(data["box_id"])
                     valid_matches = [
                         m for m in (matches or [])
                         if isinstance(m, dict) and m.get("timestamp")
@@ -1820,12 +1828,20 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                         msg += f"✓ 打包資料表 已記錄\n\n"
                     msg += f"繼續輸入資料，或輸入 'end' 結束"
                 else:
-                    msg = (f"✅ 海運記錄已寫入打包資料表！\n\n"
+                    _existing_tkn = sheet_result.get("existing_tracking", "")
+                    if sheet_result["duplicate"]:
+                        _sheet_status = f"⚠️ 打包資料表現有記錄已更新：{sheet_result['message']}\n"
+                        if _existing_tkn:
+                            _sheet_status += f"📬 現有追蹤編號: {_existing_tkn}\n"
+                    else:
+                        _sheet_status = "✓ 打包資料表 已記錄\n"
+                    msg = (f"{'📦 找到打包資料表現有記錄' if sheet_result['duplicate'] else '✅ 海運記錄已寫入打包資料表！'}\n\n"
                           f"📦 Box ID: {box_display}\n"
                           f"👤 寄件人: {data['name']}\n"
                           f"📏 尺寸: {data['dimension']}\n"
                           f"⚖️ 重量: {data['weight']}\n\n"
-                          f"⚠️ 未找到海運資料表匹配，Monday 項目未建立\n"
+                          + _sheet_status
+                          + f"\n⚠️ 未找到海運資料表匹配，Monday 項目未建立\n"
                           f"請至打包資料表補充追蹤編號，\n"
                           f"並自行推送資料至 Monday\n\n"
                           f"繼續輸入資料，或輸入 'end' 結束")
