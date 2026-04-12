@@ -520,6 +520,66 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
         return []
 
 
+def _build_combined_sea_options(valid_matches: list) -> list:
+    """
+    Given multiple sea form matches, read their Workspace tracking IDs (追蹤碼1/2/3)
+    and return a flat list of tracking options across all form rows.
+
+    Each option dict has:
+        tracking    – existing tracking string (or "[待建立] <timestamp>" if none)
+        content     – package content text for that slot
+        subitem_id  – empty string (resolved at selection time via Monday API)
+        _sea_match  – the full form-row match dict (for Monday creation / subitem lookup)
+        _create_new – True only if this row has no Workspace trackings yet
+    """
+    try:
+        gs = get_gspread_client()
+        ws_ss = gs.open_by_key(OCEAN_FORM_SHEET_ID)
+        ws_tab = ws_ss.worksheet("Workspace")
+        ws_headers = ws_tab.row_values(1)
+        ws_header_map = {h.strip(): i for i, h in enumerate(ws_headers)}
+        ws_all = ws_tab.get_all_values()
+    except Exception as e:
+        log.error(f"[SEA] Failed to read Workspace for combined tracking options: {e}", exc_info=True)
+        return []
+
+    track_col_names = ("追蹤碼1", "追蹤碼2", "追蹤碼3")
+    combined = []
+
+    for m in valid_matches:
+        row_idx = m["sheet_row"]  # 1-based; mirrors Form Responses 1 row numbering
+        ws_row = ws_all[row_idx - 1] if row_idx <= len(ws_all) else []
+        pkg_contents = m.get("package_contents", [])
+
+        slot_trackings = []
+        for col_name in track_col_names:
+            col_i = ws_header_map.get(col_name)
+            if col_i is not None and col_i < len(ws_row):
+                val = ws_row[col_i].strip()
+                if val:
+                    slot_trackings.append(val)
+
+        if slot_trackings:
+            for i, trk in enumerate(slot_trackings):
+                combined.append({
+                    "tracking": trk,
+                    "content": pkg_contents[i] if i < len(pkg_contents) else "",
+                    "subitem_id": "",
+                    "_sea_match": m,
+                })
+        else:
+            # No trackings written yet — placeholder; subitem will be created on selection
+            combined.append({
+                "tracking": f"[待建立] {m['timestamp']}",
+                "content": pkg_contents[0] if pkg_contents else "",
+                "subitem_id": "",
+                "_sea_match": m,
+                "_create_new": True,
+            })
+
+    return combined
+
+
 # ─── Sea Freight Monday Item Creation ─────────────────────────────────────────
 
 # Monday board IDs for sea freight (same as 加台海運資料表 config)
@@ -1455,22 +1515,50 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                         _process_upload(redis_client, user_id, reply_token, data)
                         return True
                     else:
-                        _set_matches(redis_client, user_id, valid_matches)
-                        _set_state(redis_client, user_id, "selecting_match")
-                        try:
-                            flex = build_match_selection_flex(valid_matches)
-                            line_reply_flex(reply_token, "🔍 海運：請選擇匹配項目", flex)
-                        except Exception as e:
-                            log.error(f"[UPLOAD] Error building sea match flex: {e}", exc_info=True)
-                            match_text = "🔍 找到以下海運記錄，請回覆選項編號：\n\n"
-                            for i, m in enumerate(valid_matches[:5]):
-                                match_text += f"【{i+1}】\n"
-                                match_text += f"時間: {m.get('timestamp', 'N/A')}\n"
-                                match_text += f"中文: {m.get('chinese_name', 'N/A')}\n"
-                                match_text += f"英文: {m.get('english_name', 'N/A')}\n"
-                                match_text += f"客戶: {m.get('client_id', 'N/A')}\n\n"
-                            match_text += "請輸入「選擇匹配1」、「選擇匹配2」等指令"
-                            line_reply(reply_token, match_text)
+                        # Multiple form rows match — flatten all tracking IDs from
+                        # all rows' Workspace columns into one combined selection,
+                        # skipping the intermediate "select form row" step.
+                        combined_options = _build_combined_sea_options(valid_matches)
+                        if combined_options:
+                            redis_client.set(
+                                _key(user_id, "sea_trackings"),
+                                json.dumps(combined_options, ensure_ascii=False),
+                                ex=UPLOAD_TTL,
+                            )
+                            _set_state(redis_client, user_id, "selecting_sea_tracking")
+                            _set_data(redis_client, user_id, data)
+                            try:
+                                from handlers.upload_data_flex import build_sea_tracking_selection_flex
+                                flex = build_sea_tracking_selection_flex(combined_options)
+                                line_reply_flex(reply_token, "📦 找到多筆海運記錄，請選擇追蹤碼", flex)
+                            except Exception as fx_err:
+                                log.error(f"[UPLOAD] Error building combined tracking flex: {fx_err}", exc_info=True)
+                                msg = "📦 找到多筆海運記錄，請選擇追蹤碼：\n\n"
+                                for i, opt in enumerate(combined_options):
+                                    msg += f"【{i+1}】 {opt['tracking']}\n"
+                                    if opt.get("content"):
+                                        msg += f"   內容: {opt['content'][:60]}\n"
+                                    msg += "\n"
+                                msg += "請輸入「選擇追蹤1」、「選擇追蹤2」等指令"
+                                line_reply(reply_token, msg)
+                        else:
+                            # Workspace read failed — fall back to form-row selection
+                            _set_matches(redis_client, user_id, valid_matches)
+                            _set_state(redis_client, user_id, "selecting_match")
+                            try:
+                                flex = build_match_selection_flex(valid_matches)
+                                line_reply_flex(reply_token, "🔍 海運：請選擇匹配項目", flex)
+                            except Exception as e:
+                                log.error(f"[UPLOAD] Error building sea match flex: {e}", exc_info=True)
+                                match_text = "🔍 找到以下海運記錄，請回覆選項編號：\n\n"
+                                for i, m in enumerate(valid_matches[:5]):
+                                    match_text += f"【{i+1}】\n"
+                                    match_text += f"時間: {m.get('timestamp', 'N/A')}\n"
+                                    match_text += f"中文: {m.get('chinese_name', 'N/A')}\n"
+                                    match_text += f"英文: {m.get('english_name', 'N/A')}\n"
+                                    match_text += f"客戶: {m.get('client_id', 'N/A')}\n\n"
+                                match_text += "請輸入「選擇匹配1」、「選擇匹配2」等指令"
+                                line_reply(reply_token, match_text)
                         return True
                 else:
                     # Has tracking already (manually provided)
@@ -1575,12 +1663,43 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
 
             if 0 <= idx < len(sea_trackings):
                 data = _get_data(redis_client, user_id)
-                data["tracking"] = sea_trackings[idx]["tracking"]
+                selected = sea_trackings[idx]
+
+                sel_subitem_id = selected.get("subitem_id", "")
+                monday_updates = []
+
+                if not sel_subitem_id and selected.get("_sea_match"):
+                    # subitem_id wasn't pre-fetched — resolve now via Monday API.
+                    # create_sea_monday_items() reuses existing subitems when they
+                    # already exist, so this is safe to call at selection time.
+                    resolve_result = create_sea_monday_items(
+                        selected["_sea_match"],
+                        data["dimension"], data["weight"],
+                        vendor_box_id=data.get("vendor_box_id", ""),
+                    )
+                    if resolve_result.get("success"):
+                        target_trk = selected.get("tracking", "")
+                        for s in resolve_result.get("subitems", []):
+                            if s["tracking"] == target_trk or selected.get("_create_new"):
+                                sel_subitem_id = s["subitem_id"]
+                                # For _create_new items, use the real tracking created
+                                if selected.get("_create_new"):
+                                    target_trk = s["tracking"]
+                                break
+                        if not sel_subitem_id and resolve_result.get("subitems"):
+                            sel_subitem_id = resolve_result["subitems"][0]["subitem_id"]
+                            target_trk = resolve_result["subitems"][0]["tracking"]
+                        # dim/weight already written inside create_sea_monday_items
+                        # (it deferred to update_sea_subitem_data path below)
+                        data["tracking"] = target_trk
+                    else:
+                        log.warning(f"[SEA] Could not resolve subitem for selection: {resolve_result.get('error')}")
+                        data["tracking"] = selected["tracking"]
+                else:
+                    data["tracking"] = selected["tracking"]
                 _set_data(redis_client, user_id, data)
 
-                # Update the selected Monday subitem with this box's dimension/weight/vendor_box_id
-                sel_subitem_id = sea_trackings[idx].get("subitem_id", "")
-                monday_updates = []
+                # Update dim / weight / vendor_box_id on the resolved subitem
                 if sel_subitem_id:
                     monday_updates = update_sea_subitem_data(
                         sel_subitem_id, data["dimension"], data["weight"],
