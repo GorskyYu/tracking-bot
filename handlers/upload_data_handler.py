@@ -438,6 +438,7 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
         C: 寄件人中文姓名
         D: 寄件人英文姓名或 Line 名稱
         E: Abowbow會員帳號
+        M: 包裹數 (number of packages)
 
     Args:
         name_or_id: Name or Client ID to search for
@@ -470,15 +471,18 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
                              "\u7b2c\u4e8c\u4ef6\u5305\u88f9\u5167\u5bb9\u7269\u6e05\u55ae",
                              "\u7b2c\u4e09\u4ef6\u5305\u88f9\u5167\u5bb9\u7269\u6e05\u55ae"]
         content_col_idxs = [ws_hmap.get(n) for n in content_col_names]
+        log.info(f"[SEA] Workspace headers: {list(ws_hmap.keys())[:15]}")
+        log.info(f"[SEA] Content col indices: {content_col_idxs}")
 
         for i, row in enumerate(rows):
             if len(row) < 5:
                 continue
 
-            timestamp_str  = row[0] if len(row) > 0 else ""   # Col A
-            chinese_name   = row[2] if len(row) > 2 else ""   # Col C
-            english_name   = row[3] if len(row) > 3 else ""   # Col D
-            client_id      = row[4] if len(row) > 4 else ""   # Col E
+            timestamp_str  = row[0]  if len(row) > 0  else ""  # Col A
+            chinese_name   = row[2]  if len(row) > 2  else ""  # Col C
+            english_name   = row[3]  if len(row) > 3  else ""  # Col D
+            client_id      = row[4]  if len(row) > 4  else ""  # Col E
+            num_pkg_str    = row[12] if len(row) > 12 else ""  # Col M 包裹數
 
             if timestamp_str:
                 try:
@@ -502,6 +506,11 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
                         if val:
                             package_contents.append(val)
 
+                try:
+                    num_packages_declared = int(float(num_pkg_str.strip())) if num_pkg_str.strip() else 0
+                except (ValueError, TypeError):
+                    num_packages_declared = 0
+
                 matches.append({
                     "timestamp": timestamp_str,
                     "chinese_name": chinese_name,
@@ -509,6 +518,7 @@ def search_sea_form_matches(name_or_id: str) -> List[Dict[str, str]]:
                     "client_id": client_id,
                     "sheet_row": i + 2,  # 1-based row in Form Responses 1
                     "package_contents": package_contents,
+                    "num_packages": num_packages_declared,
                 })
 
         return matches
@@ -620,7 +630,10 @@ def create_sea_monday_items(
 
         # --- Determine how many subitems to create (1 per declared package) --
         package_contents = match.get("package_contents", [])
-        num_packages = max(1, len(package_contents))
+        # Prefer the explicit 包裹數 column; fall back to content list length, then 1
+        num_packages_declared = match.get("num_packages", 0)
+        num_packages = num_packages_declared if num_packages_declared >= 1 else max(1, len(package_contents))
+        log.info(f"[SEA] 包裹數 declared={num_packages_declared}, package_contents={package_contents}, using num_packages={num_packages}")
 
         # --- Shared GraphQL templates -----------------------------------------
         create_sub_q = """
@@ -731,6 +744,7 @@ def create_sea_monday_items(
                 "subitem_id": s_id,
             })
 
+        log.info(f"[SEA] Created {len(created_subitems)} subitems: {[s['tracking'] for s in created_subitems]}")
         return {
             "success": True,
             "parent_id": parent_id,
@@ -1565,6 +1579,7 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                 )
                 if result.get("success"):
                     subitems = result.get("subitems", [])
+                    log.info(f"[UPLOAD] Received {len(subitems)} subitems from create_sea_monday_items: {[s.get('tracking') for s in subitems]}")
                     if len(subitems) > 1:
                         # Multiple packages: ask user to select which one this box is
                         redis_client.set(
