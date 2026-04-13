@@ -1674,10 +1674,100 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                                 line_reply(reply_token, match_text)
                         return True
                 else:
-                    # Has tracking already (manually provided)
-                    _process_upload(redis_client, user_id, reply_token, data)
+                    # Has tracking already (user typed it in).
+                    # Mirror the selecting_sea_tracking path: search for _sea_match,
+                    # look up the Monday subitem by tracking name, update dim/weight,
+                    # then write packing sheet — preserving the user-provided tracking.
+                    _tracking = data["tracking"]
+                    _box_display = data.get("box_id") or "未提供"
+                    monday_updates = []
+                    monday_found = False
+
+                    # Search 海運資料表 for the client match
+                    _sea_matches = search_sea_form_matches(data["name"])
+                    if not _sea_matches and data.get("box_id"):
+                        _sea_matches = search_sea_form_matches(data["box_id"])
+                    _sea_valid = [m for m in (_sea_matches or []) if isinstance(m, dict) and m.get("timestamp")]
+                    if _sea_valid:
+                        data["_sea_match"] = _sea_valid[0]
+                        _set_data(redis_client, user_id, data)
+
+                    # Find the Monday subitem by the provided tracking name
+                    if data.get("_sea_match"):
+                        _headers_api = {"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"}
+                        try:
+                            find_sub_q = """
+                            query ($b: ID!, $v: String!) {
+                                items_page_by_column_values(
+                                    board_id: $b, limit: 1,
+                                    columns: [{column_id: "name", column_values: [$v]}]
+                                ) { items { id name } }
+                            }
+                            """
+                            resp = requests.post(
+                                MONDAY_API_URL, headers=_headers_api,
+                                json={"query": find_sub_q,
+                                      "variables": {"b": SEA_SUBITEM_BOARD_ID, "v": _tracking}},
+                                timeout=15,
+                            )
+                            found_items = resp.json().get("data", {}).get(
+                                "items_page_by_column_values", {}).get("items", [])
+                            if found_items:
+                                sel_subitem_id = found_items[0]["id"]
+                                monday_updates = update_sea_subitem_data(
+                                    sel_subitem_id, data["dimension"], data["weight"],
+                                    data.get("vendor_box_id", ""),
+                                )
+                                monday_found = True
+                                log.info(f"[UPLOAD] Updated Monday subitem '{_tracking}' ({sel_subitem_id}): {monday_updates}")
+                            else:
+                                log.warning(f"[UPLOAD] No Monday subitem found for tracking '{_tracking}'")
+                        except Exception as e:
+                            log.error(f"[UPLOAD] Error finding/updating Monday subitem: {e}", exc_info=True)
+
+                    sheet_result = upload_to_packing_sheet(
+                        data.get("box_id", ""),
+                        data["name"],
+                        _tracking,
+                        data["dimension"],
+                        data["weight"],
+                        data.get("hai_yun", "海運"),
+                        data.get("package_content", ""),
+                        data.get("vendor_box_id", ""),
+                    )
+
+                    if data.get("_sea_match") and monday_found:
+                        _monday_line = ("✓ Monday 海運子項目 已更新"
+                                        + (f"：{', '.join(monday_updates)}" if monday_updates else "")
+                                        + "\n")
+                    elif data.get("_sea_match"):
+                        _monday_line = "⚠️ Monday 子項目未找到（可能尚未建立），無法更新\n"
+                    else:
+                        _monday_line = ("⚠️ 未找到海運資料表匹配，Monday 項目未建立\n"
+                                        "請至打包資料表補充追蹤編號，\n"
+                                        "並自行推送資料至 Monday\n")
+
+                    if sheet_result["success"]:
+                        _sheet_status = (f"⚠️ {sheet_result['message']}\n"
+                                         if sheet_result.get("duplicate")
+                                         else "✓ 打包資料表 已記錄\n")
+                        msg = (f"✅ 海運記錄已寫入打包資料表！\n\n"
+                               f"📦 Box ID: {_box_display}\n"
+                               f"👤 寄件人: {data['name']}\n"
+                               f"🔢 追蹤編號: {_tracking}\n"
+                               f"📏 尺寸: {data['dimension']}\n"
+                               f"⚖️ 重量: {data['weight']}\n\n"
+                               + _sheet_status
+                               + _monday_line
+                               + "\n繼續輸入資料，或輸入 'end' 結束")
+                    else:
+                        msg = f"❌ 上傳失敗: {sheet_result['message']}\n\n輸入重新開始或 'end' 結束"
+
+                    line_reply(reply_token, msg)
+                    _set_state(redis_client, user_id, "collecting")
+                    _set_data(redis_client, user_id, {})
                     return True
-            
+
             # Normal / 空運 path: need tracking
             if not data.get("tracking"):
                 matches = search_air_form_matches(data["name"])
