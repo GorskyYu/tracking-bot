@@ -635,12 +635,16 @@ def _build_combined_sea_options(valid_matches: list) -> list:
         parent_offset[pname] = offset + num_packages
 
         if len(slot_trackings) >= num_packages:
-            # Workspace has all slots for this row → use them
+            # Workspace has all slots for this row → use them.
+            # Also fetch Monday subitem IDs so the selecting_sea_tracking handler
+            # can update dim/weight directly without a second unreliable name lookup.
+            all_subs = _get_parent_subs(m)
+            sub_id_by_name = {s["name"]: s["id"] for s in all_subs}
             for i, trk in enumerate(slot_trackings):
                 combined.append({
                     "tracking": trk,
                     "content": pkg_contents[i] if i < len(pkg_contents) else "",
-                    "subitem_id": "",
+                    "subitem_id": sub_id_by_name.get(trk, ""),
                     "_sea_match": m,
                 })
         else:
