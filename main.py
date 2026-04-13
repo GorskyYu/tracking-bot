@@ -489,7 +489,7 @@ def webhook():
             is_valid_group = group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, IRIS_GROUP_ID}
 
             # 🟢 新邏輯：管理員隨時可用；一般成員僅限在指定群組內輸入 "unpaid"
-            can_trigger = is_admin or (is_valid_group and text.lower() == "unpaid")
+            can_trigger = is_admin or (is_valid_group and text.lower().startswith("unpaid"))
 
             if can_trigger:
                 handle_unpaid_event(
