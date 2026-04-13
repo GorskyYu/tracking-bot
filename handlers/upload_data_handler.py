@@ -100,21 +100,23 @@ def parse_box_id(text: str) -> Optional[str]:
     return None
 
 
-def parse_dimension(text: str) -> Optional[str]:
+def parse_dimension(text: str, weight_explicitly_given: bool = False) -> Optional[str]:
     """
-    Parse dimension in format: 62*42*38cm or 62*42*38 or 62 42 38
+    Parse dimension from user input.
     Converts inches to cm if specified.
     Returns format: "62*42*38cm"
 
-    Two patterns are tried in order:
-    1. Explicit separators (*, ×, x)  — always unambiguous, no digit-count limit.
-    2. Space-separated             — each value must be EXACTLY 1–3 digits (token-bounded).
-       This prevents false matches on:
-         • FedEx 4-4-4 tracking  e.g. "8704 3041 4731"
-         • UPS segment numbers   e.g. "545 20 2469 1579"
+    Accepted delimiter patterns (in order):
+    1. Explicit delimiters: *, ×, x, -, /, ;, ,
+       e.g. 51-51-56  51/51/56  51;51;56  51,51,56  51*51*56
+    2. Space-separated — ONLY when weight_explicitly_given=True (weight has a
+       unit like 'kg' or 'lbs'), so the standalone weight number can't be
+       confused with a dimension.
+       e.g. "25.7kg 51 51 56"  → space dims allowed
+            "25.7 51 51 56"    → ambiguous, space dims NOT allowed
     """
-    # Pattern 1: explicit separator (*, ×, x) — no digit-count restriction needed
-    explicit_sep = r'(?<![A-Za-z])(\d+(?:\.\d+)?)[×x*]+(\d+(?:\.\d+)?)[×x*]+(\d+(?:\.\d+)?)(?:\s*)(cm|公分|in|inch|吋|")?'
+    # Pattern 1: explicit delimiters  (* × x - / ; ,)
+    explicit_sep = r'(?<![A-Za-z])(\d+(?:\.\d+)?)[×x*\-/;,]+(\d+(?:\.\d+)?)[×x*\-/;,]+(\d+(?:\.\d+)?)(?:\s*)(cm|公分|in|inch|吋|")?'
     match = re.search(explicit_sep, text, re.IGNORECASE)
     if match:
         l, w, h = map(float, match.group(1, 2, 3))
@@ -123,18 +125,26 @@ def parse_dimension(text: str) -> Optional[str]:
             l, w, h = l * 2.54, w * 2.54, h * 2.54
         return f"{int(l)}*{int(w)}*{int(h)}cm"
 
-    # Pattern 2: space-separated — each number must be exactly 1–3 digits
-    # (?<![A-Za-z0-9]) and (?!\d) enforce token boundaries so "8704" won't match
-    space_sep = r'(?<![A-Za-z0-9])(\d{1,3})(?!\d)\s+(\d{1,3})(?!\d)\s+(\d{1,3})(?!\d)(?:\s*)(cm|公分|in|inch|吋|")?'
-    match = re.search(space_sep, text, re.IGNORECASE)
-    if match:
-        l, w, h = float(match.group(1)), float(match.group(2)), float(match.group(3))
-        unit = (match.group(4) or "cm").lower()
-        if unit.startswith(("in", "吋", '"')):
-            l, w, h = l * 2.54, w * 2.54, h * 2.54
-        return f"{int(l)}*{int(w)}*{int(h)}cm"
+    # Pattern 2: space-separated — only when weight is unambiguously known
+    # Remove the explicit weight token before searching so it can't become a dim
+    if weight_explicitly_given:
+        # Strip weight token (e.g. "25.7kg", "25.7 kg") then look for 3 numbers
+        text_no_weight = re.sub(r'\d+(?:\.\d+)?\s*(?:kg|公斤|lbs?|磅)', '', text, flags=re.IGNORECASE)
+        space_sep = r'(?<![A-Za-z0-9.])(\d{1,3}(?:\.\d+)?)(?!\d)\s+(\d{1,3}(?:\.\d+)?)(?!\d)\s+(\d{1,3}(?:\.\d+)?)(?!\d)(?:\s*)(cm|公分|in|inch|吋|")?'
+        match = re.search(space_sep, text_no_weight, re.IGNORECASE)
+        if match:
+            l, w, h = float(match.group(1)), float(match.group(2)), float(match.group(3))
+            unit = (match.group(4) or "cm").lower()
+            if unit.startswith(("in", "吋", '"')):
+                l, w, h = l * 2.54, w * 2.54, h * 2.54
+            return f"{int(l)}*{int(w)}*{int(h)}cm"
 
     return None
+
+
+def has_explicit_weight_unit(text: str) -> bool:
+    """Return True if text contains a weight with an explicit unit (kg/lbs/etc.)."""
+    return bool(re.search(r'\d+(?:\.\d+)?\s*(?:kg|公斤|lbs?|磅)', text, re.IGNORECASE))
 
 
 def parse_weight(text: str) -> Optional[str]:
@@ -146,34 +156,32 @@ def parse_weight(text: str) -> Optional[str]:
     # First try to match weight with explicit unit
     pattern_with_unit = r'(\d+(?:\.\d+)?)\s*(kg|公斤|lbs?|磅)'
     match = re.search(pattern_with_unit, text, re.IGNORECASE)
-    
+
     if match:
         weight = float(match.group(1))
         unit = match.group(2).lower()
-        
-        # Convert lbs to kg
         if unit.startswith(("lb", "磅")):
             weight *= 0.453592
-        
         return f"{weight:.2f}kg"
-    
-    # If no unit found, look for a standalone number (not part of dimensions)
-    # First remove box ID patterns (ABxx, YLxx, SPxx, etc.) to avoid matching them as weight
+
+    # No explicit unit — remove box IDs and explicit-delimiter dim groups first
     cleaned = re.sub(r'\b[A-Z]{2}\d{2,4}\b', '', text, flags=re.IGNORECASE)
-    # Avoid matching numbers that are part of dimension pattern (X*X*X)
-    pattern_standalone = r'(?<!\*)(?<!\d)(\d+(?:\.\d+)?)(?!\*|\d)'
+    cleaned = re.sub(r'\d+(?:\.\d+)?[×x*\-/;,]+\d+(?:\.\d+)?[×x*\-/;,]+\d+(?:\.\d+)?', '', cleaned, flags=re.IGNORECASE)
+    pattern_standalone = r'(?<![×x*\-/;,\d])(\d+(?:\.\d+)?)(?![×x*\-/;,\d])'
     matches = re.findall(pattern_standalone, cleaned)
-    
-    # Get the last standalone number as weight (dimensions usually come first)
+
     if matches:
+        # Prefer the first number that has a decimal fraction (e.g. 25.7 over 51 51 56)
+        # Fall back to the first number if none have decimals
+        decimal_candidates = [m for m in matches if '.' in m]
+        candidate = decimal_candidates[0] if decimal_candidates else matches[0]
         try:
-            weight = float(matches[-1])
-            # Only accept reasonable weight values (0.1 to 999 kg)
+            weight = float(candidate)
             if 0.1 <= weight <= 999:
                 return f"{weight:.2f}kg"
         except ValueError:
             pass
-    
+
     return None
 
 
@@ -298,7 +306,7 @@ def parse_message(text: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
                 data["box_id"] = bid_upper
     
     if not data.get("dimension"):
-        dimension = parse_dimension(text)
+        dimension = parse_dimension(text, weight_explicitly_given=has_explicit_weight_unit(text))
         if dimension:
             data["dimension"] = dimension
     
@@ -1513,11 +1521,16 @@ def handle_upload_trigger(event: Dict[str, Any], redis_client) -> bool:
     line_reply(event["replyToken"],
               "📦 上傳資料模式已啟動\n\n"
               "請輸入包裹資料，需包含：\n"
-              "• Box ID (YL123)\n"
-              "• 寄件人/客戶名稱\n"
-              "• 尺寸 (長*寬*高cm)\n"
-              "• 重量 (kg)\n"
-              "• 追蹤編號 (選填)\n"
+              "• Box ID（如 YL123、SP22）\n"
+              "• 寄件人 / 客戶名稱\n"
+              "• 尺寸（長、寬、高，單位 cm）\n"
+              "  ✅ 請用 - / ; , * 連接三個數字\n"
+              "  例：51-51-56 或 51/51/56 或 51*51*56\n"
+              "  ⚠️ 若尺寸用空格隔開，請在重量加上 kg\n"
+              "  例：25.7kg 51 51 56（需有 kg 才能區分）\n"
+              "• 重量（kg）\n"
+              "  例：25.7 或 25.7kg\n"
+              "• 追蹤編號（選填）\n"
               "• 運送方式：空運 / 海運（簡體：空运 / 海运）\n\n"
               "⚠️ 海運包裹：僅寫入打包資料表，不推送 Monday，請事後補充追蹤編號\n\n"
               "輸入 'end' 結束此模式")
@@ -1896,9 +1909,9 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
         elif field == "name":
             data["name"] = text.strip()
         elif field == "dimension":
-            val = parse_dimension(text)
+            val = parse_dimension(text, weight_explicitly_given=has_explicit_weight_unit(text))
             if not val:
-                line_reply(reply_token, "⚠️ 無法識別尺寸格式，請重新輸入 （例：40*30*20）")
+                line_reply(reply_token, "⚠️ 無法識別尺寸格式，請重新輸入 （例：51-51-56 或 51*51*56）")
                 return True
             data["dimension"] = val
         elif field == "weight":
