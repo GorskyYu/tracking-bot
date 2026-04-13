@@ -1430,6 +1430,16 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
             if vendor_box_id:
                 ws.update_cell(sheet_row, col_d_idx + 1, vendor_box_id)
                 updated_fields.append(f"箱號={vendor_box_id}")
+            # Fill in dimension if the existing row's 尺寸 cell is empty
+            existing_dim = existing_row[col_i_idx].strip() if len(existing_row) > col_i_idx else ""
+            if not existing_dim and dimension_clean:
+                ws.update_cell(sheet_row, col_i_idx + 1, dimension_clean)
+                updated_fields.append(f"尺寸={dimension_clean}")
+            # Fill in weight if the existing row's 重量 cell is empty
+            existing_weight = existing_row[col_k_idx].strip() if len(existing_row) > col_k_idx else ""
+            if not existing_weight and weight_value != "":
+                ws.update_cell(sheet_row, col_k_idx + 1, weight_value)
+                updated_fields.append(f"重量={weight_value}")
             log.info(f"[UPLOAD] Duplicate for {name} (row {sheet_row}), updated: {updated_fields}, existing_tracking={existing_tracking}")
             return {
                 "success": True,
