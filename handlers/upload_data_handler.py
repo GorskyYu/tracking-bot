@@ -1616,15 +1616,10 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                         # No match found — proceed without Monday (same as before)
                         _process_upload(redis_client, user_id, reply_token, data)
                         return True
-                    elif len(valid_matches) == 1:
-                        data["_sea_match"] = valid_matches[0]
-                        _set_data(redis_client, user_id, data)
-                        _process_upload(redis_client, user_id, reply_token, data)
-                        return True
                     else:
-                        # Multiple form rows match — flatten all tracking IDs from
-                        # all rows' Workspace columns into one combined selection,
-                        # skipping the intermediate "select form row" step.
+                        # One or multiple form rows — always show tracking selection
+                        # so the user can confirm the matched client info and pick
+                        # the correct tracking number before upload proceeds.
                         combined_options = _build_combined_sea_options(valid_matches)
                         if combined_options:
                             redis_client.set(

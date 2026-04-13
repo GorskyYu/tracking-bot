@@ -134,26 +134,43 @@ def build_data_confirm_flex(data: Dict[str, Any]) -> dict:
 
 def build_match_selection_flex(matches: List[Dict[str, str]]) -> dict:
     """
-    Build flex message for selecting a matching record from 空運資料表.
-    
+    Build flex message for selecting a matching record from 空運資料表 or
+    as sea-freight fallback when combined-options are unavailable.
+
     Args:
         matches: List of dicts with keys: timestamp, chinese_name, english_name, client_id
     """
+    # ── Merge client info shown once in header ─────────────────────────────────
+    cn_set  = {m.get("chinese_name", "") for m in matches} - {""}
+    en_set  = {m.get("english_name", "") for m in matches} - {""}
+    cid_set = {m.get("client_id", "")    for m in matches} - {""}
+
+    header_parts = []
+    if cn_set:
+        header_parts.append(f"中文名: {cn_set.pop()[:30]}")
+    if en_set:
+        header_parts.append(f"英文名: {en_set.pop()[:30]}")
+    if cid_set:
+        header_parts.append(f"Abowbow: {cid_set.pop()[:30]}")
+
+    count = len(matches)
     body = [
-        {"type": "text", "text": "🔍 找到以下匹配記錄",
+        {"type": "text",
+         "text": f"🔍 找到 {count} 筆匹配記錄",
          "weight": "bold", "size": "xl", "color": "#1a1a1a"},
-        {"type": "text", "text": "請選擇正確的匹配項目：",
-         "size": "sm", "color": "#888888", "margin": "md"},
-        {"type": "separator", "margin": "md"},
     ]
-    
+    if header_parts:
+        body.append({
+            "type": "text",
+            "text": " ｜ ".join(header_parts),
+            "size": "sm", "color": "#333333", "margin": "md", "wrap": True,
+        })
+    body.append({"type": "text", "text": "請選擇正確的匹配項目：",
+                 "size": "sm", "color": "#888888", "margin": "md"})
+    body.append({"type": "separator", "margin": "md"})
+
     for i, match in enumerate(matches[:5]):  # Limit to 5 matches
-        # Safely get and truncate values to avoid overflow
         timestamp = (match.get("timestamp") or "N/A")[:50]
-        chinese_name = (match.get("chinese_name") or "N/A")[:30]
-        english_name = (match.get("english_name") or "N/A")[:30]
-        client_id = (match.get("client_id") or "N/A")[:30]
-        
         match_box = {
             "type": "box", "layout": "vertical",
             "margin": "md", "spacing": "sm",
@@ -163,19 +180,16 @@ def build_match_selection_flex(matches: List[Dict[str, str]]) -> dict:
             "contents": [
                 {"type": "text", "text": f"選項 {i+1}",
                  "weight": "bold", "size": "md", "color": "#0066cc"},
-                _kv_row("時間", timestamp),
-                _kv_row("中文姓名", chinese_name),
-                _kv_row("英文姓名", english_name),
-                _kv_row("客戶ID", client_id),
+                _kv_row("時間戳記", timestamp),
                 {"type": "button", "height": "sm", "style": "primary",
                  "margin": "md",
                  "action": {"type": "message",
-                           "label": f"選擇此項目",
-                           "text": f"選擇匹配{i+1}"}}
+                            "label": "選擇此項目",
+                            "text": f"選擇匹配{i+1}"}}
             ]
         }
         body.append(match_box)
-    
+
     return {
         "type": "bubble",
         "body": {"type": "box", "layout": "vertical", "contents": body},
