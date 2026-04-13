@@ -906,6 +906,13 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
         grouped_clients = _group_items_by_client(results, final_filter, filter_date)
         
         if not grouped_clients:
+             # If in today mode and no results found, fallback to normal search by client name
+             if is_today_mode and today_client_filter:
+                 logging.info(f"[unpaid_worker] No results in 'today' mode for '{today_client_filter}', falling back to normal search...")
+                 line_bot_api.push_message(destination_id, TextSendMessage(text=f"在 'today' 條件下未搜尋到符合結果，正在搜尋 {today_client_filter} 的所有未付款項目..."))
+                 Thread(target=_unpaid_worker, args=(destination_id, today_client_filter, None, None, is_group_chat)).start()
+                 return
+             
              line_bot_api.push_message(destination_id, TextSendMessage(text=f"在 '{filter_name}' 條件下未搜尋到符合結果。"))
              return
              
