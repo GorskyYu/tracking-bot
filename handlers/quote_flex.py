@@ -256,7 +256,7 @@ def build_gv_delivery_flex() -> dict:
             ],
         },
         "footer": {
-            "type": "box", "layout": "horizontal", "spacing": "sm",
+            "type": "box", "layout": "vertical", "spacing": "sm",
             "contents": [
                 {"type": "button", "height": "sm", "style": "primary",
                  "color": "#28a745",

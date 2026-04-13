@@ -590,7 +590,19 @@ def _on_mode_selected(r, uid, target, mode, profile):
 
 
 def _on_reselect_service(r, uid, target, profile):
-    """Post-quote: go back to service selection."""
+    """Post-quote: go back to service selection.
+    For GV postal codes there are no third-party domestic services —
+    loop back to the drop-off / pickup choice instead.
+    """
+    # If this was a GV quote, the gv_delivery key is still set in Redis.
+    # Re-use that signal to show the GV selection bubble instead of an
+    # empty service list.
+    if _get_gv_delivery(r, uid) is not None:
+        _set_state(r, uid, "choosing_gv_delivery")
+        flex = build_gv_delivery_flex()
+        line_push_flex(target, "🚚 境內段運送服務", flex)
+        return True
+
     services = _get_services(r, uid)
     if not services:
         line_push(target, "❌ 運送服務資料遺失，請重新輸入「開始報價」。")
