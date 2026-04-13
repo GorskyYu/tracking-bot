@@ -486,7 +486,7 @@ def webhook():
             is_admin = (user_id == YVES_USER_ID or user_id == GORSKY_USER_ID)
             
             # 2. 判斷是否為有效的自動查詢群組
-            is_valid_group = group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, IRIS_GROUP_ID}
+            is_valid_group = group_id in {VICKY_GROUP_ID, YUMI_GROUP_ID, IRIS_GROUP_ID, PDF_GROUP_ID}
 
             # 🟢 新邏輯：管理員隨時可用；一般成員僅限在指定群組內輸入 "unpaid"
             can_trigger = is_admin or (is_valid_group and text.lower().startswith("unpaid"))
