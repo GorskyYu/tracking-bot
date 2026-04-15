@@ -102,6 +102,43 @@ class MondaySyncService:
             log.error(f"[GSHEET] Sync error: {sheet_err}")
             self.line_push(self.line_status_group, f"⚠️ Sheet 同步失敗: {str(sheet_err)}")
 
+    def _route_by_timestamp(self, ref_no: str) -> str:
+        """
+        Given a ref_no that is a form-submission timestamp (e.g. "2026-04-05 07:15:40"),
+        search col A of Form Responses 1 across three sheets to determine routing.
+
+        Search order: 空運資料表 → 海運資料表 → 境內資料表
+
+        Returns: "air", "sea", "domestic", or "not_found"
+        """
+        if not ref_no:
+            return "not_found"
+
+        from handlers.upload_data_handler import (
+            AIR_FORM_SHEET_ID,
+            OCEAN_FORM_SHEET_ID,
+            DOMESTIC_FORM_SHEET_ID,
+        )
+
+        def _check_sheet(sheet_id: str) -> bool:
+            try:
+                gs = self.get_gspread()
+                ss = gs.open_by_key(sheet_id)
+                ws = ss.worksheet("Form Responses 1")
+                col_a = ws.col_values(1)
+                return ref_no in col_a
+            except Exception as e:
+                log.error(f"[RouteByTS] Error checking sheet {sheet_id}: {e}")
+                return False
+
+        if _check_sheet(AIR_FORM_SHEET_ID):
+            return "air"
+        if _check_sheet(OCEAN_FORM_SHEET_ID):
+            return "sea"
+        if _check_sheet(DOMESTIC_FORM_SHEET_ID):
+            return "domestic"
+        return "not_found"
+
     def run_sync(self, full_data, pdf_bytes, original_filename, redis_client, group_id):
         """
         整合所有步驟的公開入口方法 - 已整合海運判定、加拿大散客標籤、加境內直寄與環境變數
@@ -160,57 +197,46 @@ class MondaySyncService:
                 _is_karl_lagerfeld = True
 
             # ------------------------------------------------------------------
-            # 🟢 混合式邏輯判定：郵遞區號優先，人名備援
+            # 🟢 時間戳路由判定：依 REF 時間戳在三個資料表中比對
             # ------------------------------------------------------------------
-            receiver_name = (receiver.get("name") or "").strip().lower()
+            # Keep clean_zip for Ace/SoQuick carrier tagging in step 6
             raw_zip = (receiver.get("postal_code") or "")
-            clean_zip = re.sub(r"\s+", "", raw_zip).upper() # Normalize to V6X1Z7
+            clean_zip = re.sub(r"\s+", "", raw_zip).upper()  # Normalize to V6X1Z7
 
-            is_taiwan_bound = False
+            route = self._route_by_timestamp(ref_no)
             decision_reason = ""
             board_display_name = ""
 
-            # Logic A: 優先檢查郵遞區號
-            if clean_zip and clean_zip in WAREHOUSE_ZIPS:
-                is_taiwan_bound = True
-                decision_reason = f"✅ 郵編吻合 ({clean_zip})"
-            
-            # Logic B1: 郵編雖有但不符 (明確指向境內)
-            elif clean_zip and len(clean_zip) >= 3:
-                is_taiwan_bound = False
-                decision_reason = f"✈️ 郵編指向他處 ({clean_zip})"
-
-            # Logic B2: 無郵編，Fallback 檢查人名
-            else:
-                if any(n in receiver_name for n in WAREHOUSE_NAMES):
-                    is_taiwan_bound = True
-                    decision_reason = f"⚠️ 無郵編，依人名判定 ({receiver_name})"
-                else:
-                    is_taiwan_bound = False
-                    decision_reason = "⚠️ 無郵編且非倉庫人名，預設境內"
-
-            # 🟢 海運邏輯 (Client ID Check)
-            is_sea = adj_client.lower().endswith(" sea")
-            
-            # 設定目標 Board
-            if is_taiwan_bound:
-                if is_sea:
-                    target_parent_board_id = os.getenv('SEA_PARENT_BOARD_ID')
-                    target_subitem_board_id = os.getenv('SEA_BOARD_ID')
-                    is_domestic = False
-                    board_display_name = "🇹🇼 海運 Sea"
-                else:
-                    target_parent_board_id = os.getenv('AIR_PARENT_BOARD_ID')
-                    target_subitem_board_id = os.getenv('AIR_BOARD_ID')
-                    is_domestic = False
-                    board_display_name = "🇹🇼 空運 Air"
-            else:
-                # Canadian Domestic Shipping
+            if route == "air":
+                target_parent_board_id = os.getenv('AIR_PARENT_BOARD_ID')
+                target_subitem_board_id = os.getenv('AIR_BOARD_ID')
+                is_domestic = False
+                board_display_name = "🇹🇼 空運 Air"
+                decision_reason = f"✅ 時間戳吻合 空運資料表 ({ref_no})"
+            elif route == "sea":
+                target_parent_board_id = os.getenv('SEA_PARENT_BOARD_ID')
+                target_subitem_board_id = os.getenv('SEA_BOARD_ID')
+                is_domestic = False
+                board_display_name = "🇹🇼 海運 Sea"
+                decision_reason = f"✅ 時間戳吻合 海運資料表 ({ref_no})"
+            elif route == "domestic":
                 target_parent_board_id = 8082569538
                 target_subitem_board_id = 8082569581
                 is_domestic = True
                 board_display_name = "🇨🇦 境內配送 (Domestic)"
-            
+                decision_reason = f"✅ 時間戳吻合 境內資料表 ({ref_no})"
+            else:  # not_found — warn but default to 空運
+                target_parent_board_id = os.getenv('AIR_PARENT_BOARD_ID')
+                target_subitem_board_id = os.getenv('AIR_BOARD_ID')
+                is_domestic = False
+                board_display_name = "🇹🇼 空運 Air"
+                decision_reason = f"⚠️ 未找到對應時間戳 ({ref_no})，預設空運"
+                self.line_push(
+                    self.line_status_group,
+                    f"⚠️ [PDF路由] 在三個資料表中均未找到時間戳：{ref_no}\n"
+                    f"已預設路由至空運 Board，請手動確認是否正確"
+                )
+
             log.info(f"[PDF→Monday] Routing: {board_display_name} | Reason: {decision_reason}")
 
             today = datetime.now().strftime("%Y%m%d")
@@ -354,7 +380,7 @@ class MondaySyncService:
             elif is_domestic:
                 extra_hint = "\n請輸入：[加境內支出] [加拿大單價]"
             else:
-                extra_hint = "\n請輸入：[加境內支出] [加拿大單價] [國際單價]"
+                extra_hint = "\n請輸入：[加境內支出] [合計單價]  或  [加境內支出] [加拿大單價] [國際單價]"
 
             msg = (
                 f"📄 PDF 處理完成{extra_hint}\n"
@@ -383,7 +409,10 @@ class MondaySyncService:
                         f"🏷 單號: {tracking_str}\n"
                         f"📍 去向: {board_display_name}\n\n"
                         f"💡 請在此群組輸入以下格式完成錄入：\n"
-                        f"[加境內支出] [加拿大單價] [國際單價]\n"
+                        f"2 個數值（推薦）：[加境內支出] [合計單價]\n"
+                        f"例如：43.10 12.5（空運）或 32.31 7.5（海運）\n"
+                        f"系統自動拆分：CA=2.5，國際=合計-2.5\n"
+                        f"3 個數值（手動）：[加境內支出] [加拿大單價] [國際單價]\n"
                         f"例如：43.10 2.5 10\n"
                         f"⚠️ 如某欄為 0 請輸入 0"
                     )
