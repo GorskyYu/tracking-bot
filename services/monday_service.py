@@ -523,3 +523,98 @@ class MondaySyncService:
             "column_values": json.dumps(column_values)
         }
         return self._post_with_backoff(self.api_url, {"query": query, "variables": variables})
+
+    def get_team_members_from_board(self, team_name: str) -> list:
+        """
+        Get team members from Monday board 7745917861 for the given team.
+        Returns list of {"name": str, "available": bool, "priority": bool}
+        """
+        query = '''
+        query {
+          boards (ids: [7745917861]) {
+            groups {
+              id
+              title
+              items_page(limit: 200) {
+                items {
+                  name
+                }
+              }
+            }
+          }
+        }
+        '''
+        response = self._post_with_backoff(self.api_url, {"query": query})
+        data = response.json()
+
+        if "errors" in data:
+            raise Exception(f"[Monday API Error for {team_name}] {data['errors']}")
+
+        boards = data.get("data", {}).get("boards", [])
+        if not boards:
+            raise Exception(f"[Monday] No board data found for {team_name}")
+
+        groups = boards[0].get("groups", [])
+        team_upper = team_name.upper()
+
+        for group in groups:
+            if team_upper in group.get("title", "").upper():
+                items = group.get("items_page", {}).get("items", [])
+                members = [
+                    {"name": item["name"].strip(), "available": True, "priority": False}
+                    for item in items
+                    if item.get("name", "").strip()
+                ]
+                log.info(f"[Monday] Found {len(members)} members in group '{group['title']}' for team '{team_name}'")
+                return members
+
+        available_groups = [g.get('title') for g in groups]
+        raise Exception(f"[Monday] No group found for team '{team_name}'. Available groups: {available_groups}")
+
+    def get_yves_names_from_board(self) -> set:
+        """
+        Get Yves team member names from Monday board 7745917861.
+        Returns Set[str] of member names.
+        """
+        query = '''
+        query {
+          boards (ids: [7745917861]) {
+            groups {
+              id
+              title
+              items_page(limit: 200) {
+                items {
+                  name
+                }
+              }
+            }
+          }
+        }
+        '''
+        response = self._post_with_backoff(self.api_url, {"query": query})
+        data = response.json()
+
+        if "errors" in data:
+            raise Exception(f"[Monday API Error for Yves] {data['errors']}")
+
+        boards = data.get("data", {}).get("boards", [])
+        if not boards:
+            raise Exception("[Monday] No board data found for Yves")
+
+        groups = boards[0].get("groups", [])
+        yves_names = set()
+        yves_patterns = ['SQ', 'ACE', 'SOQUICK', 'YVES']
+
+        for group in groups:
+            group_title = group.get("title", "").upper()
+            if any(p in group_title for p in yves_patterns):
+                items = group.get("items_page", {}).get("items", [])
+                names = {item["name"].strip() for item in items if item.get("name", "").strip()}
+                yves_names.update(names)
+                log.info(f"[Monday] Found {len(names)} Yves members in group '{group['title']}'")
+
+        if not yves_names:
+            available_groups = [g.get('title') for g in groups]
+            raise Exception(f"[Monday] No Yves groups found. Available: {available_groups}")
+
+        return yves_names

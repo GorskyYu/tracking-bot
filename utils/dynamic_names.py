@@ -230,13 +230,25 @@ class DynamicNamesManager:
             team_members = self.monday_service.get_team_members_from_board(team_name)
             # 只取 available 的成員
             dynamic_names = {member["name"] for member in team_members if member["available"]}
-            self._update_cache(cache_key, dynamic_names)
+            with self._cache_lock:
+                self._update_cache(cache_key, dynamic_names)
             log.info(f"[DynamicNames] Successfully retrieved {team_name} with {len(dynamic_names)} available members: {sorted(dynamic_names)}")
             return dynamic_names
         except Exception as e:
-            error_msg = f"[DynamicNames] FAILED to get {team_name} from Monday board: {e}"
-            log.error(error_msg)
-            raise RuntimeError(error_msg)
+            log.warning(f"[DynamicNames] Monday board failed for {team_name}: {e}, falling back to static config")
+
+        # Fallback to static config
+        fallback_key = f'{team_name.upper()}_NAMES'
+        fallback_names = self.fallback_config.get(fallback_key, set())
+        if fallback_names:
+            with self._cache_lock:
+                self._update_cache(cache_key, fallback_names)
+            log.info(f"[DynamicNames] Using static fallback for {team_name}: {len(fallback_names)} members")
+            return fallback_names
+
+        error_msg = f"[DynamicNames] FAILED to get {team_name}: Monday board failed and no fallback configured"
+        log.error(error_msg)
+        raise RuntimeError(error_msg)
     
     def get_yves_names(self) -> Set[str]:
         """
@@ -261,13 +273,24 @@ class DynamicNamesManager:
         
         try:
             yves_names = self.monday_service.get_yves_names_from_board()
-            self._update_cache(cache_key, yves_names)
+            with self._cache_lock:
+                self._update_cache(cache_key, yves_names)
             log.info(f"[DynamicNames] Successfully retrieved Yves with {len(yves_names)} members: {sorted(yves_names)}")
             return yves_names
         except Exception as e:
-            error_msg = f"[DynamicNames] FAILED to get Yves names from Monday board: {e}"
-            log.error(error_msg)
-            raise RuntimeError(error_msg)
+            log.warning(f"[DynamicNames] Monday board failed for Yves: {e}, falling back to static config")
+
+        # Fallback to static config
+        fallback_names = self.fallback_config.get('YVES_NAMES', set())
+        if fallback_names:
+            with self._cache_lock:
+                self._update_cache(cache_key, fallback_names)
+            log.info(f"[DynamicNames] Using static fallback for Yves: {len(fallback_names)} members")
+            return fallback_names
+
+        error_msg = "[DynamicNames] FAILED to get Yves names: Monday board failed and no fallback configured"
+        log.error(error_msg)
+        raise RuntimeError(error_msg)
     
     def _get_cached_names(self, cache_key: str) -> Optional[Set[str]]:
         """檢查緩存是否有效並返回名單"""
