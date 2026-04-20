@@ -75,6 +75,7 @@ from services.barcode_service import ACE_PHOTO_GROUP_IDS as BARCODE_PHOTO_GROUPS
 from jobs.ace_tasks import push_ace_today_shipments
 from jobs.sq_tasks import push_sq_weekly_shipments
 from jobs.scheduler import init_all_schedulers
+from utils.dynamic_names import init_dynamic_names_manager
 
 from sheets import get_gspread_client
 from holiday_reminder import get_next_holiday
@@ -158,6 +159,13 @@ monday_service = MondaySyncService(
     gspread_client_func=get_gspread_client,
     line_push_func=line_push
 )
+
+# Initialize dynamic names manager with monday_service so name lookups work after dyno restarts
+init_dynamic_names_manager(monday_service=monday_service, fallback_config={
+    'VICKY_NAMES': config.VICKY_NAMES,
+    'YUMI_NAMES': config.YUMI_NAMES,
+    'YVES_NAMES': config.YVES_NAMES,
+})
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
