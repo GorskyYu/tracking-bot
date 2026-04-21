@@ -408,13 +408,14 @@ def webhook():
 
 
                 # ── 空運 / 海運 PDF：支援 2 個或 3 個數值 ──
-                # 2 個數值：[加境內支出] [合計單價]，合計單價自動拆分 (CA=2.5, 國際=合計-2.5)
+                # 2 個數值：[加境內支出] [合計單價]，合計單價自動拆分 (國際=10, CA=合計-10)
+                #           若包裹 < 3kg，國際段為 14，請改用 3 個數值手動輸入
                 # 3 個數值：[加境內支出] [加拿大單價] [國際單價]
                 else:
                     if len(nums) == 2:
                         expense, total_rate = nums
-                        canada_price = 2.5
-                        intl_price = round(total_rate - 2.5, 4)
+                        intl_price = 10.0
+                        canada_price = round(total_rate - 10.0, 4)
                         ok, msg, item_name = monday_service.update_expense_and_rates(
                             last_pid, expense, canada_price, intl_price, last_bid, last_sub_bid, False
                         )
@@ -423,8 +424,8 @@ def webhook():
                                 f"✅ 錄入成功 (合計拆分)\n"
                                 f"📌 項目: {item_name}\n"
                                 f"💰 加境內支出: ${expense}\n"
-                                f"🇨🇦 加拿大單價: $2.5 (自動)\n"
-                                f"🌍 國際單價: ${intl_price} (合計 ${total_rate} − 2.5)")
+                                f"🌍 國際單價: $10.0 (自動)\n"
+                                f"🇨🇦 加拿大單價: ${canada_price} (合計 ${total_rate} − 10.0)")
                             r.delete("global_last_pdf_parent")
                         else:
                             line_push(group_id, f"❌ 錄入失敗: {msg}\n📌 項目: {item_name if item_name else '未知'}")
@@ -448,9 +449,9 @@ def webhook():
                     else:
                         line_push(group_id,
                             f"❌ 格式錯誤！空運/海運 PDF 請輸入 2 或 3 個數值：\n"
-                            f"2 個：[加境內支出] [合計單價]（自動拆分 CA=2.5）\n"
-                            f"例如：43.10 12.5  或  32.31 7.5\n"
-                            f"3 個：[加境內支出] [加拿大單價] [國際單價]\n"
+                            f"2 個：[加境內支出] [合計單價]（自動拆分 國際=10, CA=合計−10）\n"
+                            f"例如：18.03 12.802  或  32.31 12.5\n"
+                            f"3 個：[加境內支出] [加拿大單價] [國際單價]（包裹 <3kg 時 國際=14）\n"
                             f"例如：43.10 2.5 10\n"
                             f"⚠️ 如某欄為 0 請輸入 0")
                         continue

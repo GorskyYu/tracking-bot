@@ -47,6 +47,8 @@ CRITICAL RULES:
 - company/org name is usually in ALL CAPS or near the top of the FROM block; person name is the mixed-case name.
 - "client_id" = the company/org name in the FROM block (e.g. "LAMMOND").
 - "name" = the individual person's name in the FROM block, copied character-for-character.
+- "reference_number" = ONLY the value from the line that starts with "REF:" (e.g. "2026-04-21 04:30:12-1"). This is a timestamp. Do NOT use the PO, INV, or DEPT fields here.
+- "po_number" = the value from the line that starts with "PO:" (e.g. "POF11000198376-1"). If no PO line exists, use "".
 
 Response JSON:
 {
@@ -59,7 +61,8 @@ Response JSON:
     "address": "string (Full address line)",
     "postal_code": "string (ZIP/Postal code e.g. V6X 1Z7)"
   },
-  "reference_number": "string (Ref #, PO #, Invoice #)"
+  "reference_number": "string (REF: field value only — the timestamp)",
+  "po_number": "string (PO: field value, or empty string)"
 }
 """
 
@@ -155,17 +158,26 @@ class OCRAgent:
                 "sender": res.get("sender", {}),
                 "receiver": res.get("receiver", {}), # Use extracted receiver info (Postal Code!)
                 "carrier": "FedEx",
-                "reference_number": res.get("reference_number", "")
+                "reference_number": res.get("reference_number", ""),
+                "po_number": res.get("po_number", "")
             }
 
             # --- Fedex Reference Number清洗邏輯 ---
             raw_ref = data.get("reference_number", "")
             if raw_ref:
-                # 使用 Regex 正則表達式移除結尾的 -1, -2 等後綴
-                # r'-\d+$' 表示匹配字串結尾的「橫槓+數字」
+                # 移除結尾的 -1, -2 等後綴（時間戳如 "2026-04-21 04:30:12-1" → "2026-04-21 04:30:12"）
                 clean_ref = re.sub(r'-\d+$', '', raw_ref).strip()
                 data["reference_number"] = clean_ref
-                log.info(f"[OCR CLEAN] Original: {raw_ref} -> Cleaned: {clean_ref}")
+                log.info(f"[OCR CLEAN] REF: {raw_ref} -> {clean_ref}")
+
+            # --- FedEx PO Number清洗邏輯 ---
+            raw_po = data.get("po_number", "")
+            if raw_po:
+                clean_po = re.sub(r'-\d+$', '', raw_po).strip()
+                # Strip leading "PO: " prefix if AI included it
+                clean_po = re.sub(r'^PO:\s*', '', clean_po, flags=re.IGNORECASE).strip()
+                data["po_number"] = clean_po
+                log.info(f"[OCR CLEAN] PO: {raw_po} -> {clean_po}")
 
         # 3. TRACKING CONSOLIDATION
         all_tracking = []
