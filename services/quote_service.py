@@ -245,7 +245,10 @@ def parse_package_input(text: str) -> Optional[ParsedInput]:
     """
     # First, try structured parsing (regex-based, no API calls)
     structured = try_parse_structured(text)
-    if structured:
+    # Only use the structured result if it actually found packages.
+    # If it only found a postal code (but packages used an unrecognised format),
+    # fall through to OpenAI so it can parse the full text (including the postal).
+    if structured and structured.packages:
         return structured
     
     # If structured parsing failed, try OpenAI
@@ -347,6 +350,28 @@ def try_parse_structured(text: str) -> Optional[ParsedInput]:
             ))
             remainder = m.group(6)
             for pc in POSTAL_RE.findall(remainder.replace(' ', '').upper()):
+                if pc not in postal_codes:
+                    postal_codes.append(pc)
+            continue
+
+        # weight-first format: weight[unit][,/space] L*W*H [postal]
+        # e.g. "9kg,55*36*24"  "9 55*36*24"  "8.4 55x36x24"
+        m2 = re.match(
+            r'([\.\d]+)\s*(?:kg|lbs?|公斤|磅)?\s*[,\s]\s*'
+            r'([\d.]+)\s*[*x×]\s*'
+            r'([\d.]+)\s*[*x×]\s*'
+            r'([\d.]+)\s*(.*)',
+            line, re.IGNORECASE,
+        )
+        if m2:
+            packages.append(Package(
+                length=float(m2.group(2)),
+                width=float(m2.group(3)),
+                height=float(m2.group(4)),
+                weight=float(m2.group(1)),
+            ))
+            remainder2 = m2.group(5)
+            for pc in POSTAL_RE.findall(remainder2.replace(' ', '').upper()):
                 if pc not in postal_codes:
                     postal_codes.append(pc)
             continue
