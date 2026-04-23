@@ -328,20 +328,20 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
                 found_canonical = True
                 break
         
-        # 3. Dynamic Filter Check: If specific filter requested is found in the full name, allow it
+        # 3. Dynamic Filter Check: If specific filter requested matches first word of client name exactly
         if not found_canonical and filter_name and filter_name != "All":
-             if filter_name.lower() in client_name.lower():
-                 # Use the filter name as the grouping key (capitalized)
-                 canonical_name = filter_name.capitalize()
+             first_word = client_name.split(" - ")[0].split()[0] if client_name.split() else client_name
+             if filter_name.lower() == first_word.lower():
+                 canonical_name = first_word
                  found_canonical = True
 
         if not found_canonical:
             # 不在名單的客人，只取第一個單詞或橫槓前的文字作為 Abowbow ID (Key)
             canonical_name = client_name.split(" - ")[0].split()[0]
         
-        # Filter Logic (case-insensitive)
+        # Filter Logic (case-insensitive) — exact match
         if filter_name and filter_name != "All":
-             if filter_name.lower() not in canonical_name.lower(): 
+             if filter_name.lower() != canonical_name.lower(): 
                  continue
 
         # Check domestic status and adjust parent_date if needed (to differentiate in Bill)
@@ -841,13 +841,14 @@ def _unpaid_worker(destination_id, filter_name=None, today_client_filter=None, f
             
             # Dynamic Filter check for canonical name resolution
             if not found_canonical and filter_name and filter_name != "All":
-                if filter_name.lower() in client_name.lower():
-                    canonical_name = filter_name.capitalize()
+                first_word = client_name.split(" - ")[0].split()[0] if client_name.split() else client_name
+                if filter_name.lower() == first_word.lower():
+                    canonical_name = first_word
                     found_canonical = True
 
             if not found_canonical:
                 canonical_name = client_name.split(" - ")[0].split()[0]
-            return filter_name.lower() in canonical_name.lower()
+            return filter_name.lower() == canonical_name.lower()
         
         # 過濾後的結果
         filtered_results = [item for item in results if _item_matches_filter(item, final_filter)]
