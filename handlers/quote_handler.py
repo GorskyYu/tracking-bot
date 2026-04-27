@@ -201,6 +201,15 @@ def handle_quote_message(event: dict, user_id: str,
 
     target_id = _get_target(r, user_id)
     profile = _resolve_profile(r, user_id)
+    
+    # ── Source validation: only process if message comes from where session started ──
+    # Determine current message source
+    current_source = group_id if group_id else user_id
+    # If target is a user_id (private chat), only accept messages from private chat
+    # If target is a group_id, only accept messages from that specific group
+    if current_source != target_id:
+        # Message came from different context (e.g., group when session was in private chat)
+        return False
 
     # ── universal cancel ──────────────────────────────────────────────────
     if text == "取消報價":
