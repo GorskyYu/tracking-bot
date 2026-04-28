@@ -316,7 +316,10 @@ def try_parse_structured(text: str) -> Optional[ParsedInput]:
     for line in lines:
         # Postal code only line
         pc_candidates = POSTAL_RE.findall(line.replace(' ', '').upper())
-        if pc_candidates and not re.search(r'\d+\s*[*x×]\s*\d+', line, re.IGNORECASE):
+        # Guard: only treat as "postal-only" if line does NOT look like dimensions
+        # Use negative lookahead/lookbehind to avoid false matches like "6X 1" in "V6X 1Y1"
+        # (X is part of postal code, not separator)
+        if pc_candidates and not re.search(r'(?<![A-Za-z])\d+(?:\.\d+)?\s*[*x×]\s*\d+(?:\.\d+)?(?![A-Za-z])', line):
             for pc in pc_candidates:
                 if pc not in postal_codes:
                     postal_codes.append(pc)
