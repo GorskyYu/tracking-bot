@@ -296,7 +296,7 @@ def _group_items_by_client(items, filter_name=None, filter_date=None):
     for item in items:
         # Parse Parent Name to extract date and client name
         raw_parent = item["parent_name"]
-        match = re.match(r'^(\d+)\s*-\s*(.*)$', raw_parent.strip())
+        match = re.match(r'^(\d+)\s*(?:-\s*)?(.+)$', raw_parent.strip())
         if match:
             parent_date = match.group(1)  # Date from parent name
             client_name = match.group(2)
