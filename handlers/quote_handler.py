@@ -219,6 +219,15 @@ def handle_quote_message(event: dict, user_id: str,
 
     # ── state dispatch ────────────────────────────────────────────────────
     if state == "collecting":
+        if text == "更正":
+            return _on_rejected(r, user_id, target_id)
+        if text in ("重新開始", "重新報價"):
+            _clear_session(r, user_id)
+            _set_state(r, user_id, "collecting")
+            _set_target(r, user_id, target_id)
+            _set_profile_name(r, user_id, profile.name)
+            line_push(target_id, "已清除資料，請重新輸入包裹資訊。")
+            return True
         return _on_collecting(r, user_id, target_id, text)
 
     if state == "parsed":
@@ -379,7 +388,7 @@ def _on_collecting(r, uid, target, text):
         lines.append("❌ 尚未偵測到加拿大郵遞區號")
 
     lines.append("")
-    lines.append("請繼續輸入缺少的資訊，或輸入「更正」來修改。")
+    lines.append("請繼續輸入缺少的資訊，或輸入「更正」來修改。\n輸入「重新開始」可清除重填，輸入「取消報價」可中止。")
     
     line_push(target, "\n".join(lines))
     return True
