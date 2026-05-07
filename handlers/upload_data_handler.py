@@ -2185,7 +2185,7 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
         # ── Normal / 空運 path: Monday + packing sheet ──────────────────────
         # Upload to Monday
         monday_success = upload_to_monday(
-            data["tracking"],
+            data.get("tracking", ""),
             data["dimension"],
             data["weight"],
             data.get("box_id", "")
@@ -2195,7 +2195,7 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
         sheet_result = upload_to_packing_sheet(
             data.get("box_id", ""),
             data["name"],
-            data["tracking"],
+            data.get("tracking", ""),
             data["dimension"],
             data["weight"],
             col_l_remark,
@@ -2207,7 +2207,7 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
             msg = (f"✅ 資料上傳成功！\n\n"
                   f"📦 Box ID: {data.get('box_id', '未提供')}\n"
                   f"👤 寄件人: {data['name']}\n"
-                  f"🔢 追蹤編號: {data['tracking']}\n"
+                  f"🔢 追蹤編號: {data.get('tracking', '無')}\n"
                   f"📏 尺寸: {data['dimension']}\n"
                   f"⚖️ 重量: {data['weight']}\n\n"
                   f"✓ Monday 已更新\n")
