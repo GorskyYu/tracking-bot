@@ -410,3 +410,58 @@ def build_sea_tracking_selection_flex(subitems: list, box_id: str = "") -> dict:
         bubbles.append(_build_sea_selection_bubble(chunk, global_offset=start, total=total,
                                                     box_id=box_id, merged_info=merged_info))
     return {"type": "carousel", "contents": bubbles}
+
+
+def build_no_tracking_confirm_flex(data: Dict[str, Any]) -> dict:
+    """
+    Build a flex message asking user to confirm upload without a tracking number,
+    shown when no matching record is found in 空運資料表.
+    """
+    box_id = data.get("box_id", "未提供")
+    name = data.get("name", "未提供")
+    dimension = data.get("dimension", "未提供")
+    weight = data.get("weight", "未提供")
+
+    return {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "⚠️ 找不到追蹤編號",
+                 "weight": "bold", "size": "xl", "color": "#dc3545"},
+                {"type": "separator", "margin": "md"},
+                {"type": "text",
+                 "text": "在空運資料表中找不到匹配記錄，無法自動取得追蹤編號。",
+                 "size": "sm", "color": "#555555", "wrap": True, "margin": "lg"},
+                {"type": "text",
+                 "text": "是否仍要上傳至打包資料表（追蹤編號留空）？",
+                 "size": "sm", "color": "#333333", "wrap": True, "margin": "sm"},
+                {"type": "separator", "margin": "lg"},
+                {"type": "box", "layout": "vertical", "margin": "md", "spacing": "sm",
+                 "contents": [
+                     _kv_row("📦 Box ID", box_id, "#0066cc"),
+                     _kv_row("👤 寄件人", name, "#0066cc"),
+                     _kv_row("📏 尺寸", dimension, "#0066cc"),
+                     _kv_row("⚖️ 重量", weight, "#0066cc"),
+                 ]},
+            ],
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "button", "height": "sm", "style": "primary", "color": "#28a745",
+                 "action": {"type": "message",
+                            "label": "✅ 確認上傳（無追蹤碼）",
+                            "text": "確認上傳無追蹤碼"}},
+                {"type": "button", "height": "sm", "style": "secondary", "color": "#ff8c00",
+                 "action": {"type": "message",
+                            "label": "✏️ 手動輸入追蹤編號",
+                            "text": "更正資料"}},
+                {"type": "button", "height": "sm", "style": "secondary",
+                 "action": {"type": "message", "label": "❌ 取消", "text": "取消上傳"}},
+            ],
+        },
+    }

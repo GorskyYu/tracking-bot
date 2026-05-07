@@ -24,7 +24,7 @@ from sheets import get_gspread_client
 from config import MONDAY_API_TOKEN
 from services.line_service import line_reply, line_push, line_reply_flex, line_push_flex
 from handlers.upload_data_config import can_use_upload_data
-from handlers.upload_data_flex import build_data_confirm_flex, build_match_selection_flex, build_field_selection_flex
+from handlers.upload_data_flex import build_data_confirm_flex, build_match_selection_flex, build_field_selection_flex, build_no_tracking_confirm_flex
 
 log = logging.getLogger(__name__)
 
@@ -405,16 +405,19 @@ def search_air_form_matches(name_or_id: str) -> List[Dict[str, str]]:
             # Column E: Client ID
             client_id = row[4] if len(row) > 4 else ""
             
+            # Skip records with no timestamp (corrupt / header rows)
+            if not timestamp_str:
+                continue
+
             # Check if timestamp is within one month
-            if timestamp_str:
-                try:
-                    # Parse timestamp (format: 2026-03-25 22:45:44 or similar)
-                    row_time = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
-                    if row_time < one_month_ago:
-                        continue
-                except:
+            try:
+                # Parse timestamp (format: 2026-03-25 22:45:44 or similar)
+                row_time = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                if row_time < one_month_ago:
                     continue
-            
+            except Exception:
+                continue
+
             # Check for match in English name (col D) or Client ID (col E)
             if (search_lower in english_name.lower() or 
                 search_lower in client_id.lower() or
@@ -1600,6 +1603,11 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
     
     # State: confirming
     elif state == "confirming":
+        if text == "確認上傳無追蹤碼":
+            data = _get_data(redis_client, user_id)
+            _process_upload(redis_client, user_id, reply_token, data)
+            return True
+
         if text == "更正資料":
             flex = build_field_selection_flex()
             line_reply_flex(reply_token, "✏️ 更正資料", flex)
@@ -1778,22 +1786,15 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 matches = search_air_form_matches(data["name"])
                 
                 # Validate matches
-                if not matches or not isinstance(matches, list):
-                    line_reply(reply_token, 
-                              "⚠️ 未找到匹配的空運表單記錄\n"
-                              "請手動輸入追蹤編號，或選擇重新開始")
-                    return True
-                
-                # Filter out invalid matches
                 valid_matches = [
-                    m for m in matches 
+                    m for m in (matches or [])
                     if isinstance(m, dict) and m.get("timestamp")
                 ]
                 
                 if not valid_matches:
-                    line_reply(reply_token,
-                              "⚠️ 找到記錄但資料不完整\n"
-                              "請手動輸入追蹤編號，或選擇重新開始，或輸入 'end' 結束")
+                    # No match found — ask user whether to upload without tracking
+                    flex = build_no_tracking_confirm_flex(data)
+                    line_reply_flex(reply_token, "⚠️ 找不到追蹤編號", flex)
                     return True
                 
                 elif len(valid_matches) == 1:
