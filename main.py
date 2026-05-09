@@ -65,7 +65,7 @@ from handlers.quote_handler import handle_quote_trigger, handle_quote_message, i
 from handlers.quote_config import get_profile
 from handlers.upload_data_handler import (
     handle_upload_trigger, handle_upload_message, is_in_upload_session,
-    parse_box_id, parse_dimension, parse_weight, parse_hai_yun,
+    parse_box_id, parse_dimension, parse_weight, parse_hai_yun, has_explicit_weight_unit,
     upload_to_packing_sheet,
 )
 from handlers.upload_data_config import can_use_upload_data
@@ -283,7 +283,7 @@ def webhook():
             barcode_pending_key = f"barcode_pending:{group_id}"
             last_tracking = redis_client.get(barcode_pending_key)
             box_id_parsed = parse_box_id(text)
-            dim_parsed = parse_dimension(text)
+            dim_parsed = parse_dimension(text, weight_explicitly_given=has_explicit_weight_unit(text))
             wt_parsed = parse_weight(text)
             if last_tracking and box_id_parsed and (dim_parsed or wt_parsed):
                 hai_yun_parsed = parse_hai_yun(text)
