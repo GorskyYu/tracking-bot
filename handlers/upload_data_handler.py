@@ -1516,10 +1516,15 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
                 dup_row_idx = i
                 break
             # Fallback match: normalised dimensions + weight
+            # Only trigger if box IDs also match (or one/both are absent).
+            # Different box IDs (e.g. YL03 vs YL04) must NEVER be treated as duplicates
+            # even when dim/weight happen to be identical.
+            row_box_id = row[col_b_idx].strip() if len(row) > col_b_idx else ""
             row_dim_norm = _norm_dim(row[col_i_idx].strip() if len(row) > col_i_idx else "")
             row_weight_norm = _norm_weight(row[col_k_idx].strip() if len(row) > col_k_idx else "")
             if (new_dim_norm and row_dim_norm == new_dim_norm
-                    and new_weight_norm is not None and row_weight_norm == new_weight_norm):
+                    and new_weight_norm is not None and row_weight_norm == new_weight_norm
+                    and (not new_b_val or not row_box_id or row_box_id == new_b_val)):
                 dup_row_idx = i
                 break
 
@@ -1878,6 +1883,13 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                     return True
 
             # Normal / 空運 path: need tracking
+            # Yves/YL uploads skip the tracking-lookup prompt entirely
+            _name_lower = (data.get("name") or "").lower().strip()
+            _is_yves = _name_lower in ("yves", "yl", "yves lai")
+            if _is_yves and not data.get("tracking"):
+                _process_upload(redis_client, user_id, reply_token, data)
+                return True
+
             if not data.get("tracking"):
                 matches = search_air_form_matches(data["name"])
                 
