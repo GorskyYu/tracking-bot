@@ -78,6 +78,12 @@ def build_data_confirm_flex(data: Dict[str, Any]) -> dict:
         content_box.append(_kv_row("🚢 運送方式", data["hai_yun"], "#0066cc"))
     elif data.get("kong_yun"):
         content_box.append(_kv_row("✈️ 運送方式", data["kong_yun"], "#0066cc"))
+
+    # 內容物 (optional) – always shown so the user knows it can be edited
+    if data.get("package_content"):
+        content_box.append(_kv_row("📝 內容物", data["package_content"], "#0066cc"))
+    else:
+        content_box.append(_kv_row("📝 內容物", "⬜ 選填", "#888888"))
     
     # Add instruction text
     body.append({"type": "separator", "margin": "lg"})
@@ -216,6 +222,7 @@ def build_field_selection_flex() -> dict:
         ("⚖️ 重量",       "更正_weight"),
         ("🔢 追蹤編號",   "更正_tracking"),
         ("🚢 運送方式",   "更正_transport"),
+        ("📝 內容物",     "更正_package_content"),
     ]
 
     buttons = [

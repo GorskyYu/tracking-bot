@@ -270,6 +270,77 @@ def parse_name(text: str, existing_data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def parse_package_content(text: str, existing_data: Dict[str, Any]) -> Optional[str]:
+    """
+    Parse package content (內容物) from user input.
+
+    Two strategies (in order):
+
+    1. Explicit label – any line starting with 內容物 / 包裹內容 / 內容 followed
+       by ':' or '：'.  Everything after the label on that line plus subsequent
+       non-blank lines (up to a blank line) is treated as the content.
+       BUT: if the captured value is just a Box ID (e.g. "YL01"), it is treated
+       as a stray label and ignored — the real content is parsed from item
+       lines below.
+
+    2. Item-line heuristic – collect lines that look like a product entry
+       (e.g. "保溫瓶x1組", "葉黃素x12") and exclude any line already
+       recognisable as box_id / dim / weight / tracking / transport mode.
+    """
+    # ── 1. Explicit "內容物：..." block ────────────────────────────────────────
+    label_pat = re.compile(
+        r'(?:內容物|包裹內容|內\s*容)\s*[:：]\s*(.*?)(?:\n\s*\n|\Z)',
+        re.DOTALL,
+    )
+    m = label_pat.search(text)
+    if m:
+        block = m.group(1).strip()
+        # If the block is only a single Box ID-like token, treat as stray label
+        if not re.fullmatch(r'\s*[A-Z]{2}\d{2,4}\s*', block, re.IGNORECASE):
+            # Drop empty lines, keep meaningful items
+            lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+            if lines:
+                return "、".join(lines)
+
+    # ── 2. Item-line heuristic ────────────────────────────────────────────────
+    item_pat = re.compile(r'.+?[xX×*]\s*\d+', re.IGNORECASE)
+    qty_kw_pat = re.compile(r'\d+\s*(組|盒|件|個|瓶|罐|包|份|箱|袋|條|顆|張)')
+    box_id_full = re.compile(r'^[A-Z]{2}\d{2,4}$', re.IGNORECASE)
+    weight_full = re.compile(r'^\d+(?:\.\d+)?\s*(?:kg|公斤|lbs?|磅)?$', re.IGNORECASE)
+    dim_full = re.compile(
+        r'^\d+(?:\.\d+)?[×x*\-/;,\s]+\d+(?:\.\d+)?[×x*\-/;,\s]+\d+(?:\.\d+)?'
+        r'\s*(?:cm|公分|in|inch|吋|")?$',
+        re.IGNORECASE,
+    )
+    ups_full = re.compile(r'^1Z[A-Z0-9]{16}$', re.IGNORECASE)
+    fedex_full = re.compile(r'^\d{12}$|^\d{4}\s+\d{4}\s+\d{4}$')
+    transport_pat = re.compile(r'海[運运]|空[運运]')
+    label_only_pat = re.compile(r'^(?:內容物|包裹內容|內\s*容)\s*[:：]?\s*$')
+
+    item_lines: List[str] = []
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        # Strip leading "內容物：" inline if any
+        s = re.sub(r'^(?:內容物|包裹內容|內\s*容)\s*[:：]\s*', '', s)
+        if not s or label_only_pat.match(s):
+            continue
+        if box_id_full.match(s) or weight_full.match(s) or dim_full.match(s):
+            continue
+        if ups_full.match(s) or fedex_full.match(s):
+            continue
+        if transport_pat.fullmatch(s):
+            continue
+        if item_pat.search(s) or qty_kw_pat.search(s):
+            item_lines.append(s)
+
+    if item_lines:
+        return "、".join(item_lines)
+
+    return None
+
+
 def parse_hai_yun(text: str) -> Optional[str]:
     """Detect 海運 (ocean freight) in the message (traditional or simplified Chinese)."""
     if re.search(r'海[運运]', text):
@@ -320,9 +391,34 @@ def parse_message(text: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
         tracking = parse_tracking(text)
         if tracking:
             data["tracking"] = tracking
-    
+
+    if not data.get("package_content"):
+        pc = parse_package_content(text, data)
+        if pc:
+            data["package_content"] = pc
+
+    # Build a name-search text that excludes any "內容物" label block and any
+    # lines already classified as item-list entries, so product names like
+    # "保溫瓶x1組" don't pollute the sender-name field.
+    name_text = text
+    # Strip "內容物：..." block (label line + following non-blank lines)
+    name_text = re.sub(
+        r'(?:^|\n)\s*(?:內容物|包裹內容|內\s*容)\s*[:：].*?(?=\n\s*\n|\Z)',
+        '\n', name_text, flags=re.DOTALL,
+    )
+    # Strip lines that look like product entries (qty markers)
+    _kept = []
+    _item_pat = re.compile(r'.+?[xX×*]\s*\d+', re.IGNORECASE)
+    _qty_kw_pat = re.compile(r'\d+\s*(組|盒|件|個|瓶|罐|包|份|箱|袋|條|顆|張)')
+    for _ln in name_text.splitlines():
+        _s = _ln.strip()
+        if _s and (_item_pat.search(_s) or _qty_kw_pat.search(_s)):
+            continue
+        _kept.append(_ln)
+    name_text = '\n'.join(_kept)
+
     if not data.get("name"):
-        name = parse_name(text, data)
+        name = parse_name(name_text, data)
         if name:
             data["name"] = name
 
@@ -1964,6 +2060,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
             "更正_tracking":  "tracking",
             "更正_transport": "transport",
             "更正_vendor_box_id": "vendor_box_id",
+            "更正_package_content": "package_content",
         }
         if text == "返回確認":
             data = _get_data(redis_client, user_id)
@@ -1984,6 +2081,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 "tracking":  "追蹤編號",
                 "transport": "運送方式 （空運 / 海運）",
                 "vendor_box_id": "廠商箱號 （例：AB12）",
+                "package_content": "內容物 （例：保溫瓶x1組、葉黃素x12，輸入「無」可清除）",
             }
             line_reply(reply_token, f"✏️ 請輸入新的 {_field_prompts[field]}：")
         else:
@@ -2040,6 +2138,14 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
             else:
                 line_reply(reply_token, "⚠️ 請輸入「空運」或「海運」")
                 return True
+        elif field == "package_content":
+            v = text.strip()
+            if v in ("無", "无", "none", "None", "-", "清除", "刪除"):
+                data.pop("package_content", None)
+            else:
+                # Try the structured parser first; fall back to raw text
+                pc = parse_package_content(v, data)
+                data["package_content"] = pc if pc else v
 
         _set_data(redis_client, user_id, data)
         redis_client.delete(_key(user_id, "correcting_field"))
