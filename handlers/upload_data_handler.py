@@ -21,7 +21,8 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 
 from sheets import get_gspread_client
-from config import MONDAY_API_TOKEN
+import openai
+from config import MONDAY_API_TOKEN, OPENAI_API_KEY, OPENAI_MODEL
 from services.line_service import line_reply, line_push, line_reply_flex, line_push_flex
 from handlers.upload_data_config import can_use_upload_data
 from handlers.upload_data_flex import build_data_confirm_flex, build_match_selection_flex, build_field_selection_flex, build_no_tracking_confirm_flex
@@ -317,6 +318,10 @@ def parse_package_content(text: str, existing_data: Dict[str, Any]) -> Optional[
     transport_pat = re.compile(r'海[運运]|空[運运]')
     label_only_pat = re.compile(r'^(?:內容物|包裹內容|內\s*容)\s*[:：]?\s*$')
 
+    # Lines containing an embedded 3-part dimension (e.g. 31*31*21 within a
+    # longer tracking/weight line) are shipment data, not product descriptions.
+    dim_sub_pat = re.compile(r'\d+(?:\.\d+)?[×x*]\d+(?:\.\d+)?[×x*]\d+(?:\.\d+)?', re.IGNORECASE)
+
     item_lines: List[str] = []
     for raw in text.splitlines():
         s = raw.strip()
@@ -332,6 +337,8 @@ def parse_package_content(text: str, existing_data: Dict[str, Any]) -> Optional[
             continue
         if transport_pat.fullmatch(s):
             continue
+        if dim_sub_pat.search(s):  # line contains embedded dimension → not a product line
+            continue
         if item_pat.search(s) or qty_kw_pat.search(s):
             item_lines.append(s)
 
@@ -339,6 +346,39 @@ def parse_package_content(text: str, existing_data: Dict[str, Any]) -> Optional[
         return "、".join(item_lines)
 
     return None
+
+
+# ─── AI-assisted Field Extraction ───────────────────────────────────────────
+
+_UPLOAD_AI_PARSE_PROMPT = """你是包裹寄件資訊提取助手。從使用者訊息中提取以下欄位：
+1. name：寄件人姓名或客戶代碼（英文名如 Yves、Maurizio，或兩字母縮寫）
+   - 不包括：追蹤號（1Z開頭或12位數字）、箱號（2大寫字母+2-4數字，如YL2812）、尺寸（NxNxN格式）、重量（含kg/lbs）
+   - 通常是獨立的英文人名或短代碼
+2. package_content：包裹內容物（商品名稱+數量，如「衣服x10、保溫瓶x2」）
+   - 只有明確的商品名稱才算，純追蹤號/箱號/尺寸/重量不是內容物
+   - 無明確商品描述則回傳 null
+回覆格式（嚴格 JSON）：{"name": "字串 or null", "package_content": "字串 or null"}"""
+
+
+def _parse_name_content_with_ai(text: str) -> Dict[str, Any]:
+    """Use OpenAI to extract name and package_content when regex is insufficient."""
+    try:
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": _UPLOAD_AI_PARSE_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content.strip()
+        result = json.loads(raw)
+        return {k: v for k, v in result.items() if v}  # drop null/empty values
+    except Exception as e:
+        log.warning(f"[UploadData] AI name parse failed: {e}")
+        return {}
 
 
 def parse_hai_yun(text: str) -> Optional[str]:
@@ -421,6 +461,16 @@ def parse_message(text: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
         name = parse_name(name_text, data)
         if name:
             data["name"] = name
+
+    # AI fallback: when regex couldn't find the name (e.g. name on same line as
+    # dimension), call OpenAI to extract name and optionally package_content.
+    if not data.get("name") and OPENAI_API_KEY:
+        ai_result = _parse_name_content_with_ai(text)
+        log.info(f"[UploadData] AI parse result: {ai_result}")
+        if ai_result.get("name"):
+            data["name"] = ai_result["name"]
+        if ai_result.get("package_content") and not data.get("package_content"):
+            data["package_content"] = ai_result["package_content"]
 
     if not data.get("hai_yun"):
         hai_yun = parse_hai_yun(text)
