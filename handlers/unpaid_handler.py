@@ -1117,18 +1117,27 @@ def handle_unpaid_event(sender_id, message_text, reply_token, user_id=None, grou
         _send_help_detail(reply_token, cat)
         return
 
-    # 處理 unpaid today [client_code] (帶客戶代號的 today 指令)
+    # 處理 unpaid today [client_code] 或 unpaid [client_code] today (帶客戶代號的 today 指令)
+    _is_today_with_client = False
+    _today_client_code = None
     if len(parts) >= 3 and parts[1].lower() == "today":
+        # 格式: unpaid today Mattie
+        _is_today_with_client = True
+        _today_client_code = " ".join(parts[2:])
+    elif len(parts) >= 3 and parts[-1].lower() == "today":
+        # 格式: unpaid Mattie today
+        _is_today_with_client = True
+        _today_client_code = " ".join(parts[1:-1])
+
+    if _is_today_with_client:
         if not is_admin:
             reply_text(reply_token, "⛔ 此指令僅限管理員使用。")
             return
         
-        # 提取客戶代號 (第三個詞之後的所有內容)
-        client_code = " ".join(parts[2:])
-        r.set(f"last_unpaid_client_{sender_id}", client_code, ex=3600)
+        r.set(f"last_unpaid_client_{sender_id}", _today_client_code, ex=3600)
         
-        reply_text(reply_token, f"📅 正在掃描 {client_code} 的未出帳項目並標記日期，請稍候...")
-        Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today", client_code, None, bool(group_id))).start()
+        reply_text(reply_token, f"📅 正在掃描 {_today_client_code} 的未出帳項目並標記日期，請稍候...")
+        Thread(target=_unpaid_worker, args=(group_id if group_id else sender_id, "today", _today_client_code, None, bool(group_id))).start()
         return
 
     # 如果輸入 unpaid [名稱]，記錄到 Redis
