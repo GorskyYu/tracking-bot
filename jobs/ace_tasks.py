@@ -198,8 +198,6 @@ def push_ace_today_shipments(*, force: bool = False, reply_token: str | None = N
                 return
             else:
                 log.info("[ACE Today] No box IDs for today; nothing to push.")
-                # 排程時：仍然寫入 guard 避免重覆查詢／推送
-                r.set(guard_key, "1", ex=48 * 3600)
                 return
 
         # 送出群組推播
