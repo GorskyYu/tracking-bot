@@ -64,7 +64,7 @@ from handlers.monday_webhook_handler import handle_monday_webhook
 from handlers.quote_handler import handle_quote_trigger, handle_quote_message, is_in_quote_session
 from handlers.quote_config import get_profile
 from handlers.upload_data_handler import (
-    handle_upload_trigger, handle_upload_message, is_in_upload_session,
+    handle_upload_trigger, handle_upload_message, handle_upload_image, is_in_upload_session,
     parse_box_id, parse_dimension, parse_weight, parse_hai_yun, has_explicit_weight_unit,
     upload_to_packing_sheet,
 )
@@ -239,6 +239,12 @@ def webhook():
 
         # 🟢 新增：圖片條碼辨識邏輯
         if mtype == "image":
+            # Upload-Data session takes priority — if user is uploading data and
+            # sends a shipping-label photo, run vision OCR to extract fields.
+            user_id = src.get("userId")
+            if is_in_upload_session(r, user_id) and can_use_upload_data(user_id, group_id):
+                if handle_upload_image(event, r):
+                    continue
             # 呼叫 barcode_service 處理，傳入所需的緩存與回呼函式
             if handle_barcode_image(event, group_id, r, _pending, _scheduled, _schedule_summary, _not_found):
                 continue  # 如果處理成功（是條碼圖片），則跳過後續邏輯

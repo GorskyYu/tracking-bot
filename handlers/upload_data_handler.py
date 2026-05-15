@@ -22,7 +22,9 @@ from datetime import datetime, timedelta
 
 from sheets import get_gspread_client
 import openai
-from config import MONDAY_API_TOKEN, OPENAI_API_KEY, OPENAI_MODEL
+import base64
+from io import BytesIO
+from config import MONDAY_API_TOKEN, OPENAI_API_KEY, OPENAI_MODEL, LINE_TOKEN
 from services.line_service import line_reply, line_push, line_reply_flex, line_push_flex
 from handlers.upload_data_config import can_use_upload_data
 from handlers.upload_data_flex import build_data_confirm_flex, build_match_selection_flex, build_field_selection_flex, build_no_tracking_confirm_flex
@@ -2414,3 +2416,154 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
 def is_in_upload_session(redis_client, user_id: str) -> bool:
     """Check if user is in an active upload session."""
     return _get_state(redis_client, user_id) is not None
+
+
+# ─── Image OCR for shipping labels ──────────────────────────────────────
+
+_UPLOAD_OCR_PROMPT = """你是包裹貼紙/箱子資訊讀取專家。從這張包裹貼紙或箱子照片中提取下列資訊：
+
+1. **name**（寄件人/客戶名稱）：
+   - 讀取貼紙左上角「寄件人/FROM」區域的名字
+   - 如果同時有「主要名稱」和「寄件人名稱」（例如「WAN-TING (KATIE TING) TSENG」 下面另外寫「MAURIZIO」），請合併為：「主要名稱 (寄件人名稱)」
+   - 例如：「WAN-TING (KATIE TING) TSENG (MAURIZIO)」
+
+2. **box_id**（箱號）：
+   - 手寫或印刷的「2個大寫字母 + 2-4個數字」格式，例如「YL4566」、「SP22」
+
+3. **dimension**（尺寸）：
+   - 手寫或印刷的三個數字（長寬高），可能以空格、、、、x、*、-、/ 分隔
+   - 例如手寫「43 29 27」 → 請輸出「43*29*27」格式（用 * 連接）
+   - 不要誤拍貼紙上的重量、默認尺寸、追蹤號等數字
+
+4. **weight**（重量）：
+   - 手寫或印刷的重量，如「6KG」、「12 LB」、「25.7kg」
+   - 請輸出數字+單位格式，例如「6kg」、「12lb」
+   - 優先選手寫重量（通常是實際重），避免誤取 SHPWT/POIDS、DWT 等預估重量
+
+5. **tracking**（追蹤號，選填）：
+   - UPS 格式：1Z + 16位字元，例如「1ZHF0545200178 4566」
+   - FedEx 格式：12位數字
+   - 請去除空格後輸出
+
+重要：
+- 只輸出你能明確讀到的欄位，讀不到的軒位請回 null
+- 尺寸、重量、箱號如果是手寫的，請仔細讀取
+
+回覆格式（嚴格 JSON）：
+{
+  "name": "string or null",
+  "box_id": "string or null",
+  "dimension": "string or null",
+  "weight": "string or null",
+  "tracking": "string or null"
+}"""
+
+
+def _ocr_shipping_label(image_bytes: bytes) -> Dict[str, Any]:
+    """Send shipping-label image to OpenAI vision and parse JSON response."""
+    try:
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _UPLOAD_OCR_PROMPT},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            }],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content.strip()
+        result = json.loads(raw)
+        # Drop null/empty values so we don't overwrite existing data with None
+        return {k: v for k, v in result.items() if v}
+    except Exception as e:
+        log.error(f"[UploadData OCR] Vision call failed: {e}", exc_info=True)
+        return {}
+
+
+def _normalize_ocr_fields(ocr: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise OCR fields into the same format used by parse_message()."""
+    out = {}
+    if ocr.get("name"):
+        out["name"] = str(ocr["name"]).strip()
+    if ocr.get("box_id"):
+        bid = re.search(r'([A-Z]{2}\d{2,4})', str(ocr["box_id"]), re.IGNORECASE)
+        if bid:
+            out["box_id"] = bid.group(1).upper()
+    if ocr.get("dimension"):
+        # Re-run through parse_dimension to standardise to e.g. "43*29*27cm"
+        d = parse_dimension(str(ocr["dimension"]), weight_explicitly_given=True)
+        if d:
+            out["dimension"] = d
+    if ocr.get("weight"):
+        w = parse_weight(str(ocr["weight"]))
+        if w:
+            out["weight"] = w
+    if ocr.get("tracking"):
+        t = parse_tracking(str(ocr["tracking"]))
+        if t:
+            out["tracking"] = t
+    return out
+
+
+def handle_upload_image(event: Dict[str, Any], redis_client) -> bool:
+    """
+    Handle an image uploaded during an active upload-data session.
+    Runs vision OCR to extract Box ID / dimension / weight / name / tracking,
+    merges the result with any existing data, and shows the confirmation flex.
+
+    Returns True if handled (consume the event), False otherwise.
+    """
+    user_id = event["source"].get("userId")
+    group_id = event["source"].get("groupId")
+    state = _get_state(redis_client, user_id)
+    if not state or state != "collecting":
+        return False
+    if not can_use_upload_data(user_id, group_id):
+        return False
+
+    reply_token = event["replyToken"]
+    message_id = event["message"]["id"]
+
+    try:
+        resp = requests.get(
+            f"https://api-data.line.me/v2/bot/message/{message_id}/content",
+            headers={"Authorization": f"Bearer {LINE_TOKEN}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        image_bytes = resp.content
+    except Exception as e:
+        log.error(f"[UploadData OCR] Failed to download image: {e}")
+        line_reply(reply_token, "❌ 無法下載圖片，請重試")
+        return True
+
+    log.info(f"[UploadData OCR] Running vision OCR for user={user_id} ({len(image_bytes)} bytes)")
+    ocr_raw = _ocr_shipping_label(image_bytes)
+    log.info(f"[UploadData OCR] Raw OCR result: {ocr_raw}")
+    ocr_norm = _normalize_ocr_fields(ocr_raw)
+    log.info(f"[UploadData OCR] Normalised: {ocr_norm}")
+
+    if not ocr_norm:
+        line_reply(reply_token, "⚠️ 無法從圖片讀取到資訊，請手動輸入或重拍清晰圖片")
+        return True
+
+    # Merge with existing session data (don't overwrite already-present fields)
+    data = _get_data(redis_client, user_id)
+    for k, v in ocr_norm.items():
+        if not data.get(k):
+            data[k] = v
+    # Default to 空運 if no transport mode was set and we got OCR data
+    if not data.get("hai_yun") and not data.get("kong_yun"):
+        data["kong_yun"] = "空運"
+    _set_data(redis_client, user_id, data)
+
+    flex = build_data_confirm_flex(data)
+    line_reply_flex(reply_token, "📷 已從圖片識別資料", flex)
+    if is_data_complete(data):
+        _set_state(redis_client, user_id, "confirming")
+    return True
