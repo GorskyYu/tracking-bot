@@ -74,7 +74,7 @@ def _set_matches(r, uid, matches):
 
 
 def _clear_session(r, uid):
-    for suffix in ("state", "data", "matches", "reply_token", "correcting_field", "sea_trackings"):
+    for suffix in ("state", "data", "matches", "reply_token", "correcting_field", "sea_trackings", "dup_confirm"):
         r.delete(_key(uid, suffix))
 
 
@@ -92,6 +92,53 @@ def _get_correcting_field(r, uid):
 
 def _set_correcting_field(r, uid, field):
     r.set(_key(uid, "correcting_field"), field, ex=UPLOAD_TTL)
+
+
+def _send_dup_confirmation(redis_client, user_id: str, reply_token: str,
+                           sheet_result: dict, packing_args: dict,
+                           preamble: str = "") -> None:
+    """
+    Persist the pending packing-sheet write and prompt the user to choose
+    覆蓋 / 新增 / 取消. State is set to "confirming_duplicate".
+    """
+    sheet_row = sheet_result.get("sheet_row")
+    existing = sheet_result.get("existing_row") or {}
+
+    pending = {
+        "args": packing_args,
+        "sheet_row": sheet_row,
+        "existing": existing,
+    }
+    redis_client.set(
+        _key(user_id, "dup_confirm"),
+        json.dumps(pending, ensure_ascii=False),
+        ex=UPLOAD_TTL,
+    )
+    _set_state(redis_client, user_id, "confirming_duplicate")
+
+    # Build existing-row detail block (skip empty fields)
+    detail_lines = [f"  {k}: {v}" for k, v in existing.items() if v]
+    detail = "\n".join(detail_lines) if detail_lines else "  (空)"
+
+    new_summary = (
+        f"  廠商編號: {packing_args.get('box_id', '')}\n"
+        f"  寄件人: {packing_args.get('name', '')}\n"
+        f"  追蹤編號: {packing_args.get('tracking', '')}\n"
+        f"  尺寸: {packing_args.get('dimension', '')}\n"
+        f"  重量: {packing_args.get('weight', '')}"
+    )
+
+    msg = (
+        (preamble + "\n" if preamble else "")
+        + f"⚠️ 打包資料表偵測到重複（row {sheet_row}）\n\n"
+        + f"📋 既有資料：\n{detail}\n\n"
+        + f"🆕 本次資料：\n{new_summary}\n\n"
+        + "請選擇處理方式：\n"
+        + "  回覆「覆蓋」→ 更新既有 row\n"
+        + "  回覆「新增」→ 追加為新行\n"
+        + "  回覆「取消」→ 放棄此筆"
+    )
+    line_reply(reply_token, msg)
 
 
 # ─── Data Parsers ─────────────────────────────────────────────────────────────
@@ -1220,27 +1267,50 @@ def lookup_name_by_tracking(tracking: str, kong_yun: bool, hai_yun: bool):
 
 # ─── Helper: Ensure Unique Timestamp ─────────────────────────────────────────
 
-def ensure_unique_timestamp(tracking_no: str) -> str:
+def ensure_unique_timestamp(tracking_no: str, name: str = "") -> str:
     """
-    Check if subitem with tracking_no exists and has status 溫哥華收款.
-    If it does, append #2, #3, etc. until finding a unique timestamp.
-    
+    Find a unique tracking number by checking BOTH Monday and the packing sheet.
+
+    - Monday conflict: subitem with this name exists AND has status 溫哥華收款.
+    - Packing sheet conflict: a row already exists with the same 寄件人(name)
+      and the same 追蹤編號(tracking) (requires `name` to be provided).
+
+    If either source has a conflict, append #2, #3, ... until both are clean.
+
     Args:
         tracking_no: Original timestamp or tracking number
-        
+        name:        Sender name; used for packing-sheet collision check
+
     Returns:
         Unique tracking number (may have #2, #3, etc. appended)
     """
     try:
         headers = {"Authorization": MONDAY_API_TOKEN, "Content-Type": "application/json"}
         board_id = os.getenv("AIR_BOARD_ID")
-        
-        # Check base timestamp
+
+        # Pre-fetch (name, tracking) pairs from the packing sheet for fast
+        # in-memory lookup. Done once outside the loop to avoid repeated API calls.
+        packing_pairs = set()
+        if name:
+            try:
+                gs = get_gspread_client()
+                ws = gs.open_by_key(PACKING_SHEET_ID).worksheet("Form Responses 1")
+                hdrs = ws.row_values(1)
+                hmap = {h.strip(): i for i, h in enumerate(hdrs)}
+                h_idx = hmap.get("追蹤編號", 7)  # col H default
+                for r in ws.get_all_values()[1:]:
+                    r_name = r[4].strip() if len(r) > 4 else ""
+                    r_trk = r[h_idx].strip() if len(r) > h_idx else ""
+                    if r_name and r_trk:
+                        packing_pairs.add((r_name, r_trk))
+            except Exception as e:
+                log.warning(f"[UPLOAD] Could not pre-fetch packing sheet for uniqueness check: {e}")
+
         counter = 1
         current_tracking = tracking_no
-        
+
         while counter < 100:  # Safety limit
-            # Query for subitem with this name
+            # ── Monday check ────────────────────────────────────────────────
             query = """
             query ($boardId: ID!, $trackingNo: String!) {
                 items_page_by_column_values(
@@ -1259,7 +1329,7 @@ def ensure_unique_timestamp(tracking_no: str) -> str:
                 }
             }
             """
-            
+
             resp = requests.post(
                 "https://api.monday.com/v2",
                 headers=headers,
@@ -1272,35 +1342,39 @@ def ensure_unique_timestamp(tracking_no: str) -> str:
                 },
                 timeout=10
             )
-            
+
             data = resp.json()
             items = data.get("data", {}).get("items_page_by_column_values", {}).get("items", [])
-            
-            if not items:
-                # No item found with this name - it's unique
+
+            monday_conflict = False
+            if items:
+                status_column = next(
+                    (col for col in items[0].get("column_values", []) if col["id"] == "status__1"),
+                    None
+                )
+                if status_column and status_column.get("text") == "溫哥華收款":
+                    monday_conflict = True
+
+            # ── Packing-sheet check ─────────────────────────────────────────
+            packing_conflict = bool(name) and ((name, current_tracking) in packing_pairs)
+
+            if not monday_conflict and not packing_conflict:
                 log.info(f"[UPLOAD] Timestamp '{current_tracking}' is unique")
                 return current_tracking
-            
-            # Check if the found item has status 溫哥華收款
-            status_column = next(
-                (col for col in items[0].get("column_values", []) if col["id"] == "status__1"),
-                None
-            )
-            
-            if status_column and status_column.get("text") == "溫哥華收款":
-                # This timestamp is taken, try next number
-                counter += 1
-                current_tracking = f"{tracking_no} #{counter}"
-                log.info(f"[UPLOAD] Timestamp conflict, trying '{current_tracking}'")
-            else:
-                # Found item but status is not 溫哥華收款, can use it
-                log.info(f"[UPLOAD] Using timestamp '{current_tracking}' (existing but different status)")
-                return current_tracking
-        
+
+            reasons = []
+            if monday_conflict:
+                reasons.append("Monday 溫哥華收款")
+            if packing_conflict:
+                reasons.append(f"打包資料表已有 {name}")
+            counter += 1
+            current_tracking = f"{tracking_no} #{counter}"
+            log.info(f"[UPLOAD] Timestamp conflict ({', '.join(reasons)}), trying '{current_tracking}'")
+
         # Fallback if we hit the limit
         log.warning(f"[UPLOAD] Hit counter limit for timestamp {tracking_no}")
         return current_tracking
-        
+
     except Exception as e:
         log.error(f"[UPLOAD] Error checking timestamp uniqueness: {e}", exc_info=True)
         return tracking_no  # Return original if check fails
@@ -1484,9 +1558,15 @@ def upload_to_monday(tracking_no: str, dimensions: str, weight: str, box_id: str
 
 # ─── 打包資料表 Upload Function ───────────────────────────────────────────────
 
-def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str, col_l_remark: str = "", package_content: str = "", vendor_box_id: str = "") -> dict:
+def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: str, weight: str, col_l_remark: str = "", package_content: str = "", vendor_box_id: str = "", duplicate_action: str = "ask") -> dict:
     """
-    Upload data to 打包資料表 Form Responses 1 if not a duplicate.
+    Upload data to 打包資料表 Form Responses 1.
+
+    `duplicate_action` controls what happens when a duplicate is detected:
+      - "ask"      → do NOT write; return needs_confirmation=True with row info
+                     so the caller can prompt the user to choose overwrite/append.
+      - "overwrite"→ update fields on the existing row (廠商編號, 箱號, 尺寸, 重量).
+      - "append"   → skip the duplicate check entirely and append a new row.
     
     Args:
         box_id: Box ID (e.g., YL123)
@@ -1551,39 +1631,66 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
         else:
             new_b_val = box_id
 
-        # Check for duplicates:
+        # Check for duplicates (skipped entirely when caller forces an append):
         #   Primary:  same tracking + same name
         #   Fallback: same name + same normalised dimensions + same weight
-        # When a duplicate is found, update col B (廠商編號) and col D (箱號) on the
-        # existing row so corrections are applied without creating a second entry.
-        all_rows = ws.get_all_values()[1:]  # Skip header
+        # When a duplicate is found, behaviour depends on `duplicate_action`:
+        #   "ask"      → return without writing so caller can prompt the user
+        #   "overwrite"→ update col B/D (and 尺寸/重量 if empty) on the existing row
+        #   "append"   → skip the check altogether and fall through to insert
         dup_row_idx = None  # 0-based index in all_rows
-        for i, row in enumerate(all_rows):
-            row_name = row[4].strip() if len(row) > 4 else ""
-            if row_name != name:
-                continue
-            row_tracking = row[col_h_idx].strip() if len(row) > col_h_idx else ""
-            # Primary match: tracking
-            if tracking and row_tracking == tracking:
-                dup_row_idx = i
-                break
-            # Fallback match: normalised dimensions + weight
-            # Only trigger if box IDs also match (or one/both are absent).
-            # Different box IDs (e.g. YL03 vs YL04) must NEVER be treated as duplicates
-            # even when dim/weight happen to be identical.
-            row_box_id = row[col_b_idx].strip() if len(row) > col_b_idx else ""
-            row_dim_norm = _norm_dim(row[col_i_idx].strip() if len(row) > col_i_idx else "")
-            row_weight_norm = _norm_weight(row[col_k_idx].strip() if len(row) > col_k_idx else "")
-            if (new_dim_norm and row_dim_norm == new_dim_norm
-                    and new_weight_norm is not None and row_weight_norm == new_weight_norm
-                    and (not new_b_val or not row_box_id or row_box_id == new_b_val)):
-                dup_row_idx = i
-                break
+        if duplicate_action != "append":
+            all_rows = ws.get_all_values()[1:]  # Skip header
+            for i, row in enumerate(all_rows):
+                row_name = row[4].strip() if len(row) > 4 else ""
+                if row_name != name:
+                    continue
+                row_tracking = row[col_h_idx].strip() if len(row) > col_h_idx else ""
+                # Primary match: tracking
+                if tracking and row_tracking == tracking:
+                    dup_row_idx = i
+                    break
+                # Fallback match: normalised dimensions + weight
+                # Only trigger if box IDs also match (or one/both are absent).
+                # Different box IDs (e.g. YL03 vs YL04) must NEVER be treated as duplicates
+                # even when dim/weight happen to be identical.
+                row_box_id = row[col_b_idx].strip() if len(row) > col_b_idx else ""
+                row_dim_norm = _norm_dim(row[col_i_idx].strip() if len(row) > col_i_idx else "")
+                row_weight_norm = _norm_weight(row[col_k_idx].strip() if len(row) > col_k_idx else "")
+                if (new_dim_norm and row_dim_norm == new_dim_norm
+                        and new_weight_norm is not None and row_weight_norm == new_weight_norm
+                        and (not new_b_val or not row_box_id or row_box_id == new_b_val)):
+                    dup_row_idx = i
+                    break
 
         if dup_row_idx is not None:
             sheet_row = dup_row_idx + 2  # +1 for skipped header, +1 for 1-based
             existing_row = all_rows[dup_row_idx]
             existing_tracking = existing_row[col_h_idx].strip() if len(existing_row) > col_h_idx else ""
+
+            # "ask" mode: return without writing so caller prompts the user.
+            if duplicate_action == "ask":
+                existing_summary = {
+                    "廠商編號": existing_row[col_b_idx].strip() if len(existing_row) > col_b_idx else "",
+                    "箱號": existing_row[col_d_idx].strip() if len(existing_row) > col_d_idx else "",
+                    "寄件人": existing_row[4].strip() if len(existing_row) > 4 else "",
+                    "追蹤編號": existing_tracking,
+                    "尺寸": existing_row[col_i_idx].strip() if len(existing_row) > col_i_idx else "",
+                    "重量": existing_row[col_k_idx].strip() if len(existing_row) > col_k_idx else "",
+                    "內容物": existing_row[col_j_idx].strip() if len(existing_row) > col_j_idx else "",
+                }
+                log.info(f"[UPLOAD] Duplicate detected for {name} at row {sheet_row} — asking user (existing_tracking={existing_tracking})")
+                return {
+                    "success": True,
+                    "duplicate": True,
+                    "needs_confirmation": True,
+                    "sheet_row": sheet_row,
+                    "existing_row": existing_summary,
+                    "existing_tracking": existing_tracking,
+                    "message": f"重複記錄 row {sheet_row}",
+                }
+
+            # "overwrite" mode: apply the existing field-update logic.
             updated_fields = []
             if new_b_val:
                 ws.update_cell(sheet_row, col_b_idx + 1, new_b_val)
@@ -1606,7 +1713,8 @@ def upload_to_packing_sheet(box_id: str, name: str, tracking: str, dimension: st
                 "success": True,
                 "duplicate": True,
                 "existing_tracking": existing_tracking,
-                "message": (f"✓ 重複記錄，已更新 {', '.join(updated_fields)}"
+                "sheet_row": sheet_row,
+                "message": (f"✓ 重複記錄，已覆蓋 row {sheet_row}：{', '.join(updated_fields)}"
                             if updated_fields else f"✓ 重複記錄已略過（{name}）"),
             }
 
@@ -1891,16 +1999,17 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                         except Exception as e:
                             log.error(f"[UPLOAD] Error finding/updating Monday subitem: {e}", exc_info=True)
 
-                    sheet_result = upload_to_packing_sheet(
-                        data.get("box_id", ""),
-                        data["name"],
-                        _tracking,
-                        data["dimension"],
-                        data["weight"],
-                        data.get("hai_yun", "海運"),
-                        data.get("package_content", ""),
-                        data.get("vendor_box_id", ""),
-                    )
+                    _packing_args = {
+                        "box_id": data.get("box_id", ""),
+                        "name": data["name"],
+                        "tracking": _tracking,
+                        "dimension": data["dimension"],
+                        "weight": data["weight"],
+                        "col_l_remark": data.get("hai_yun", "海運"),
+                        "package_content": data.get("package_content", ""),
+                        "vendor_box_id": data.get("vendor_box_id", ""),
+                    }
+                    sheet_result = upload_to_packing_sheet(**_packing_args)
 
                     if data.get("_sea_match") and monday_found:
                         _monday_line = ("✓ Monday 海運子項目 已更新"
@@ -1912,6 +2021,18 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                         _monday_line = ("⚠️ 未找到海運資料表匹配，Monday 項目未建立\n"
                                         "請至打包資料表補充追蹤編號，\n"
                                         "並自行推送資料至 Monday\n")
+
+                    if sheet_result.get("needs_confirmation"):
+                        _preamble = (
+                            f"📦 海運處理進度：\n"
+                            f"📦 Box ID: {_box_display}\n"
+                            f"👤 寄件人: {data['name']}\n"
+                            f"🔢 追蹤編號: {_tracking}\n\n"
+                            + _monday_line
+                        )
+                        _send_dup_confirmation(redis_client, user_id, reply_token,
+                                               sheet_result, _packing_args, preamble=_preamble)
+                        return True
 
                     if sheet_result["success"]:
                         _sheet_status = (f"⚠️ {sheet_result['message']}\n"
@@ -1960,7 +2081,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 elif len(valid_matches) == 1:
                     # Auto-select single match
                     original_timestamp = valid_matches[0]["timestamp"]
-                    unique_timestamp = ensure_unique_timestamp(original_timestamp)
+                    unique_timestamp = ensure_unique_timestamp(original_timestamp, data.get("name", ""))
                     data["tracking"] = unique_timestamp
                     _set_data(redis_client, user_id, data)
                     _process_upload(redis_client, user_id, reply_token, data)
@@ -2014,7 +2135,7 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 else:
                     # Air freight: use timestamp as tracking
                     original_timestamp = matches[idx]["timestamp"]
-                    unique_timestamp = ensure_unique_timestamp(original_timestamp)
+                    unique_timestamp = ensure_unique_timestamp(original_timestamp, data.get("name", ""))
                     data["tracking"] = unique_timestamp
                     _set_data(redis_client, user_id, data)
                     _process_upload(redis_client, user_id, reply_token, data)
@@ -2076,20 +2197,34 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                     )
 
                 pkg_content = sea_trackings[idx].get("content", "")
-                sheet_result = upload_to_packing_sheet(
-                    data.get("box_id", ""),
-                    data["name"],
-                    data["tracking"],
-                    data["dimension"],
-                    data["weight"],
-                    "海運",
-                    pkg_content,
-                    data.get("vendor_box_id", ""),
-                )
+                _packing_args = {
+                    "box_id": data.get("box_id", ""),
+                    "name": data["name"],
+                    "tracking": data["tracking"],
+                    "dimension": data["dimension"],
+                    "weight": data["weight"],
+                    "col_l_remark": "海運",
+                    "package_content": pkg_content,
+                    "vendor_box_id": data.get("vendor_box_id", ""),
+                }
+                sheet_result = upload_to_packing_sheet(**_packing_args)
                 box_display = data.get("box_id") or "未提供"
                 _monday_line = ("✓ Monday 海運子項目 已更新"
                                 + (f"：{', '.join(monday_updates)}" if monday_updates else "")
                                 + "\n")
+                if sheet_result.get("needs_confirmation"):
+                    _preamble = (
+                        f"📦 海運處理進度：\n"
+                        f"📦 Box ID: {box_display}\n"
+                        f"👤 寄件人: {data['name']}\n"
+                        f"🔢 追蹤編號: {data['tracking']}\n\n"
+                        + _monday_line
+                    )
+                    redis_client.delete(_key(user_id, "sea_trackings"))
+                    _send_dup_confirmation(redis_client, user_id, reply_token,
+                                           sheet_result, _packing_args, preamble=_preamble)
+                    return True
+
                 if sheet_result["success"]:
                     msg = (f"\u2705 \u6d77\u904b\u8cc7\u6599\u4e0a\u50b3\u6210\u529f\uff01\n\n"
                            f"\ud83d\udce6 Box ID: {box_display}\n"
@@ -2112,6 +2247,54 @@ def handle_upload_message(event: Dict[str, Any], redis_client) -> bool:
                 _set_state(redis_client, user_id, "collecting")
                 _set_data(redis_client, user_id, {})
                 line_reply(reply_token, msg)
+        return True
+
+    # State: confirming_duplicate — user chose 覆蓋/新增/取消 for a packing-sheet dup
+    elif state == "confirming_duplicate":
+        raw = redis_client.get(_key(user_id, "dup_confirm"))
+        if not raw:
+            line_reply(reply_token, "⚠️ 找不到待確認資料，請重新輸入")
+            _set_state(redis_client, user_id, "collecting")
+            _set_data(redis_client, user_id, {})
+            return True
+
+        try:
+            pending = json.loads(raw)
+        except Exception:
+            pending = {}
+        args = pending.get("args", {}) or {}
+        sheet_row = pending.get("sheet_row")
+
+        t = (text or "").strip().lower()
+        overwrite_words = ("覆蓋", "覆盖", "overwrite", "1", "o")
+        append_words = ("新增", "append", "新行", "2", "a", "add")
+        cancel_words = ("取消", "cancel", "3", "c", "放棄", "放弃")
+
+        if t in overwrite_words:
+            result = upload_to_packing_sheet(**{**args, "duplicate_action": "overwrite"})
+            if result.get("success"):
+                msg = (f"✓ 已覆蓋打包資料表 row {sheet_row}\n"
+                       f"{result.get('message', '')}\n\n"
+                       f"繼續輸入資料，或輸入 'end' 結束")
+            else:
+                msg = f"❌ 覆蓋失敗: {result.get('message', '')}\n\n繼續輸入資料，或輸入 'end' 結束"
+        elif t in append_words:
+            result = upload_to_packing_sheet(**{**args, "duplicate_action": "append"})
+            if result.get("success"):
+                msg = (f"✓ 已新增為打包資料表新行\n\n"
+                       f"繼續輸入資料，或輸入 'end' 結束")
+            else:
+                msg = f"❌ 新增失敗: {result.get('message', '')}\n\n繼續輸入資料，或輸入 'end' 結束"
+        elif t in cancel_words:
+            msg = "🚫 已取消此筆上傳\n\n繼續輸入資料，或輸入 'end' 結束"
+        else:
+            line_reply(reply_token, "⚠️ 請回覆「覆蓋」、「新增」或「取消」")
+            return True
+
+        redis_client.delete(_key(user_id, "dup_confirm"))
+        _set_state(redis_client, user_id, "collecting")
+        _set_data(redis_client, user_id, {})
+        line_reply(reply_token, msg)
         return True
 
     # State: correcting_field — user picks which field to update
@@ -2280,21 +2463,35 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
                 else:
                     log.warning(f"[UPLOAD] Sea Monday creation failed: {result.get('error')}")
 
-            sheet_result = upload_to_packing_sheet(
-                data.get("box_id", ""),
-                data["name"],
-                data.get("tracking", ""),
-                data["dimension"],
-                data["weight"],
-                col_l_remark,
-                data.get("package_content", ""),
-                data.get("vendor_box_id", ""),
-            )
+            _packing_args = {
+                "box_id": data.get("box_id", ""),
+                "name": data["name"],
+                "tracking": data.get("tracking", ""),
+                "dimension": data["dimension"],
+                "weight": data["weight"],
+                "col_l_remark": col_l_remark,
+                "package_content": data.get("package_content", ""),
+                "vendor_box_id": data.get("vendor_box_id", ""),
+            }
+            sheet_result = upload_to_packing_sheet(**_packing_args)
 
             box_display = data.get("box_id") or "未提供"
             _m_line = ("✓ Monday 海運板塊 已建立"
                        + (f"：{', '.join(monday_updates)}" if monday_updates else "")
                        + "\n")
+
+            if sheet_result.get("needs_confirmation"):
+                _preamble = (
+                    f"📦 海運處理進度：\n"
+                    f"📦 Box ID: {box_display}\n"
+                    f"👤 寄件人: {data['name']}\n"
+                    f"🔢 追蹤編號: {data.get('tracking', '')}\n\n"
+                    + (_m_line if monday_success else "✗ Monday 海運板塊 建立失敗\n")
+                )
+                _send_dup_confirmation(redis_client, user_id, reply_token,
+                                       sheet_result, _packing_args, preamble=_preamble)
+                return
+
             if monday_success and sheet_result["success"]:
                 msg = (f"✅ 海運資料上傳成功！\n\n"
                       f"📦 Box ID: {box_display}\n"
@@ -2362,16 +2559,29 @@ def _process_upload(redis_client, user_id: str, reply_token: str, data: Dict[str
         )
         
         # Upload to packing sheet
-        sheet_result = upload_to_packing_sheet(
-            data.get("box_id", ""),
-            data["name"],
-            data.get("tracking", ""),
-            data["dimension"],
-            data["weight"],
-            col_l_remark,
-            data.get("package_content", ""),
-        )
-        
+        _packing_args = {
+            "box_id": data.get("box_id", ""),
+            "name": data["name"],
+            "tracking": data.get("tracking", ""),
+            "dimension": data["dimension"],
+            "weight": data["weight"],
+            "col_l_remark": col_l_remark,
+            "package_content": data.get("package_content", ""),
+        }
+        sheet_result = upload_to_packing_sheet(**_packing_args)
+
+        if sheet_result.get("needs_confirmation"):
+            _preamble = (
+                f"📦 處理進度：\n"
+                f"📦 Box ID: {data.get('box_id', '未提供')}\n"
+                f"👤 寄件人: {data['name']}\n"
+                f"🔢 追蹤編號: {data.get('tracking', '無')}\n\n"
+                + ("✓ Monday 已更新\n" if monday_success else "✗ Monday 更新失敗\n")
+            )
+            _send_dup_confirmation(redis_client, user_id, reply_token,
+                                   sheet_result, _packing_args, preamble=_preamble)
+            return
+
         # Send result
         if monday_success and sheet_result["success"]:
             msg = (f"✅ 資料上傳成功！\n\n"
