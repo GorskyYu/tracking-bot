@@ -17,6 +17,7 @@ import logging
 import threading
 from typing import Optional, List
 
+from config import GORSKY_USER_ID, PDF_GROUP_ID
 from services.quote_service import (
     ParsedInput, Package, ServiceQuote, BoxWeights,
     parse_package_input, try_parse_structured,
@@ -315,6 +316,15 @@ def _on_collecting(r, uid, target, text):
             "💡 如有編寫格式清楚的報價資訊（如：120*60*40 10kg + 郵遞區號），"
             "可繼續貼上，我們會嘗試手動解析。"
         )
+        _admin = (
+            "🚨 [Bot Alert] OpenAI API 429 錯誤\n\n"
+            "❌ OpenAI 帳戶餘額不足（HTTP 429 / insufficient_quota）\n\n"
+            "請儘快至以下連結充值：\n"
+            "https://platform.openai.com/settings/organization/billing/overview\n\n"
+            f"錯誤詳情：{e}"
+        )
+        for _dest in filter(None, [GORSKY_USER_ID, PDF_GROUP_ID]):
+            line_push(_dest, _admin)
         return True
 
     # 1. Nothing found at all (or parse error)
@@ -472,7 +482,30 @@ def _on_correcting(r, uid, target, text):
     # Try structured first, then OpenAI
     parsed = try_parse_structured(text)
     if not parsed or not parsed.packages:
-        parsed = parse_package_input(text)
+        try:
+            parsed = parse_package_input(text)
+        except OpenAIQuotaExceeded as e:
+            log.error(f"[Quote] OpenAI quota exceeded in correcting: {e}")
+            line_push(
+                target,
+                "⚠️  AI 報價系統暫時無法使用\n\n"
+                "❌ OpenAI API 額度已用盡\n\n"
+                "📋 解決方案：\n"
+                "1. 請洽管理員檢查 OpenAI 帳戶\n"
+                "2. 登入 https://platform.openai.com/account/billing/overview\n"
+                "3. 檢查使用量和額度狀態\n\n"
+                "💡 請使用標準格式輸入（如：120*60*40 10kg）"
+            )
+            _admin = (
+                "🚨 [Bot Alert] OpenAI API 429 錯誤\n\n"
+                "❌ OpenAI 帳戶餘額不足（HTTP 429 / insufficient_quota）\n\n"
+                "請儘快至以下連結充值：\n"
+                "https://platform.openai.com/settings/organization/billing/overview\n\n"
+                f"錯誤詳情：{e}"
+            )
+            for _dest in filter(None, [GORSKY_USER_ID, PDF_GROUP_ID]):
+                line_push(_dest, _admin)
+            return True
 
     if not parsed or not parsed.packages:
         line_push(
